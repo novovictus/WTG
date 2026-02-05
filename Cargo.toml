@@ -1,0 +1,10 @@
+[workspace]
+members = ["wtg-core", "wtg-app", "wtg-view"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["novovictus"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/novovictus/WTG"

@@ -1,0 +1,11 @@
+[package]
+name = "wtg-view"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+wtg-core = { path = "../wtg-core" }
+
+serde = { version = "1.0", features = ["derive"] }
