@@ -4,7 +4,6 @@
 //! allowing UI layers to consume and render independently.
 
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
 
 /// GPU-level statistics
 #[derive(Clone, Debug, Serialize, Deserialize)]
