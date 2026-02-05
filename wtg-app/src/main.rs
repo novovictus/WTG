@@ -1,4 +1,4 @@
-//! WTG App — TUI for v0.1 GPU metric validation
+//! WTG App — TUI for GPU metric validation
 //!
 //! Entry point for the WTG proof-of-concept.
 //!
@@ -86,12 +86,19 @@ fn main() {
     // Initialize logging early. This is safe in all modes and helps diagnostics on Windows.
     tracing_subscriber::fmt::init();
 
-    info!("WTG v0.1 initializing...");
+    info!(
+        "WTG v{} initializing...",
+        env!("CARGO_PKG_VERSION")
+        );
+
 
     let (once, watch, interval_ms_opt) = parse_args();
 
     // Print banner once per run (not on every tick).
-    println!("WTG — WhatTheGPU v0.1");
+    println!(
+        "WTG — WhatTheGPU v{}",
+        env!("CARGO_PKG_VERSION")
+        );
     println!("Honest GPU compute stats for Windows");
 
     // NOTE: `--interval` is a parameter, not a mode.
