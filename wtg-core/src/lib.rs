@@ -8,5 +8,6 @@
 //! - Per-process GPU metric attribution
 
 pub mod snapshot;
+pub mod nvml;
 
 // TODO: Implement NVML bindings and bootstrap
