@@ -56,6 +56,16 @@ wtg.exe --once
 
 ---
 
+### Driver Requirements
+
+WTG relies on NVIDIA NVML on Windows. Empirical testing shows:
+
+- Drivers prior to ~470 may ship `nvidia-smi` without a usable `nvml.dll`
+- Modern drivers (≥580) reliably expose NVML even on legacy GPUs
+- WTG fails fast and explicitly when NVML is unavailable
+
+---
+
 ## Key Decisions
 
 1. **Language**: Rust (memory safe, low overhead, native FFI for NVML)
@@ -134,6 +144,13 @@ struct Snapshot {
 * Compare WTG output vs `nvidia-smi` and WSL NVML metrics
 * Verify short vs dense kernels, proving Windows telemetry is inaccurate
 * TUI allows fast, honest metric validation
+
+---
+
+## Early Validation Artifacts
+
+Empirical GPU / driver test results collected during early development are
+summarized in `artifacts/test-matrix/matrix.md`.
 
 ---
 
