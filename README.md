@@ -31,6 +31,31 @@ WTG fills the gap: **real-time, Windows-native, CUDA-specific GPU monitoring**, 
 
 ---
 
+## Current Usage (v0.1)
+
+WTG is currently a command-line proof-of-concept focused on validating NVML-based GPU telemetry on Windows.
+
+### Modes
+
+- `--once`  
+  Capture a single GPU snapshot and exit.
+
+- `--watch`  
+  Continuously poll GPU state at a fixed interval.
+
+- `--interval <ms>`  
+  Polling interval in milliseconds.  
+  Default: `1000`  
+  Only applies when `--watch` is specified.
+
+### Examples
+
+One-shot snapshot:
+```bash
+wtg.exe --once
+
+---
+
 ## Key Decisions
 
 1. **Language**: Rust (memory safe, low overhead, native FFI for NVML)
