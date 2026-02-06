@@ -66,6 +66,14 @@ WTG relies on NVIDIA NVML on Windows. Empirical testing shows:
 
 ---
 
+### How WTG relates to Task Manager
+
+WTG and Windows Task Manager observe the same GPU through the same kernel driver, but at different abstraction layers.
+
+See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
+
+---
+
 ## Key Decisions
 
 1. **Language**: Rust (memory safe, low overhead, native FFI for NVML)
