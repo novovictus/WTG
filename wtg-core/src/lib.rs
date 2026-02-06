@@ -7,7 +7,7 @@
 //! - Immutable snapshot structures
 //! - Per-process GPU metric attribution
 
-pub mod snapshot;
 pub mod nvml;
+pub mod snapshot;
 
 // TODO: Implement NVML bindings and bootstrap

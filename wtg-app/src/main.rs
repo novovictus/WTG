@@ -7,6 +7,10 @@
 //!   --watch                    : Take repeated NVML snapshots, print each tick.
 //!   --watch --interval <ms>    : Same, but set period in milliseconds (default 1000ms).
 //!
+//! Optional output mode:
+//!   --stats                    : Print a stable key:value "stats block" format (schema 0).
+//!                               Requires --once or --watch. Does not change default output.
+//!
 //! Design intent:
 //! - Keep "mode" flags separate from "parameter" flags.
 //! - `--interval` only matters when `--watch` is present.
@@ -24,6 +28,10 @@ use tracing::info;
 /// 1000ms is conservative and matches NVML’s practical update cadence for many metrics.
 const DEFAULT_INTERVAL_MS: u64 = 1000;
 
+/// Stats output schema version.
+/// This lets us evolve the key set while remaining explicit in artifacts.
+const STATS_SCHEMA: u32 = 0;
+
 /// Returns a simple timestamp like "1707101234.567" (unix seconds.millis).
 /// No external deps; good enough for proof and log correlation.
 fn now_ts() -> String {
@@ -33,24 +41,95 @@ fn now_ts() -> String {
     }
 }
 
+/// Print the stats schema once per run when `--stats` is enabled.
+fn print_stats_schema_header() {
+    println!("stats.schema: {}", STATS_SCHEMA);
+    println!();
+}
+
+/// --- Unit conversion helpers ------------------------------------------------
+/// Convert raw NVML memory values (bytes) into mebibytes (MiB).
+/// NVML reports memory in bytes; MiB keeps output human-readable and
+/// consistent with tools like nvidia-smi.
+fn bytes_to_mib(b: u64) -> u64 {
+    b / (1024 * 1024)
+}
+
+/// Convert raw NVML power values from milliwatts to watts.
+/// NVML reports power in milliwatts; some platforms may not report power at all,
+/// so we accept Option and propagate None rather than forcing an unwrap.
+fn mw_to_w(mw: Option<u32>) -> Option<f32> {
+    mw.map(|x| (x as f32) / 1000.0)
+}
+
+/// Print one GPU in stable "key: value" form.
+/// NOTE: This assumes wtg_core::nvml::GpuSnapshot exposes these fields publicly.
+/// If field names differ, adjust the mappings here (only here).
+fn print_stats_block(s: &wtg_core::nvml::GpuSnapshot) {
+    println!("[stats] gpu={}", s.index);
+
+    // Identity
+    println!("gpu.index: {}", s.index);
+    println!("gpu.name: {}", s.name);
+    println!("gpu.uuid: {}", s.uuid);
+
+    // Core telemetry (Basic tier)
+    println!("temp.c: {}", s.temp_c);
+    println!("util.gpu_pct: {}", s.gpu_util_pct);
+    println!("util.mem_pct: {}", s.mem_util_pct);
+
+    println!("vram.used_mib: {}", bytes_to_mib(s.mem_used_bytes));
+    println!("vram.total_mib: {}", bytes_to_mib(s.mem_total_bytes));
+
+    println!(
+        "power.w: {}",
+        mw_to_w(s.power_mw)
+            .map(|w| format!("{w:.1}"))
+            .unwrap_or_else(|| "N/A".to_string())
+    );
+
+    println!(
+        "power.limit_w: {}",
+        mw_to_w(s.power_limit_mw)
+            .map(|w| format!("{w:.1}"))
+            .unwrap_or_else(|| "N/A".to_string())
+    );
+
+    println!();
+}
+
 /// Minimal argument parser for our small surface area.
 ///
 /// Semantics:
 /// - `--once` and `--watch` are mutually exclusive (error if both).
+/// - `--stats` is an output modifier and requires `--once` or `--watch`.
 /// - `--interval <ms>`:
 ///     - requires a value
 ///     - parsed as u64 milliseconds
 ///     - only used with `--watch`
 /// - Unknown flags are ignored for now (keeps dev friction low during bootstrap).
-fn parse_args() -> (bool /*once*/, bool /*watch*/, Option<u64> /*interval_ms*/) {
+fn parse_args() -> (
+    bool,        /*once*/
+    bool,        /*watch*/
+    bool,        /*stats*/
+    Option<u64>, /*interval_ms*/
+) {
     let args: Vec<String> = env::args().collect();
 
     let once = args.iter().any(|a| a == "--once");
     let watch = args.iter().any(|a| a == "--watch");
+    let stats = args.iter().any(|a| a == "--stats");
 
     // Hard guard: mutually exclusive modes.
     if once && watch {
         eprintln!("WTG usage error: --once and --watch are mutually exclusive.");
+        process::exit(2);
+    }
+
+    // `--stats` is a modifier; do not change default behavior.
+    // Require an explicit mode so "wtg.exe --stats" doesn't unexpectedly change output.
+    if stats && !once && !watch {
+        eprintln!("WTG usage error: --stats requires --once or --watch.");
         process::exit(2);
     }
 
@@ -62,7 +141,9 @@ fn parse_args() -> (bool /*once*/, bool /*watch*/, Option<u64> /*interval_ms*/) 
         if args[i] == "--interval" {
             // Require a next token.
             if i + 1 >= args.len() {
-                eprintln!("WTG usage error: --interval requires a value in milliseconds (e.g., --interval 1000).");
+                eprintln!(
+                    "WTG usage error: --interval requires a value in milliseconds (e.g., --interval 1000)."
+                );
                 process::exit(2);
             }
 
@@ -79,26 +160,19 @@ fn parse_args() -> (bool /*once*/, bool /*watch*/, Option<u64> /*interval_ms*/) 
         i += 1;
     }
 
-    (once, watch, interval_ms)
+    (once, watch, stats, interval_ms)
 }
 
 fn main() {
     // Initialize logging early. This is safe in all modes and helps diagnostics on Windows.
     tracing_subscriber::fmt::init();
 
-    info!(
-        "WTG v{} initializing...",
-        env!("CARGO_PKG_VERSION")
-        );
+    info!("WTG v{} initializing...", env!("CARGO_PKG_VERSION"));
 
-
-    let (once, watch, interval_ms_opt) = parse_args();
+    let (once, watch, stats, interval_ms_opt) = parse_args();
 
     // Print banner once per run (not on every tick).
-    println!(
-        "WTG — WhatTheGPU v{}",
-        env!("CARGO_PKG_VERSION")
-        );
+    println!("WTG — WhatTheGPU v{}", env!("CARGO_PKG_VERSION"));
     println!("Honest GPU compute stats for Windows");
 
     // NOTE: `--interval` is a parameter, not a mode.
@@ -109,11 +183,18 @@ fn main() {
 
     // Mode: `--once`
     if once {
-        println!("\nWTG snapshot (NVML)\n");
         match wtg_core::nvml::snapshot_all() {
             Ok(snaps) => {
-                for s in snaps {
-                    println!("{s}");
+                if stats {
+                    print_stats_schema_header();
+                    for s in snaps.iter() {
+                        print_stats_block(s);
+                    }
+                } else {
+                    println!("\nWTG snapshot (NVML)\n");
+                    for s in snaps {
+                        println!("{s}");
+                    }
                 }
             }
             Err(e) => {
@@ -135,20 +216,32 @@ fn main() {
             eprintln!("WTG note: very low interval ({interval_ms}ms). NVML metrics may not update this quickly; expect duplicates.");
         }
 
-        println!("\nWTG watch mode (NVML) — interval {} ms\n", interval_ms);
+        if stats {
+            print_stats_schema_header();
+            println!("watch.interval_ms: {interval_ms}");
+            println!();
+        } else {
+            println!("\nWTG watch mode (NVML) — interval {} ms\n", interval_ms);
+        }
 
         let sleep_dur = Duration::from_millis(interval_ms);
 
         loop {
-            // Snapshot at the top of the loop. If NVML fails, error and exit non-zero.
             match wtg_core::nvml::snapshot_all() {
                 Ok(snaps) => {
-                    // Timestamp each tick for correlation and to prove we are refreshing.
-                    println!("--- tick {} ---", now_ts());
-                    for s in snaps {
-                        println!("{s}");
+                    if stats {
+                        println!("tick.ts: {}", now_ts());
+                        for s in snaps.iter() {
+                            print_stats_block(s);
+                        }
+                    } else {
+                        // Timestamp each tick for correlation and to prove we are refreshing.
+                        println!("--- tick {} ---", now_ts());
+                        for s in snaps {
+                            println!("{s}");
+                        }
+                        println!();
                     }
-                    println!();
                 }
                 Err(e) => {
                     eprintln!("WTG --watch failed: {e}");
