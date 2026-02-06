@@ -1,4 +1,4 @@
-//! Immutable GPU metric snapshots — the source of truth
+//! Immutable GPU metric snapshots - the source of truth
 //!
 //! Snapshots capture an instantaneous GPU state without smoothing,
 //! allowing UI layers to consume and render independently.

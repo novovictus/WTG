@@ -1,4 +1,4 @@
-//! WTG App — TUI for GPU metric validation
+//! WTG App - TUI for GPU metric validation
 //!
 //! Entry point for the WTG proof-of-concept.
 //!
@@ -172,7 +172,7 @@ fn main() {
     let (once, watch, stats, interval_ms_opt) = parse_args();
 
     // Print banner once per run (not on every tick).
-    println!("WTG — WhatTheGPU v{}", env!("CARGO_PKG_VERSION"));
+    println!("WTG - WhatTheGPU v{}", env!("CARGO_PKG_VERSION"));
     println!("Honest GPU compute stats for Windows");
 
     // NOTE: `--interval` is a parameter, not a mode.
@@ -221,7 +221,7 @@ fn main() {
             println!("watch.interval_ms: {interval_ms}");
             println!();
         } else {
-            println!("\nWTG watch mode (NVML) — interval {} ms\n", interval_ms);
+            println!("\nWTG watch mode (NVML) - interval {} ms\n", interval_ms);
         }
 
         let sleep_dur = Duration::from_millis(interval_ms);

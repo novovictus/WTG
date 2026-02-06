@@ -1,4 +1,4 @@
-# WTG — WhatTheGPU
+# WTG - WhatTheGPU
 
 **Tagline:** Honest GPU compute stats for Windows
 

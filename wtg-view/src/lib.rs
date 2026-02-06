@@ -1,4 +1,4 @@
-//! WTG View — Shared view helpers for UI layers
+//! WTG View - Shared view helpers for UI layers
 //!
 //! This crate provides:
 //! - Sorting and filtering helpers
