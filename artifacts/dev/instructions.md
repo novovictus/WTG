@@ -4,6 +4,12 @@
 # instructions.md
 WTG Next Steps Task List (triaged: easiest → hardest)
 
+Status:
+- [x] Task 1: Repo hygiene and guardrails (completed YYYY-MM-DD)
+- [x] Task 2: wtg-core crate docs alignment (completed YYYY-MM-DD)
+- [ ] Task 2.5: Snapshot authority and semantic alignment
+- [ ] Task 3: Eliminate fake values in telemetry
+
 Context snapshot (do not skip)
 - Project is Windows-native. No WSL.
 - Test harness is PowerShell 5.1–compatible and assumes current working directory contains `wtg.exe` (portable “drop” model).
@@ -38,15 +44,48 @@ Acceptance:
 Goal: remove stale TODOs and align crate-level comments with reality.
 
 Steps:
-1. Update `wtg-core/src/lib.rs` module docs to reflect current state:
-   - NVML integration exists
-   - snapshot struct exists and is authoritative
-2. Delete or rewrite outdated “TODO: implement NVML bootstrap” language.
-3. Keep docs short and accurate; avoid aspirational text that will go stale.
+1. Open `wtg-core/src/lib.rs`.
+2. Rewrite the crate-level docs to describe ONLY what exists today.
+   - Keep it short (5–15 lines).
+   - Use factual language (no “phases”, “roadmap”, “will”, “planned”).
+   - State the module boundaries as they currently are (e.g., core exports NVML access + snapshot types used by the app).
+3. Remove contradictory / stale claims:
+   - delete any “metric providers”, “refresh loop”, or “per-process attribution” claims if not present in core today.
+4. Delete or rewrite outdated bootstrap language:
+   - remove `TODO: implement NVML bindings and bootstrap` (or equivalent).
 
 Acceptance:
-- `cargo doc` (optional) reads correctly.
 - No misleading TODOs about already-implemented features.
+- No aspirational claims about modules/behavior that do not exist in the repo today.
+- The docs accurately reflect what `wtg-core` exports right now.
+
+---
+
+## 2.5) Snapshot authority and semantic alignment (required before Task 3)
+Goal: ensure there is exactly one authoritative snapshot model and no competing telemetry schemas.
+
+Rationale:
+- Multiple snapshot structs (e.g., nvml.rs vs snapshot.rs) create semantic drift.
+- Truth-layer correctness requires a single explicit data contract before fixing field-level correctness.
+
+Steps:
+1. Identify all snapshot / telemetry structs exposed by `wtg-core`.
+2. Choose exactly one authoritative snapshot model used by `--stats`.
+   - Either consolidate NVML collection to return `snapshot.rs` types, OR
+   - Treat `snapshot.rs` as non-authoritative (move to artifacts/dev or delete) and keep the NVML snapshot struct canonical.
+3. Remove/quarantine the non-authoritative model so it cannot silently diverge.
+4. Update exports and docs so the authoritative snapshot is unambiguous.
+
+Constraints:
+- Structural correctness only. Not feature expansion.
+- Do not add new metrics.
+- Do not change CLI flags/output format beyond what is required to resolve schema authority.
+- Do not add new dependencies.
+
+Acceptance:
+- Exactly one snapshot model is used by `--stats`.
+- No duplicate/unused telemetry structs remain in core.
+- `wtg-core/src/lib.rs` docs reflect the chosen model (and nothing more).
 
 ---
 
@@ -57,9 +96,18 @@ Known issue patterns:
 - Using `unwrap_or(0)` for temperature makes failures look like `0 C`.
 
 Steps:
-1. Change `GpuSnapshot.temp_c: u32` → `Option<u32>` (or a dedicated enum if preferred).
-2. Treat unsupported/read-failed as `None` and print `N/A`.
-3. Apply the same rule to any other “unwrap_or default” fields that represent real-world quantities.
+1. Fix the first target: temperature.
+   - Change `GpuSnapshot.temp_c: u32` → `Option<u32>` (or a dedicated enum if preferred).
+   - Treat unsupported/read-failed as `None` and print `N/A`.
+2. Sweep for the same anti-pattern everywhere in the authoritative snapshot path:
+   - Find any “default” coercions on real-world quantities (e.g., `unwrap_or(0)`, `unwrap_or_default()`, empty string fallbacks, sentinel values).
+   - Convert those fields to `Option<T>` (or equivalent) and print `N/A` when missing/unsupported.
+3. Ensure the output never emits plausible numeric values for failed/unsupported queries.
+
+Constraints:
+- Never panic.
+- No new dependencies.
+- No feature expansion: do not add new metrics—only change representation of missing/unsupported values.
 
 Acceptance:
 - When a metric is unsupported, output is `N/A` (not a plausible numeric value).
