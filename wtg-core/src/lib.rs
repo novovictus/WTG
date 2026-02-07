@@ -2,6 +2,6 @@
 //!
 //! This crate provides:
 //! - NVML access + snapshot types used by the app
+//! - `nvml::GpuSnapshot` is the authoritative snapshot model for `--stats`
 
 pub mod nvml;
-pub mod snapshot;
