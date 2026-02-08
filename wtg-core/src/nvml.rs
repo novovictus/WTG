@@ -42,6 +42,8 @@ impl fmt::Display for GpuSnapshot {
             )?;
         } else if let Some(p) = self.power_mw {
             writeln!(f, "  Power: {:.1} W", p as f32 / 1000.0)?;
+        } else {
+            writeln!(f, "  Power: N/A")?;
         }
 
         Ok(())
