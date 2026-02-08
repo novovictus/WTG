@@ -5,10 +5,13 @@
 WTG Next Steps Task List (triaged: easiest → hardest)
 
 Status:
-- [x] Task 1: Repo hygiene and guardrails (completed YYYY-MM-DD)
-- [x] Task 2: wtg-core crate docs alignment (completed YYYY-MM-DD)
-- [ ] Task 2.5: Snapshot authority and semantic alignment
-- [ ] Task 3: Eliminate fake values in telemetry
+- [x] Task 1: Repo hygiene and guardrails (completed 2026-02-07)
+- [x] Task 2: wtg-core crate docs alignment (completed 2026-02-07)
+- [x] Task 2.5: Snapshot authority and semantic alignment (completed 2026-02-07)
+- [~] Task 3: Eliminate fake values in telemetry (in progress)
+  - [x] temp_c: Option<u32> + prints N/A (completed 2026-02-07)
+  - [ ] sweep remaining default-coercions
+
 
 Context snapshot (do not skip)
 - Project is Windows-native. No WSL.
