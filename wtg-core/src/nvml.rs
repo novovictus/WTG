@@ -10,7 +10,7 @@ pub struct GpuSnapshot {
     pub mem_total_bytes: u64,
     pub gpu_util_pct: u32,
     pub mem_util_pct: u32,
-    pub temp_c: u32,
+    pub temp_c: Option<u32>,
     pub power_mw: Option<u32>,
     pub power_limit_mw: Option<u32>,
 }
@@ -22,7 +22,10 @@ impl fmt::Display for GpuSnapshot {
 
         writeln!(f, "GPU {}: {}", self.index, self.name)?;
         writeln!(f, "  UUID: {}", self.uuid)?;
-        writeln!(f, "  Temp: {} C", self.temp_c)?;
+        match self.temp_c {
+            Some(t) => writeln!(f, "  Temp: {} C", t)?,
+            None => writeln!(f, "  Temp: N/A")?,
+        }
         writeln!(
             f,
             "  Util: {}% (gpu) {}% (mem)",
@@ -68,7 +71,7 @@ pub fn snapshot_all() -> Result<Vec<GpuSnapshot>, String> {
         let util = dev
             .utilization_rates()
             .map_err(|e| format!("utilization_rates({i}) failed: {e}"))?;
-        let temp_c = dev.temperature(TemperatureSensor::Gpu).unwrap_or(0);
+        let temp_c = dev.temperature(TemperatureSensor::Gpu).ok();
 
         // Power calls can fail on some laptops / policies; treat as optional.
         let power_mw = dev.power_usage().ok();

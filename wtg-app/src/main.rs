@@ -74,7 +74,12 @@ fn print_stats_block(s: &wtg_core::nvml::GpuSnapshot) {
     println!("gpu.uuid: {}", s.uuid);
 
     // Core telemetry (Basic tier)
-    println!("temp.c: {}", s.temp_c);
+    println!(
+        "temp.c: {}",
+        s.temp_c
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "N/A".to_string())
+    );
     println!("util.gpu_pct: {}", s.gpu_util_pct);
     println!("util.mem_pct: {}", s.mem_util_pct);
 
