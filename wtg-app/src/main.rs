@@ -231,10 +231,12 @@ fn main() {
 
         let sleep_dur = Duration::from_millis(interval_ms);
 
+        let mut tick_seq: u64 = 0;
         loop {
             match wtg_core::nvml::snapshot_all() {
                 Ok(snaps) => {
                     if stats {
+                        println!("tick.seq: {tick_seq}");
                         println!("tick.ts: {}", now_ts());
                         for s in snaps.iter() {
                             print_stats_block(s);
@@ -247,6 +249,7 @@ fn main() {
                         }
                         println!();
                     }
+                    tick_seq += 1;
                 }
                 Err(e) => {
                     eprintln!("WTG --watch failed: {e}");
