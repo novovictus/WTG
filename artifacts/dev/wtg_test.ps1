@@ -1,24 +1,38 @@
 # wtg_test.ps1
-# Universal Windows 10/11 test harness (PowerShell 5.1 compatible)
+# Windows 10/11 test harness (PowerShell 5.1 compatible)
 # Assumes current working directory contains wtg.exe.
+#
+# Output file (results\):
+#   wtg_<hostname>_<card-model>_<driver-version>_<yyyyMMdd-HHmmss>.txt
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Write-LogLine {
+function Get-GpuTokenFromName {
     param(
-        [Parameter(Mandatory=$true)][string]$Path,
-        [Parameter(Mandatory=$true)][string]$Line
+        [Parameter(Mandatory=$true)][string]$GpuName
     )
-    $Line | Out-File -FilePath $Path -Append -Encoding utf8
+
+    # Human-facing token:
+    # - drop "nvidia", "geforce", "gpu"
+    # - lowercase
+    # - spaces -> dashes
+    $token = $GpuName.ToLower()
+    $token = $token -replace "nvidia",""
+    $token = $token -replace "geforce",""
+    $token = $token -replace "gpu",""
+    $token = $token -replace "\s+","-"
+    $token = $token.Trim("-")
+    return $token
 }
 
 $root   = (Get-Location).Path
 $outDir = Join-Path $root "results"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-$h = $env:COMPUTERNAME
+$hostname  = $env:COMPUTERNAME
 $timestamp = (Get-Date -Format u)
+$tsTag     = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
 
 # Resolve nvidia-smi
 $nvsmi = $null
@@ -29,21 +43,22 @@ if ($cmd) {
     $nvsmi = "C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
 }
 
-# System identity (assume elevated access available)
+# System identity
 $cs   = Get-CimInstance -ClassName Win32_ComputerSystem
 $bios = Get-CimInstance -ClassName Win32_BIOS
 $bb   = Get-CimInstance -ClassName Win32_BaseBoard
 
-# GPU identity via CIM
+# GPU identity (CIM) — query once
 $vc = Get-CimInstance -ClassName Win32_VideoController |
       Where-Object { $_.Name -match "NVIDIA" } |
       Select-Object -First 1
 
 $gpuName = if ($vc) { $vc.Name } else { "N/A" }
 $winDrv  = if ($vc) { $vc.DriverVersion } else { "N/A" }
+$gpuToken = if ($vc) { Get-GpuTokenFromName -GpuName $vc.Name } else { "no-nvidia" }
 
-# Run nvidia-smi (capture output + driver version)
-$nvDrv = "unknown"
+# Run nvidia-smi (to get NVIDIA driver version)
+$driverVersion = "unknown"
 $smiOut = @()
 
 if ($nvsmi) {
@@ -52,7 +67,7 @@ if ($nvsmi) {
     if ($line) {
         $tmp = ($line.ToString() -split "Driver Version:\s*")
         if ($tmp.Length -ge 2) {
-            $nvDrv = (($tmp[1] -split "\s+")[0]).Trim()
+            $driverVersion = (($tmp[1] -split "\s+")[0]).Trim()
         }
     }
 } else {
@@ -60,32 +75,38 @@ if ($nvsmi) {
 }
 
 # Output file
-$f = Join-Path $outDir ("wtg_env-{0}-drv{1}.txt" -f $h, $nvDrv)
+$f = Join-Path $outDir ("wtg_{0}_{1}_{2}_{3}.txt" -f `
+    $hostname,
+    $gpuToken,
+    $driverVersion,
+    $tsTag)
 
-# Keep logs uncolored if wtg uses colored output
+# Disable colored output (belt + suspenders)
 $env:NO_COLOR = "1"
 $env:CLICOLOR = "0"
 $env:RUST_LOG_STYLE = "never"
 
-# Header
-"Host: $h" | Out-File -FilePath $f -Encoding utf8
-Write-LogLine $f ("Timestamp: {0}" -f $timestamp)
-Write-LogLine $f ("System: {0} {1}" -f $cs.Manufacturer, $cs.Model)
-Write-LogLine $f ("BIOS Serial: {0}" -f $bios.SerialNumber)
-Write-LogLine $f ("Baseboard: {0} {1}  Serial: {2}" -f $bb.Manufacturer, $bb.Product, $bb.SerialNumber)
-Write-LogLine $f ("GPU (CIM): {0}" -f $gpuName)
-Write-LogLine $f ("Windows DriverVersion (CIM): {0}" -f $winDrv)
-Write-LogLine $f ("nvidia-smi path: {0}" -f $nvsmi)
-Write-LogLine $f "----"
+# Write header (Set-Content creates/overwrites; Add-Content appends)
+Set-Content -Path $f -Value ("Host: {0}" -f $hostname) -Encoding utf8
+Add-Content -Path $f -Value ("Timestamp: {0}" -f $timestamp) -Encoding utf8
+Add-Content -Path $f -Value ("System: {0} {1}" -f $cs.Manufacturer, $cs.Model) -Encoding utf8
+Add-Content -Path $f -Value ("BIOS Serial: {0}" -f $bios.SerialNumber) -Encoding utf8
+Add-Content -Path $f -Value ("Baseboard: {0} {1}  Serial: {2}" -f $bb.Manufacturer, $bb.Product, $bb.SerialNumber) -Encoding utf8
+Add-Content -Path $f -Value ("GPU (CIM): {0}" -f $gpuName) -Encoding utf8
+Add-Content -Path $f -Value ("Windows DriverVersion (CIM): {0}" -f $winDrv) -Encoding utf8
+Add-Content -Path $f -Value ("nvidia-smi path: {0}" -f $nvsmi) -Encoding utf8
+Add-Content -Path $f -Value "----" -Encoding utf8
 
 # NVIDIA-SMI section
-Write-LogLine $f "---- NVIDIA-SMI ----"
-$smiOut | Out-File -FilePath $f -Append -Encoding utf8
-Write-LogLine $f "----"
+Add-Content -Path $f -Value "---- NVIDIA-SMI ----" -Encoding utf8
+if ($smiOut) {
+    $smiOut | Add-Content -Path $f -Encoding utf8
+}
+Add-Content -Path $f -Value "----" -Encoding utf8
 
 # WTG section + validation
 $wtg = Join-Path $root "wtg.exe"
-Write-LogLine $f "---- WTG --once ----"
+Add-Content -Path $f -Value "---- WTG --once ----" -Encoding utf8
 
 $pass = $true
 $failReasons = New-Object System.Collections.Generic.List[string]
@@ -93,27 +114,20 @@ $failReasons = New-Object System.Collections.Generic.List[string]
 if (-not (Test-Path $wtg)) {
     $pass = $false
     $failReasons.Add("wtg.exe not found in current working directory: $root")
-    Write-LogLine $f ("ERROR: {0}" -f $failReasons[$failReasons.Count-1])
+    Add-Content -Path $f -Value ("ERROR: {0}" -f $failReasons[$failReasons.Count-1]) -Encoding utf8
 } else {
     $wtgOut = & $wtg --once 2>&1
     $wtgExit = $LASTEXITCODE
 
-    $wtgOut | Out-File -FilePath $f -Append -Encoding utf8
+    if ($wtgOut) { $wtgOut | Add-Content -Path $f -Encoding utf8 }
 
     if ($wtgExit -ne 0) {
         $pass = $false
         $failReasons.Add("wtg.exe returned non-zero exit code: $wtgExit")
     }
 
-    # Validation: low-fuss tokens that should exist if stats emitted
     $joined = ($wtgOut -join "`n")
-    $required = @(
-        "GPU 0",
-        "UUID",
-        "Util",
-        "VRAM",
-        "Power"
-    )
+    $required = @("GPU 0","UUID","Util","VRAM","Power")
 
     foreach ($token in $required) {
         if ($joined -notmatch [regex]::Escape($token)) {
@@ -123,12 +137,14 @@ if (-not (Test-Path $wtg)) {
     }
 }
 
-Write-LogLine $f "----"
-Write-LogLine $f ("RESULT: {0}" -f ($(if ($pass) { "PASS" } else { "FAIL" })))
+Add-Content -Path $f -Value "----" -Encoding utf8
+Add-Content -Path $f -Value ("RESULT: {0}" -f ($(if ($pass) { "PASS" } else { "FAIL" }))) -Encoding utf8
 
 if (-not $pass) {
-    Write-LogLine $f "FAIL_REASONS:"
-    foreach ($r in $failReasons) { Write-LogLine $f ("- {0}" -f $r) }
+    Add-Content -Path $f -Value "FAIL_REASONS:" -Encoding utf8
+    foreach ($r in $failReasons) {
+        Add-Content -Path $f -Value ("- {0}" -f $r) -Encoding utf8
+    }
 }
 
 Write-Host ("Wrote {0}" -f $f)
