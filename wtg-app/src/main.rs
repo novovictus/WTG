@@ -37,7 +37,7 @@ const STATS_SCHEMA: u32 = 0;
 fn now_ts() -> String {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(d) => format!("{}.{:03}", d.as_secs(), d.subsec_millis()),
-        Err(_) => "0.000".to_string(),
+        Err(_) => "N/A".to_string(),
     }
 }
 
@@ -74,7 +74,12 @@ fn print_stats_block(s: &wtg_core::nvml::GpuSnapshot) {
     println!("gpu.uuid: {}", s.uuid);
 
     // Core telemetry (Basic tier)
-    println!("temp.c: {}", s.temp_c);
+    println!(
+        "temp.c: {}",
+        s.temp_c
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "N/A".to_string())
+    );
     println!("util.gpu_pct: {}", s.gpu_util_pct);
     println!("util.mem_pct: {}", s.mem_util_pct);
 
@@ -226,15 +231,48 @@ fn main() {
 
         let sleep_dur = Duration::from_millis(interval_ms);
 
-        loop {
-            match wtg_core::nvml::snapshot_all() {
-                Ok(snaps) => {
-                    if stats {
+        if stats {
+            let mut ctx = loop {
+                match wtg_core::nvml::init_context() {
+                    Ok(ctx) => break ctx,
+                    Err(e) => {
+                        eprintln!("WTG --watch init failed: {e}");
+                        thread::sleep(sleep_dur);
+                    }
+                }
+            };
+
+            let mut tick_seq: u64 = 0;
+            loop {
+                match wtg_core::nvml::snapshot_all_with_ctx(&ctx) {
+                    Ok(snaps) => {
+                        println!("tick.seq: {tick_seq}");
                         println!("tick.ts: {}", now_ts());
                         for s in snaps.iter() {
                             print_stats_block(s);
                         }
-                    } else {
+                        tick_seq += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("WTG --watch failed: {e}");
+                        match wtg_core::nvml::init_context() {
+                            Ok(new_ctx) => {
+                                ctx = new_ctx;
+                            }
+                            Err(e2) => {
+                                eprintln!("WTG --watch re-init failed: {e2}");
+                            }
+                        }
+                    }
+                }
+
+                // Sleep until next tick. Ctrl+C will terminate the process naturally.
+                thread::sleep(sleep_dur);
+            }
+        } else {
+            loop {
+                match wtg_core::nvml::snapshot_all() {
+                    Ok(snaps) => {
                         // Timestamp each tick for correlation and to prove we are refreshing.
                         println!("--- tick {} ---", now_ts());
                         for s in snaps {
@@ -242,15 +280,15 @@ fn main() {
                         }
                         println!();
                     }
+                    Err(e) => {
+                        eprintln!("WTG --watch failed: {e}");
+                        process::exit(2);
+                    }
                 }
-                Err(e) => {
-                    eprintln!("WTG --watch failed: {e}");
-                    process::exit(2);
-                }
-            }
 
-            // Sleep until next tick. Ctrl+C will terminate the process naturally.
-            thread::sleep(sleep_dur);
+                // Sleep until next tick. Ctrl+C will terminate the process naturally.
+                thread::sleep(sleep_dur);
+            }
         }
     }
 

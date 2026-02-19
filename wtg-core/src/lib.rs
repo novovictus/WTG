@@ -1,13 +1,7 @@
 //! WTG Core - Backend truth layer for GPU metrics via NVML
 //!
 //! This crate provides:
-//! - NVML integration
-//! - Metric providers (SM utilization, VRAM, power, clocks)
-//! - Refresh loop with fixed timestep
-//! - Immutable snapshot structures
-//! - Per-process GPU metric attribution
+//! - NVML access + snapshot types used by the app
+//! - `nvml::GpuSnapshot` is the authoritative snapshot model for `--stats`
 
 pub mod nvml;
-pub mod snapshot;
-
-// TODO: Implement NVML bindings and bootstrap
