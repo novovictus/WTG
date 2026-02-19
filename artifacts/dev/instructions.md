@@ -10,7 +10,9 @@ Status:
 - [x] Task 2.5: Snapshot authority and semantic alignment (completed 2026-02-07)
 - [~] Task 3: Eliminate fake values in telemetry (in progress)
   - [x] temp_c: Option<u32> + prints N/A (completed 2026-02-07)
-  - [ ] sweep remaining default-coercions
+  - [x] sweep workspace for default-coercions (none found; completed 2026-02-19)
+- [x] Task 4: Add monotonic tick counter (completed 2026-02-19)
+- [x] Task 5: Reduce polling jitter via NVML context reuse (completed 2026-02-19)
 
 
 Context snapshot (do not skip)
@@ -133,17 +135,18 @@ Acceptance:
 
 ---
 
-## 5) Reduce polling jitter by reusing NVML init + device handles (medium; biggest “bang”)
+## 5) Reduce polling jitter by reusing NVML init + device enumeration (medium; biggest “bang”)
 Goal: stop re-initializing NVML and re-enumerating devices every tick.
 
-Current behavior (likely):
+Current behavior:
 - Each tick calls `Nvml::init()`, `device_count`, `device_by_index`, etc.
 
 Plan (minimal refactor):
 1. Introduce an NVML context object constructed once:
-   - `struct NvmlContext { nvml: Nvml, devices: Vec<Device> }`
+   - `struct NvmlContext { nvml: Nvml, device_indices: Vec<u32> }`
+   - Devices are re-resolved per tick via `device_by_index(i)` to avoid self-referential/lifetime issues.
 2. Build it at program start (or first call) and reuse it in the watch loop:
-   - `fn snapshot_all(ctx: &NvmlContext) -> Result<Vec<GpuSnapshot>, Error>`
+   - `fn snapshot_all_with_ctx(ctx: &NvmlContext) -> Result<Vec<GpuSnapshot>, Error>`
 3. Keep per-tick work limited to metric queries:
    - utilization, temp, mem, power, uuid, etc.
 4. Ensure graceful handling if GPU count changes (rare):
