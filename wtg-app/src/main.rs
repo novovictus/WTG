@@ -37,7 +37,7 @@ const STATS_SCHEMA: u32 = 0;
 fn now_ts() -> String {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(d) => format!("{}.{:03}", d.as_secs(), d.subsec_millis()),
-        Err(_) => "0.000".to_string(),
+        Err(_) => "N/A".to_string(),
     }
 }
 
