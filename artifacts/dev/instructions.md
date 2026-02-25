@@ -4,11 +4,24 @@
 # instructions.md
 WTG Next Steps Task List (triaged: easiest → hardest)
 
+## Status Freeze
+
+Truth-layer hardening complete (v0.1.2 baseline). Current goal: documentation + beta packaging (v0.2.0-beta1). Only correctness, documentation, and packaging changes are permitted before CFP (feature expansion is Post-CFP).
+
+------------------------------------------------------------------------
+
+Development focus has shifted from feature expansion to: - Documentation
+refinement - Methodology clarity - Release packaging - Conference
+submission
+
+All additional feature ideas should be logged in backlog.md and deferred
+until after CFP.
+
 Status:
 - [x] Task 1: Repo hygiene and guardrails (completed 2026-02-07)
 - [x] Task 2: wtg-core crate docs alignment (completed 2026-02-07)
 - [x] Task 2.5: Snapshot authority and semantic alignment (completed 2026-02-07)
-- [~] Task 3: Eliminate fake values in telemetry (in progress)
+- [x] Task 3: Eliminate fake values in telemetry
   - [x] temp_c: Option<u32> + prints N/A (completed 2026-02-07)
   - [x] sweep workspace for default-coercions (none found; completed 2026-02-19)
 - [x] Task 4: Add monotonic tick counter (completed 2026-02-19)
@@ -68,6 +81,7 @@ Acceptance:
 
 ## 2.5) Snapshot authority and semantic alignment (required before Task 3)
 Goal: ensure there is exactly one authoritative snapshot model and no competing telemetry schemas.
+The authoritative snapshot model must exactly reflect what --stats emits. The CLI output is the external contract.
 
 Rationale:
 - Multiple snapshot structs (e.g., nvml.rs vs snapshot.rs) create semantic drift.
@@ -86,6 +100,7 @@ Constraints:
 - Do not add new metrics.
 - Do not change CLI flags/output format beyond what is required to resolve schema authority.
 - Do not add new dependencies.
+- No renaming of fields unless required to resolve schema conflict.
 
 Acceptance:
 - Exactly one snapshot model is used by `--stats`.
@@ -107,6 +122,7 @@ Steps:
 2. Sweep for the same anti-pattern everywhere in the authoritative snapshot path:
    - Find any “default” coercions on real-world quantities (e.g., `unwrap_or(0)`, `unwrap_or_default()`, empty string fallbacks, sentinel values).
    - Convert those fields to `Option<T>` (or equivalent) and print `N/A` when missing/unsupported.
+   - All hardware-dependent metrics must be represented as Option<T> at the snapshot layer.
 3. Ensure the output never emits plausible numeric values for failed/unsupported queries.
 
 Constraints:
@@ -165,9 +181,7 @@ Current pattern (likely):
 - A bracketed header line like `[stats] gpu=N` plus key/value lines.
 
 Steps:
-1. Decide a strict contract:
-   - Either all lines are `key: value`
-   - Or adopt a consistent section delimiter that won’t confuse parsers
+1. Adopt strict key: value lines only. No bracket headers.
 2. Recommended minimal change:
    - Keep a clear per-GPU delimiter line, but also include `gpu.index: N` as a key.
 3. Ensure every printed field has a stable name:
@@ -195,7 +209,7 @@ Acceptance:
 
 ---
 
-## 8) Add `--stats --full` and `--stats --experimental` presets (last item)
+## 8) (Post-CFP) Add `--stats --full` and `--stats --experimental` presets (last item)
 Goal: implement the planned three-level stats presets with the same snapshot loop/output shape.
 
 Canonical plan:
