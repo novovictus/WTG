@@ -6,7 +6,7 @@ WTG Next Steps Task List (triaged: easiest → hardest)
 
 ## Status Freeze
 
-Truth-layer hardening complete (v0.1.2 baseline). Current goal: documentation + beta packaging (v0.2.0-beta1). Only correctness, documentation, and packaging changes are permitted before CFP (feature expansion is Post-CFP).
+Truth-layer hardening complete (v0.1.2 baseline). Current goal: documentation + beta packaging (v0.2.0-beta2). Only correctness, documentation, and packaging changes are permitted before CFP (feature expansion is Post-CFP).
 
 ------------------------------------------------------------------------
 
