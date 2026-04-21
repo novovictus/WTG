@@ -1,4 +1,6 @@
-//! WTG Core - Backend truth layer for GPU metrics via NVML
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Adam Hooper
+// //! WTG Core - Backend truth layer for GPU metrics via NVML
 //!
 //! This crate provides:
 //! - NVML access + snapshot types used by the app

@@ -1,4 +1,6 @@
-//! WTG App - TUI for GPU metric validation
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Adam Hooper
+// //! WTG App - TUI for GPU metric validation
 //!
 //! Entry point for the WTG proof-of-concept.
 //!

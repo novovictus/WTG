@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Adam Hooper
 //! WTG View - Shared view helpers for UI layers
 //!
 //! This crate provides:
