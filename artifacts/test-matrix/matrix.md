@@ -22,6 +22,9 @@ Raw run logs are not published to avoid exposing host-specific identifiers.
 | GTX 1050 Ti               | Pascal       | 465.89                   | 11.3               | Win10 x64 | No          | N/A                                 | No       | N/A       | NVML DLL not loadable                                                                                    |
 | GTX 1050 Ti               | Pascal       | 581.80                   | 13.0               | Win10 x64 | Yes         | OK                                  | Partial  | Partial   | NVML loads; power field unsupported (no cap exposure)                                                    |
 | GT 1030                   | Pascal       | 581.04                   | 13.0               | Win11 x64 | Yes         | OK                                  | Yes      | Yes       | Low-power SKU; power draw N/A; expected NVML limitations                                                 |
+| GTX 745                   | Maxwell      | 576.97                   | 12.9               | Win10 x64 | Yes         | OK                                  | Yes      | Yes       | Full NVML telemetry; baseline working legacy card; power field N/A                                       |
+| GT 730                    | Kepler       | 475.14                   | 11.4               | Win10 x64 | Partial     | N/A                                 | No       | N/A       | NVML loads but utilization unsupported; nvmlDeviceGetUtilizationRates fails; power/temp invalid (0C/N/A) |
+| 8400 GS                   | Tesla        | 342.xx (CIM 21.21)       | N/A                | Win10 x64 | No          | N/A                                 | No       | N/A       | NVML unavailable; nvidia-smi non-functional; WTG crash observed; below NVML support floor                |
 
 ---
 
@@ -34,7 +37,7 @@ Raw run logs are not published to avoid exposing host-specific identifiers.
 * NVML availability on Windows is driver-version dependent.
 * Presence of nvidia-smi does not guarantee NVML is loadable by third-party tools.
 * Power telemetry is split: draw is common; caps are optional, even on RTX laptops.
-* WTG fails fast and explicitly when NVML is unavailable.
+* WTG fails fast and explicitly when NVML is unavailable; legacy GPUs may require additional guardrails to avoid instability.
 
 ## Observed Behavioral Deltas
 * RTX 3080 Laptop GPU memory-utilization regression is confined (so far) to 580.88+ branch under WDDM on consumer mobile SKU; not reproduced on desktop Ampere or professional Ampere (A3000).
@@ -43,3 +46,6 @@ Raw run logs are not published to avoid exposing host-specific identifiers.
 * Professional Ampere (RTX A3000) exhibits stable NVML telemetry across multiple driver branches including 59x.
 * Pascal low-end SKUs (GT 1030, GTX 1050 Ti) may expose draw but omit cap fields; WTG handles optional power fields explicitly.
 * Observed behavior suggests discrete branch divergence between consumer mobile WDDM SKUs and desktop/professional SKUs.
+* Kepler low-end (GT 730 class) exhibits partial NVML surfaces where core APIs load but key telemetry (utilization, power) returns NOT_SUPPORTED; consistent across OEM variants on legacy driver branches.
+* Pre-Fermi/Tesla GPUs (8400 GS) fall below NVML support floor; nvidia-smi is non-functional and NVML calls require explicit guarding.
+* Maxwell OEM cards (GTX 745) represent a practical lower bound for stable NVML telemetry on modern Windows drivers, with expected omissions (power caps).
