@@ -19,3 +19,7 @@ Thumbs.db
 *.dll
 *.so
 *.dylib
+
+# test junk
+artifacts/dev/wtg_stress.ps1
+artifacts/dev/wtg_stress--stats.ps1

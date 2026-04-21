@@ -1,5 +1,5 @@
-Copyright © 2026 Adam Hooper. All rights reserved.
-This repository is shared for evaluation only. No license is granted for commercial use, redistribution, or derivative works without explicit permission.
+WTG is licensed under the GNU General Public License v3.0 (GPLv3). See LICENSE.
+Copyright (C) 2026 Adam Hooper
 
 # WTG - WhatTheGPU
 
@@ -42,7 +42,7 @@ See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
 
 ---
 
-## Project Scope (v0.1 – Core Engine)
+## Project Scope (Core Engine)
 
 * **Target**: NVIDIA GPUs, CUDA metrics only
 * **Platform**: Windows-native, single executable (`wtg.exe`)
@@ -57,7 +57,7 @@ See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
 
 ---
 
-## Current Usage (v0.1 engine)
+## Current Usage (CLI Engine)
 
 WTG is currently a command-line proof-of-concept focused on validating NVML-based GPU telemetry on Windows.
 
@@ -90,7 +90,7 @@ WTG relies on NVIDIA NVML on Windows. Empirical testing shows:
 
 - Drivers prior to ~470 may ship `nvidia-smi` without a usable `nvml.dll`
 - Modern drivers (≥580) consistently expose NVML across tested SKUs
-- WTG fails fast and explicitly when NVML is unavailable
+- WTG fails fast when NVML is unavailable and prints an explicit error when possible
 
 ---
 
@@ -114,7 +114,7 @@ WTG relies on NVIDIA NVML on Windows. Empirical testing shows:
    * Phase 1 (In progress): TUI validation and snapshot contract stabilization.
    * Phase 2 (Planned): Minimal egui table window.
    * Phase 3: Optional tray integration and UI polish.
-6. **Repository / Licensing**: GitHub-hosted / Licensing - none.
+6. **Repository / Licensing**: GitHub-hosted / GPLv3.
 
 ---
 
