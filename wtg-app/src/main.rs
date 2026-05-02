@@ -70,8 +70,11 @@ impl Sink {
             SinkKind::Csv => {}
             SinkKind::Jsonl => {
                 let escaped = json_escape(line);
-                if let Err(e) = writeln!(self.writer.borrow_mut(), "{{\"line\":\"{escaped}\"}}") {
+                let mut writer = self.writer.borrow_mut();
+                if let Err(e) = writeln!(writer, "{{\"line\":\"{escaped}\"}}") {
                     eprintln!("WTG runtime error: failed to write sink output: {e}");
+                } else if let Err(e) = writer.flush() {
+                    eprintln!("WTG runtime error: failed to flush sink output: {e}");
                 }
             }
         }
