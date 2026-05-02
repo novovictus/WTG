@@ -248,6 +248,9 @@ fn main() {
                     println!("\nWTG snapshot (NVML)\n");
                     for s in snaps {
                         println!("{s}");
+                        if let Some(sink) = &_sink {
+                            sink.emit("line");
+                        }
                     }
                 }
             }
