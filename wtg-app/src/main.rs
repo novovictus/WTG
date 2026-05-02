@@ -34,6 +34,12 @@ const DEFAULT_INTERVAL_MS: u64 = 1000;
 /// This lets us evolve the key set while remaining explicit in artifacts.
 const STATS_SCHEMA: u32 = 0;
 
+#[derive(Debug, Clone, Copy)]
+enum SinkKind {
+    Csv,
+    Jsonl,
+}
+
 /// Returns a simple timestamp like "1707101234.567" (unix seconds.millis).
 /// No external deps; good enough for proof and log correlation.
 fn now_ts() -> String {
@@ -120,6 +126,7 @@ fn parse_args() -> (
     bool,        /*watch*/
     bool,        /*stats*/
     Option<u64>, /*interval_ms*/
+    Option<SinkKind>,
 ) {
     let args: Vec<String> = env::args().collect();
 
@@ -143,6 +150,7 @@ fn parse_args() -> (
     // Parse `--interval <ms>` if present.
     // We intentionally *do not* accept `--interval` without a value.
     let mut interval_ms: Option<u64> = None;
+    let mut sink: Option<SinkKind> = None;
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--interval" {
@@ -164,10 +172,31 @@ fn parse_args() -> (
             i += 2;
             continue;
         }
+
+        if args[i] == "--sink" {
+            // Require a next token.
+            if i + 1 >= args.len() {
+                eprintln!("WTG usage error: --sink requires a value (csv or jsonl).");
+                process::exit(2);
+            }
+
+            let v = &args[i + 1];
+            sink = Some(match v.as_str() {
+                "csv" => SinkKind::Csv,
+                "jsonl" => SinkKind::Jsonl,
+                _ => {
+                    eprintln!("WTG usage error: --sink value must be csv or jsonl. Got: {v}");
+                    process::exit(2);
+                }
+            });
+
+            i += 2;
+            continue;
+        }
         i += 1;
     }
 
-    (once, watch, stats, interval_ms)
+    (once, watch, stats, interval_ms, sink)
 }
 
 fn main() {
@@ -176,7 +205,7 @@ fn main() {
 
     info!("WTG v{} initializing...", env!("CARGO_PKG_VERSION"));
 
-    let (once, watch, stats, interval_ms_opt) = parse_args();
+    let (once, watch, stats, interval_ms_opt, _sink) = parse_args();
 
     // Print banner once per run (not on every tick).
     println!("WTG - WhatTheGPU v{}", env!("CARGO_PKG_VERSION"));
