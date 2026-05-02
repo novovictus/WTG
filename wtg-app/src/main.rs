@@ -329,7 +329,11 @@ fn main() {
                         // Timestamp each tick for correlation and to prove we are refreshing.
                         println!("--- tick {} ---", now_ts());
                         for s in snaps {
-                            println!("{s}");
+                            let line = format!("{s}");
+                            println!("{line}");
+                            if let Some(sink) = &_sink {
+                                sink.emit(&line);
+                            }
                         }
                         println!();
                     }
