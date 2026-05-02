@@ -19,9 +19,10 @@
 //! - `--interval` without a value is a hard error (avoids ambiguity).
 //! - This is a proof path: ground-truth telemetry first; UI later.
 
+use std::cell::RefCell;
 use std::env;
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::process;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -45,7 +46,7 @@ enum SinkKind {
 struct Sink {
     kind: SinkKind,
     filename: String,
-    writer: BufWriter<File>,
+    writer: RefCell<BufWriter<File>>,
 }
 
 impl Sink {
@@ -56,7 +57,7 @@ impl Sink {
         Ok(Self {
             kind,
             filename,
-            writer: BufWriter::new(file),
+            writer: RefCell::new(BufWriter::new(file)),
         })
     }
 
@@ -64,13 +65,35 @@ impl Sink {
         &self.filename
     }
 
-    fn emit(&self, _line: &str) {
+    fn emit(&self, line: &str) {
         match self.kind {
-            SinkKind::Csv | SinkKind::Jsonl => {}
+            SinkKind::Csv => {}
+            SinkKind::Jsonl => {
+                let escaped = json_escape(line);
+                if let Err(e) = writeln!(self.writer.borrow_mut(), "{{\"line\":\"{escaped}\"}}") {
+                    eprintln!("WTG runtime error: failed to write sink output: {e}");
+                }
+            }
         }
-        let _ = &self.writer;
-        // no-op for now
     }
+}
+
+fn json_escape(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len());
+
+    for c in s.chars() {
+        match c {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            c if c.is_control() => escaped.push_str(&format!("\\u{:04x}", c as u32)),
+            c => escaped.push(c),
+        }
+    }
+
+    escaped
 }
 
 fn sink_filename(kind: SinkKind) -> String {
