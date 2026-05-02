@@ -40,6 +40,22 @@ enum SinkKind {
     Jsonl,
 }
 
+#[allow(dead_code)]
+struct Sink {
+    kind: SinkKind,
+}
+
+impl Sink {
+    fn new(kind: SinkKind) -> Self {
+        Self { kind }
+    }
+
+    #[allow(dead_code)]
+    fn emit(&self, _line: &str) {
+        // no-op for now
+    }
+}
+
 /// Returns a simple timestamp like "1707101234.567" (unix seconds.millis).
 /// No external deps; good enough for proof and log correlation.
 fn now_ts() -> String {
@@ -205,7 +221,9 @@ fn main() {
 
     info!("WTG v{} initializing...", env!("CARGO_PKG_VERSION"));
 
-    let (once, watch, stats, interval_ms_opt, _sink) = parse_args();
+    let (once, watch, stats, interval_ms_opt, sink_opt) = parse_args();
+
+    let _sink = sink_opt.map(Sink::new);
 
     // Print banner once per run (not on every tick).
     println!("WTG - WhatTheGPU v{}", env!("CARGO_PKG_VERSION"));
