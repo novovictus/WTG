@@ -247,9 +247,10 @@ fn main() {
                 } else {
                     println!("\nWTG snapshot (NVML)\n");
                     for s in snaps {
-                        println!("{s}");
+                        let line = format!("{s}");
+                        println!("{line}");
                         if let Some(sink) = &_sink {
-                            sink.emit("line");
+                            sink.emit(&line);
                         }
                     }
                 }
