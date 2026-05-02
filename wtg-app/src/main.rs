@@ -20,6 +20,8 @@
 //! - This is a proof path: ground-truth telemetry first; UI later.
 
 use std::env;
+use std::fs::File;
+use std::io::BufWriter;
 use std::process;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -40,20 +42,45 @@ enum SinkKind {
     Jsonl,
 }
 
-#[allow(dead_code)]
 struct Sink {
     kind: SinkKind,
+    filename: String,
+    writer: BufWriter<File>,
 }
 
 impl Sink {
-    fn new(kind: SinkKind) -> Self {
-        Self { kind }
+    fn new(kind: SinkKind) -> Result<Self, std::io::Error> {
+        let filename = sink_filename(kind);
+        let file = File::create(&filename)?;
+
+        Ok(Self {
+            kind,
+            filename,
+            writer: BufWriter::new(file),
+        })
     }
 
-    #[allow(dead_code)]
+    fn filename(&self) -> &str {
+        &self.filename
+    }
+
     fn emit(&self, _line: &str) {
+        match self.kind {
+            SinkKind::Csv | SinkKind::Jsonl => {}
+        }
+        let _ = &self.writer;
         // no-op for now
     }
+}
+
+fn sink_filename(kind: SinkKind) -> String {
+    let extension = match kind {
+        SinkKind::Csv => "csv",
+        SinkKind::Jsonl => "jsonl",
+    };
+    let timestamp = now_ts().replace('.', "_");
+
+    format!("wtg_sink_{timestamp}.{extension}")
 }
 
 /// Returns a simple timestamp like "1707101234.567" (unix seconds.millis).
@@ -223,7 +250,19 @@ fn main() {
 
     let (once, watch, stats, interval_ms_opt, sink_opt) = parse_args();
 
-    let _sink = sink_opt.map(Sink::new);
+    let _sink = match sink_opt {
+        Some(kind) => match Sink::new(kind) {
+            Ok(sink) => {
+                eprintln!("WTG note: sink enabled: {}", sink.filename());
+                Some(sink)
+            }
+            Err(e) => {
+                eprintln!("WTG runtime error: failed to create sink output file: {e}");
+                process::exit(2);
+            }
+        },
+        None => None,
+    };
 
     // Print banner once per run (not on every tick).
     println!("WTG - WhatTheGPU v{}", env!("CARGO_PKG_VERSION"));
