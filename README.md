@@ -5,7 +5,7 @@ Copyright (C) 2026 Adam Hooper
 
 **Tagline:** Honest GPU compute stats for Windows
 
-## Current Status (v0.2.0-beta4 – Empirical Validation Phase)
+## Current Status (v0.2.0-beta4 - Empirical Validation Phase)
 
 WTG is currently focused on empirical NVML telemetry validation under Windows WDDM.  
 Recent testing has identified a driver-branch regression affecting memory-utilization reporting on specific consumer mobile Ampere GPUs (580.88+), not reproduced on tested desktop or professional SKUs.
@@ -52,7 +52,7 @@ See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
   * VRAM used/reserved per PID
   * Power draw, clocks (contextual)
   * Exclude WDDM/Task Manager compute % from “truth” layer
-* **Refresh Rate**: 250–500 ms
+* **Refresh Rate**: 250-500 ms
 * **UI**: Initially TUI (text interface) for truth validation, later minimal egui window
 
 ---
@@ -63,7 +63,16 @@ WTG is currently a command-line proof-of-concept focused on validating NVML-base
 
 ### Current probe/sink branch behavior
 
-This branch includes additional CLI paths for probe, field-value, and sink validation. These are current development behaviors, not release-contract guarantees.
+This branch includes additional CLI paths for probe, field-value, and sink validation. These are current beta 4 development behaviors, not broad release-contract guarantees.
+
+The beta 4 scope is intentionally narrow:
+
+- preserve existing `--once`, `--watch`, and `--stats` behavior
+- add probe-oriented diagnostic output
+- add structured probe CSV output
+- add line-oriented JSONL sink output where currently supported
+- add experimental raw NVML field-value probing through explicit field IDs
+- avoid interpreting raw field IDs as proof of driver causality in code or documentation
 
 ### Modes
 
@@ -91,10 +100,24 @@ This branch includes additional CLI paths for probe, field-value, and sink valid
   Repeatable field ID argument for `--probe-fields`. At least one `--field-id` is required when using `--probe-fields`.
 
 - `--sink jsonl`  
-  Create a timestamped `wtg_sink_*.jsonl` file. JSONL sinks currently write `{"line":"..."}` records for `--once`, non-stats `--watch`, and `--probe`.
+  Create a timestamped `wtg_sink_*.jsonl` file. JSONL sinks currently write `{"line":"..."}` records for supported line-oriented output paths.
 
 - `--sink csv`  
-  Create a timestamped `wtg_sink_*.csv` file. CSV currently writes structured header + row output for `--probe` only. With `--once` or non-stats `--watch`, CSV files are created but no rows are written yet.
+  Create a timestamped `wtg_sink_*.csv` file. CSV currently writes structured header + row output for `--probe` only.
+
+### Sink support matrix
+
+| Mode | `--sink jsonl` | `--sink csv` | Notes |
+| --- | --- | --- | --- |
+| `--probe` | Supported | Supported | CSV emits structured probe records. |
+| `--probe-fields` | Not supported | Not supported | Experimental console-only comparison mode in beta 4. |
+| `--once` | Supported as line-oriented JSONL | Not structured | CSV output is not currently implemented for this mode. |
+| `--watch` | Supported as line-oriented JSONL | Not structured | CSV output is not currently implemented for this mode. |
+| `--stats` | Not supported | Not supported | Stats sink integration is deferred. |
+
+Structured CSV output is currently scoped to `--probe`. `--once --sink csv`, `--watch --sink csv`, and `--stats --sink csv` should not be treated as supported structured CSV modes in beta 4.
+
+`--stats` output is intentionally kept separate from sink output in beta 4. Adding sink integration for `--stats` is deferred so the probe-field work can remain focused on empirical NVML characterization rather than output-format expansion.
 
 ### Probe context fields
 
@@ -168,6 +191,22 @@ field.value: 1280086850
 
 Field-values queries working for supported field IDs show that the field-values API is callable on the same device/session. This does not by itself prove driver causality. Cross-driver comparison still requires capturing the same `--probe` and `--probe-fields` outputs on different NVIDIA driver versions.
 
+### Beta 4 validation target
+
+Before tagging beta 4, validate on Windows NVML hardware:
+
+```powershell
+cargo fmt --check
+cargo test
+cargo build -p wtg-app --release
+.\target\release\wtg.exe --once
+.\target\release\wtg.exe --probe
+.\target\release\wtg.exe --probe --sink jsonl
+.\target\release\wtg.exe --probe --sink csv
+.\target\release\wtg.exe --probe-fields --field-id 74
+.\target\release\wtg.exe --probe-fields --field-id 74 --field-id 78 --field-id 83
+```
+
 ### Examples
 
 One-shot snapshot:
@@ -207,7 +246,7 @@ cargo run -- --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id
 WTG relies on NVIDIA NVML on Windows. Empirical testing shows:
 
 - Drivers prior to ~470 may ship `nvidia-smi` without a usable `nvml.dll`
-- Modern drivers (≥580) consistently expose NVML across tested SKUs
+- Modern drivers (>=580) consistently expose NVML across tested SKUs
 - WTG fails fast when NVML is unavailable and prints an explicit error when possible
 
 ---
@@ -279,7 +318,7 @@ struct Snapshot {
 
 ## Refresh Loop
 
-* Fixed timestep (250–500 ms)
+* Fixed timestep (250-500 ms)
 * No smoothing; snapshots reflect raw, instantaneous utilization
 * Diff snapshots for UI efficiency
 
