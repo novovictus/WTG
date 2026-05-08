@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Adam Hooper
 
 pub(crate) struct ProbeRecord {
+    wtg_version: &'static str,
     gpu_index: u32,
     gpu_name: String,
     gpu_uuid: String,
@@ -17,6 +18,7 @@ pub(crate) struct ProbeRecord {
 impl ProbeRecord {
     pub(crate) fn from_snapshot(s: &wtg_core::nvml::GpuSnapshot) -> Self {
         Self {
+            wtg_version: env!("CARGO_PKG_VERSION"),
             gpu_index: s.index,
             gpu_name: s.name.clone(),
             gpu_uuid: s.uuid.clone(),
@@ -48,6 +50,7 @@ pub(crate) fn format_probe_record(record: &ProbeRecord) -> String {
     format!(
         concat!(
             "[probe] gpu={}\n",
+            "wtg.version: {}\n",
             "gpu.index: {}\n",
             "gpu.name: {}\n",
             "gpu.uuid: {}\n",
@@ -61,6 +64,7 @@ pub(crate) fn format_probe_record(record: &ProbeRecord) -> String {
             "\n"
         ),
         record.gpu_index,
+        record.wtg_version,
         record.gpu_index,
         record.gpu_name,
         record.gpu_uuid,
@@ -92,7 +96,7 @@ fn csv_escape_field(s: &str) -> String {
 }
 
 pub(crate) fn format_probe_csv_header() -> &'static str {
-    "gpu_index,gpu_name,gpu_uuid,temp_c,util_gpu_pct,util_mem_controller_pct,vram_used_mib,vram_total_mib,power_w,power_limit_w"
+    "wtg_version,gpu_index,gpu_name,gpu_uuid,temp_c,util_gpu_pct,util_mem_controller_pct,vram_used_mib,vram_total_mib,power_w,power_limit_w"
 }
 
 pub(crate) fn format_probe_csv_row(record: &ProbeRecord) -> String {
@@ -110,6 +114,7 @@ pub(crate) fn format_probe_csv_row(record: &ProbeRecord) -> String {
         .unwrap_or_else(|| "N/A".to_string());
 
     [
+        record.wtg_version.to_string(),
         record.gpu_index.to_string(),
         record.gpu_name.clone(),
         record.gpu_uuid.clone(),
