@@ -127,7 +127,12 @@ Structured CSV output is currently scoped to `--probe`. `--once --sink csv`, `--
 - `driver.version`
 - `cuda.driver_version`
 - `gpu.compute_mode`
+- `gpu.perf_state`
 - `gpu.pci.bus_id`
+
+`gpu.perf_state` reports the NVML performance state, such as `P0` through `P15` or `Unknown`. `P0` is the highest-performance state. Higher-numbered states are lower-power states. `N/A` means the query was unsupported or failed.
+
+The structured `--probe --sink csv` output includes the same context as CSV columns, including `gpu_perf_state`.
 
 ### Probe field notes
 
@@ -166,6 +171,7 @@ gpu.uuid: GPU-...
 driver.version: 580.88
 cuda.driver_version: 13000
 gpu.compute_mode: Default
+gpu.perf_state: P8
 gpu.pci.bus_id: 00000000:01:00.0
 util.gpu_pct: 0
 util.mem_controller_pct: 100
