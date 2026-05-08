@@ -9,6 +9,8 @@
 //!   --watch                    : Take repeated NVML snapshots, print each tick.
 //!   --watch --interval <ms>    : Same, but set period in milliseconds (default 1000ms).
 //!   --probe                    : Take one NVML snapshot, print probe fields, exit.
+//!   --probe-fields             : Take one NVML snapshot, print requested NVML field values, exit.
+//!   --field-id <u32>           : Repeatable field ID parameter for --probe-fields.
 //!
 //! Optional output mode:
 //!   --stats                    : Print a stable key:value "stats block" format (schema 0).
@@ -28,9 +30,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::info;
 
 mod probe;
+mod probe_fields;
 mod sink;
 
 use probe::{format_probe_csv_header, format_probe_csv_row, format_probe_record, ProbeRecord};
+use probe_fields::{format_field_value, format_probe_fields_snapshot};
 use sink::{Sink, SinkKind};
 
 /// Default sampling interval when `--watch` is enabled.
@@ -117,25 +121,33 @@ fn print_stats_block(s: &wtg_core::nvml::GpuSnapshot) {
 /// Semantics:
 /// - `--once` and `--watch` are mutually exclusive (error if both).
 /// - `--probe` is mutually exclusive with `--once` and `--watch`.
+/// - `--probe-fields` is mutually exclusive with `--once`, `--watch`, and `--probe`.
 /// - `--stats` is an output modifier and requires `--once` or `--watch`.
 /// - `--interval <ms>`:
 ///     - requires a value
 ///     - parsed as u64 milliseconds
 ///     - only used with `--watch`
+/// - `--field-id <u32>`:
+///     - repeatable
+///     - required by `--probe-fields`
+///     - invalid without `--probe-fields`
 /// - Unknown flags are ignored for now (keeps dev friction low during bootstrap).
 fn parse_args() -> (
     bool,        /*once*/
     bool,        /*watch*/
     bool,        /*probe*/
+    bool,        /*probe_fields*/
     bool,        /*stats*/
     Option<u64>, /*interval_ms*/
     Option<SinkKind>,
+    Vec<u32>, /*field_ids*/
 ) {
     let args: Vec<String> = env::args().collect();
 
     let once = args.iter().any(|a| a == "--once");
     let watch = args.iter().any(|a| a == "--watch");
     let probe = args.iter().any(|a| a == "--probe");
+    let probe_fields = args.iter().any(|a| a == "--probe-fields");
     let stats = args.iter().any(|a| a == "--stats");
 
     // Hard guard: mutually exclusive modes.
@@ -146,6 +158,13 @@ fn parse_args() -> (
 
     if probe && (once || watch) {
         eprintln!("WTG usage error: --probe is mutually exclusive with --once and --watch.");
+        process::exit(2);
+    }
+
+    if probe_fields && (once || watch || probe) {
+        eprintln!(
+            "WTG usage error: --probe-fields is mutually exclusive with --once, --watch, and --probe."
+        );
         process::exit(2);
     }
 
@@ -160,6 +179,7 @@ fn parse_args() -> (
     // We intentionally *do not* accept `--interval` without a value.
     let mut interval_ms: Option<u64> = None;
     let mut sink: Option<SinkKind> = None;
+    let mut field_ids: Vec<u32> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--interval" {
@@ -178,6 +198,24 @@ fn parse_args() -> (
             });
 
             interval_ms = Some(parsed);
+            i += 2;
+            continue;
+        }
+
+        if args[i] == "--field-id" {
+            // Require a next token.
+            if i + 1 >= args.len() {
+                eprintln!("WTG usage error: --field-id requires a u32 field ID value.");
+                process::exit(2);
+            }
+
+            let v = &args[i + 1];
+            let parsed = v.parse::<u32>().unwrap_or_else(|_| {
+                eprintln!("WTG usage error: --field-id value must be a u32 integer. Got: {v}");
+                process::exit(2);
+            });
+
+            field_ids.push(parsed);
             i += 2;
             continue;
         }
@@ -205,7 +243,26 @@ fn parse_args() -> (
         i += 1;
     }
 
-    (once, watch, probe, stats, interval_ms, sink)
+    if !probe_fields && !field_ids.is_empty() {
+        eprintln!("WTG usage error: --field-id requires --probe-fields.");
+        process::exit(2);
+    }
+
+    if probe_fields && field_ids.is_empty() {
+        eprintln!("WTG usage error: --probe-fields requires at least one --field-id <u32>.");
+        process::exit(2);
+    }
+
+    (
+        once,
+        watch,
+        probe,
+        probe_fields,
+        stats,
+        interval_ms,
+        sink,
+        field_ids,
+    )
 }
 
 fn main() {
@@ -214,7 +271,39 @@ fn main() {
 
     info!("WTG v{} initializing...", env!("CARGO_PKG_VERSION"));
 
-    let (once, watch, probe, stats, interval_ms_opt, sink_opt) = parse_args();
+    let (once, watch, probe, probe_fields, stats, interval_ms_opt, sink_opt, field_ids) =
+        parse_args();
+
+    // Mode: `--probe-fields`
+    if probe_fields {
+        let ctx = match wtg_core::nvml::init_context() {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                eprintln!("WTG --probe-fields init failed: {e}");
+                process::exit(2);
+            }
+        };
+
+        match wtg_core::nvml::snapshot_all_with_ctx(&ctx) {
+            Ok(snaps) => {
+                for s in snaps.iter() {
+                    print!("{}", format_probe_fields_snapshot(s));
+
+                    let fields = wtg_core::nvml::field_values::query_field_values_for_gpu(
+                        &ctx, s.index, &field_ids,
+                    );
+                    for field in fields.iter() {
+                        print!("{}", format_field_value(s.index, field));
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("WTG --probe-fields failed: {e}");
+                process::exit(2);
+            }
+        }
+        return;
+    }
 
     let _sink = match sink_opt {
         Some(kind) => match Sink::new(kind) {

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Adam Hooper
+pub mod field_values;
+
 use nvml_wrapper::{enum_wrappers::device::TemperatureSensor, Nvml};
 use std::fmt;
 
