@@ -1,3 +1,5 @@
+#requires -Version 7.0
+
 param(
     [string]$OutputRoot = "artifacts/validation",
     [string]$Label = "",
@@ -89,12 +91,6 @@ function Format-CommandLine {
     }
 
     return ($parts -join " ")
-}
-
-function Format-CmdPath {
-    param([string]$Path)
-
-    return '"' + ($Path -replace '"', '""') + '"'
 }
 
 function Write-AsciiFile {
@@ -191,7 +187,6 @@ function Invoke-CapturedCommand {
     $started = $false
     $harnessError = ""
     $copiedSinks = @()
-    $cmdLine = "{0} 1> {1} 2> {2}" -f $displayCommand, (Format-CmdPath -Path $stdoutPath), (Format-CmdPath -Path $stderrPath)
 
     Write-AsciiFile -Path $commandPath -Lines @($displayCommand)
 
@@ -200,16 +195,15 @@ function Invoke-CapturedCommand {
     }
 
     try {
-        $processStartInfo = New-Object System.Diagnostics.ProcessStartInfo
-        $processStartInfo.FileName = "cmd.exe"
-        $processStartInfo.Arguments = "/s /c " + $cmdLine
-        $processStartInfo.WorkingDirectory = $RepoRoot
-        $processStartInfo.UseShellExecute = $false
-        $processStartInfo.CreateNoWindow = $true
+        $process = Start-Process `
+            -FilePath $Command.FileName `
+            -ArgumentList $Command.Arguments `
+            -WorkingDirectory $RepoRoot `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath `
+            -NoNewWindow `
+            -PassThru
 
-        $process = New-Object System.Diagnostics.Process
-        $process.StartInfo = $processStartInfo
-        [void]$process.Start()
         $started = $true
 
         if ($Command.TimeoutSeconds -gt 0) {
@@ -218,12 +212,8 @@ function Invoke-CapturedCommand {
                 $timedOut = $true
 
                 try {
-                    & taskkill.exe /PID $process.Id /T /F > $null 2>&1
+                    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
                 } catch {
-                    try {
-                        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-                    } catch {
-                    }
                 }
 
                 try {
