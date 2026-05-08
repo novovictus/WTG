@@ -51,7 +51,7 @@ See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
   * Per-process memory attribution and NVML-reported utilization metrics
   * VRAM used/reserved per PID
   * Power draw, clocks (contextual)
-  * Exclude WDDM/Task Manager compute % from “truth” layer
+  * Exclude WDDM/Task Manager compute % from "truth" layer
 * **Refresh Rate**: 250-500 ms
 * **UI**: Initially TUI (text interface) for truth validation, later minimal egui window
 

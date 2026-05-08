@@ -75,7 +75,7 @@ Do not commit generated sink files, validation bundles, backup archives, or loca
 
 ---
 
-## Current validation smoke test
+## Current validation test
 
 Run after code or documentation changes that could affect CLI behavior:
 
@@ -239,7 +239,7 @@ Do not version/tag until:
 - The harness is repeatable.
 - At least one full artifact capture is preserved.
 - README and internal instructions match current behavior.
-- `cargo build` and smoke tests pass from a clean worktree.
+- `cargo build` and validation checks pass from a clean worktree.
 
 ---
 

@@ -1,4 +1,4 @@
-## Task Manager vs WTG — Abstraction Model (Validated)
+## Task Manager vs WTG - Abstraction Model (Validated)
 
 This section explains where **WTG** sits in the OS / driver stack relative to **Windows Task Manager**, and why the two tools can legitimately report different-looking GPU behavior while observing the *same hardware*.
 
@@ -36,7 +36,7 @@ WDDM Scheduler & Accounting              │
 
 ---
 
-## What is shared (no smoke)
+## What is shared
 
 - **Single kernel driver**: Both Task Manager and WTG ultimately rely on the *same* NVIDIA kernel‑mode GPU driver (`nvlddmkm.sys`).
 - **Same hardware**: Both paths terminate at the same physical GPU.
@@ -85,7 +85,7 @@ WTG answers the question:
 
 ---
 
-## “Closer to the kernel” — precise meaning
+## Closer to the kernel - precise meaning
 
 WTG is **closer in abstraction distance**, not closer in privilege.
 
@@ -119,4 +119,3 @@ WTG is not a replacement for Task Manager.
 It exists because OS‑level abstractions intentionally hide causality. When GPU workloads are memory‑, latency‑, or scheduling‑bound, Task Manager can appear idle while the GPU is working correctly. WTG explains *why*.
 
 This is the technical justification for WTG’s scope and for its focus on stable, driver‑truth telemetry rather than OS‑derived utilization estimates.
-

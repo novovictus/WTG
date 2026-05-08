@@ -1,8 +1,8 @@
-#requires -Version 7.0
+# WTG drop-folder probe-fields validation harness.
+# Place this script next to wtg.exe and run it from the drop folder.
+# PowerShell 5.1 compatible. ASCII output only.
 
 param(
-    [string]$OutputRoot = "artifacts/validation",
-    [string]$Label = "",
     [switch]$IncludeWatch,
     [int]$WatchSeconds = 5
 )
@@ -11,58 +11,16 @@ $ErrorActionPreference = "Stop"
 $HarnessName = "wtg_validate_probe_fields"
 
 function ConvertTo-SafePathSegment {
-    param(
-        [string]$Value,
-        [string]$Fallback
-    )
+    param([string]$Value)
 
     if ([string]::IsNullOrWhiteSpace($Value)) {
-        return $Fallback
+        return ""
     }
 
-    $safe = $Value.Trim() -replace '[^A-Za-z0-9._-]+', '-'
+    $safe = $Value.Trim() -replace '[^A-Za-z0-9._-]+', "-"
     $safe = $safe.Trim(".-_".ToCharArray())
 
-    if ([string]::IsNullOrWhiteSpace($safe)) {
-        return $Fallback
-    }
-
     return $safe
-}
-
-function Get-RepoRoot {
-    $current = (Get-Location).Path
-
-    try {
-        $rootLines = & git rev-parse --show-toplevel 2>$null
-        if ($LASTEXITCODE -eq 0 -and $rootLines) {
-            $root = [string]($rootLines | Select-Object -First 1)
-            if (-not [string]::IsNullOrWhiteSpace($root)) {
-                return (Resolve-Path -LiteralPath $root.Trim()).Path
-            }
-        }
-    } catch {
-    }
-
-    return $current
-}
-
-function Get-CommandValue {
-    param(
-        [string]$FileName,
-        [string[]]$Arguments,
-        [string]$Fallback
-    )
-
-    try {
-        $lines = & $FileName @Arguments 2>$null
-        if ($LASTEXITCODE -eq 0 -and $lines) {
-            return ([string]($lines | Select-Object -First 1)).Trim()
-        }
-    } catch {
-    }
-
-    return $Fallback
 }
 
 function Format-CommandPart {
@@ -93,6 +51,12 @@ function Format-CommandLine {
     return ($parts -join " ")
 }
 
+function Format-ProcessArguments {
+    param([string[]]$Arguments)
+
+    return $Arguments
+}
+
 function Write-AsciiFile {
     param(
         [string]$Path,
@@ -107,21 +71,21 @@ function Write-AsciiFile {
     $Lines | Out-File -FilePath $Path -Encoding ascii -Width 4096
 }
 
-function Get-RootSinkFiles {
-    param([string]$RepoRoot)
+function Get-DropSinkFiles {
+    param([string]$RunFolder)
 
     $files = @()
     foreach ($pattern in @("wtg_sink_*.csv", "wtg_sink_*.jsonl")) {
-        $files += @(Get-ChildItem -LiteralPath $RepoRoot -Filter $pattern -File -ErrorAction SilentlyContinue)
+        $files += @(Get-ChildItem -LiteralPath $RunFolder -Filter $pattern -File -ErrorAction SilentlyContinue)
     }
 
     return $files
 }
 
-function Remove-RootSinkFiles {
-    param([string]$RepoRoot)
+function Remove-DropSinkFiles {
+    param([string]$RunFolder)
 
-    foreach ($file in @(Get-RootSinkFiles -RepoRoot $RepoRoot)) {
+    foreach ($file in @(Get-DropSinkFiles -RunFolder $RunFolder)) {
         try {
             Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
         } catch {
@@ -129,15 +93,15 @@ function Remove-RootSinkFiles {
     }
 }
 
-function Copy-RootSinkFiles {
+function Copy-DropSinkFiles {
     param(
-        [string]$RepoRoot,
+        [string]$RunFolder,
         [string]$OutputDir,
         [string]$Prefix
     )
 
     $copied = @()
-    foreach ($file in @(Get-RootSinkFiles -RepoRoot $RepoRoot)) {
+    foreach ($file in @(Get-DropSinkFiles -RunFolder $RunFolder)) {
         $destination = Join-Path $OutputDir ("{0}_{1}" -f $Prefix, $file.Name)
         Copy-Item -LiteralPath $file.FullName -Destination $destination -Force
         $copied += $destination
@@ -151,6 +115,7 @@ function New-CommandSpec {
         [string]$Step,
         [string]$Name,
         [string]$FileName,
+        [string]$DisplayFileName,
         [string[]]$Arguments,
         [bool]$Sink,
         [string]$SinkPrefix,
@@ -162,6 +127,7 @@ function New-CommandSpec {
         Step = $Step
         Name = $Name
         FileName = $FileName
+        DisplayFileName = $DisplayFileName
         Arguments = $Arguments
         Sink = $Sink
         SinkPrefix = $SinkPrefix
@@ -173,7 +139,7 @@ function New-CommandSpec {
 function Invoke-CapturedCommand {
     param(
         [pscustomobject]$Command,
-        [string]$RepoRoot,
+        [string]$RunFolder,
         [string]$OutputDir
     )
 
@@ -181,32 +147,32 @@ function Invoke-CapturedCommand {
     $stderrPath = Join-Path $OutputDir ($Command.Step + ".stderr.txt")
     $commandPath = Join-Path $OutputDir ($Command.Step + ".command.txt")
     $exitPath = Join-Path $OutputDir ($Command.Step + ".exit-code.txt")
-    $displayCommand = Format-CommandLine -FileName $Command.FileName -Arguments $Command.Arguments
+    $displayCommand = Format-CommandLine -FileName $Command.DisplayFileName -Arguments $Command.Arguments
     $exitCode = 127
     $timedOut = $false
     $started = $false
     $harnessError = ""
     $copiedSinks = @()
+    $process = $null
 
     Write-AsciiFile -Path $commandPath -Lines @($displayCommand)
 
     if ($Command.Sink) {
-        Remove-RootSinkFiles -RepoRoot $RepoRoot
+        Remove-DropSinkFiles -RunFolder $RunFolder
     }
 
     try {
-        $process = Start-Process `
-            -FilePath $Command.FileName `
-            -ArgumentList $Command.Arguments `
-            -WorkingDirectory $RepoRoot `
-            -RedirectStandardOutput $stdoutPath `
-            -RedirectStandardError $stderrPath `
-            -NoNewWindow `
-            -PassThru
-
-        $started = $true
-
         if ($Command.TimeoutSeconds -gt 0) {
+            $process = Start-Process `
+                -FilePath $Command.FileName `
+                -ArgumentList (Format-ProcessArguments -Arguments $Command.Arguments) `
+                -WorkingDirectory $RunFolder `
+                -RedirectStandardOutput $stdoutPath `
+                -RedirectStandardError $stderrPath `
+                -NoNewWindow `
+                -PassThru
+
+            $started = $true
             $timeoutMilliseconds = [int]([Math]::Max(1, $Command.TimeoutSeconds) * 1000)
             if (-not $process.WaitForExit($timeoutMilliseconds)) {
                 $timedOut = $true
@@ -215,24 +181,40 @@ function Invoke-CapturedCommand {
                     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
                 } catch {
                 }
+            }
 
+            try {
+                $process.WaitForExit()
+            } catch {
+            }
+
+            if ($timedOut) {
+                $exitCode = -1
+            } else {
                 try {
-                    $process.WaitForExit()
+                    $exitCode = $process.ExitCode
                 } catch {
+                    $exitCode = 127
                 }
             }
         } else {
-            $process.WaitForExit()
-        }
+            $process = Start-Process `
+                -FilePath $Command.FileName `
+                -ArgumentList (Format-ProcessArguments -Arguments $Command.Arguments) `
+                -WorkingDirectory $RunFolder `
+                -RedirectStandardOutput $stdoutPath `
+                -RedirectStandardError $stderrPath `
+                -NoNewWindow `
+                -Wait `
+                -PassThru
 
-        try {
-            $exitCode = $process.ExitCode
-        } catch {
-            $exitCode = 127
-        }
+            $started = $true
 
-        if ($timedOut) {
-            $exitCode = -1
+            try {
+                $exitCode = $process.ExitCode
+            } catch {
+                $exitCode = 127
+            }
         }
     } catch {
         $harnessError = $_.Exception.Message
@@ -249,8 +231,8 @@ function Invoke-CapturedCommand {
 
     if ($Command.Sink) {
         Start-Sleep -Milliseconds 300
-        $copiedSinks = @(Copy-RootSinkFiles -RepoRoot $RepoRoot -OutputDir $OutputDir -Prefix $Command.SinkPrefix)
-        Remove-RootSinkFiles -RepoRoot $RepoRoot
+        $copiedSinks = @(Copy-DropSinkFiles -RunFolder $RunFolder -OutputDir $OutputDir -Prefix $Command.SinkPrefix)
+        Remove-DropSinkFiles -RunFolder $RunFolder
     }
 
     $exitLines = @(
@@ -339,45 +321,50 @@ if ($WatchSeconds -lt 1) {
     $WatchSeconds = 1
 }
 
-$RepoRoot = Get-RepoRoot
-$Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$ComputerName = if ([string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) { "unknown-computer" } else { $env:COMPUTERNAME }
-$SafeComputerName = ConvertTo-SafePathSegment -Value $ComputerName -Fallback "unknown-computer"
-$SafeLabel = ConvertTo-SafePathSegment -Value $Label -Fallback "unlabeled"
-
-if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
-    $OutputRootPath = $OutputRoot
-} else {
-    $OutputRootPath = Join-Path $RepoRoot $OutputRoot
+$ScriptPath = $PSCommandPath
+if ([string]::IsNullOrWhiteSpace($ScriptPath)) {
+    $ScriptPath = $MyInvocation.MyCommand.Path
 }
 
-$OutputRootPath = (New-Item -ItemType Directory -Path $OutputRootPath -Force).FullName
-$OutputDir = Join-Path $OutputRootPath ("{0}_{1}_{2}" -f $Timestamp, $SafeComputerName, $SafeLabel)
+$ScriptPath = (Resolve-Path -LiteralPath $ScriptPath).Path
+$RunFolder = (Resolve-Path -LiteralPath (Split-Path -Parent $ScriptPath)).Path
+$ExePath = Join-Path $RunFolder "wtg.exe"
+
+if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
+    throw "wtg.exe was not found next to this script. Expected: $ExePath"
+}
+
+$Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$ComputerName = $env:COMPUTERNAME
+$SafeComputerName = ConvertTo-SafePathSegment -Value $ComputerName
+
+if ([string]::IsNullOrWhiteSpace($SafeComputerName)) {
+    $OutputName = "validate_probe_fields_{0}" -f $Timestamp
+} else {
+    $OutputName = "validate_probe_fields_{0}_{1}" -f $Timestamp, $SafeComputerName
+}
+
+$OutputDir = Join-Path $RunFolder $OutputName
 $OutputDir = (New-Item -ItemType Directory -Path $OutputDir -Force).FullName
+
+$ExeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash
 
 $oldNoColor = $env:NO_COLOR
 $oldCliColor = $env:CLICOLOR
-$oldCargoTermColor = $env:CARGO_TERM_COLOR
 $env:NO_COLOR = "1"
 $env:CLICOLOR = "0"
-$env:CARGO_TERM_COLOR = "never"
 
 $commands = @()
-$commands += New-CommandSpec -Step "01_git_status" -Name "git_status" -FileName "git" -Arguments @("status", "-sb") -Sink $false -SinkPrefix "" -TimeoutSeconds 0 -ExpectedStop $false
-$commands += New-CommandSpec -Step "02_git_log" -Name "git_log" -FileName "git" -Arguments @("log", "--oneline", "--decorate", "-12") -Sink $false -SinkPrefix "" -TimeoutSeconds 0 -ExpectedStop $false
-$commands += New-CommandSpec -Step "03_cargo_build" -Name "build" -FileName "cargo" -Arguments @("build") -Sink $false -SinkPrefix "" -TimeoutSeconds 0 -ExpectedStop $false
-$commands += New-CommandSpec -Step "04_probe" -Name "probe" -FileName "cargo" -Arguments @("run", "--", "--probe") -Sink $false -SinkPrefix "" -TimeoutSeconds 0 -ExpectedStop $false
-$commands += New-CommandSpec -Step "05_probe_sink_csv" -Name "probe_csv" -FileName "cargo" -Arguments @("run", "--", "--probe", "--sink", "csv") -Sink $true -SinkPrefix "05_probe_sink_csv" -TimeoutSeconds 0 -ExpectedStop $false
-$commands += New-CommandSpec -Step "06_probe_fields" -Name "probe_fields" -FileName "cargo" -Arguments @("run", "--", "--probe-fields", "--field-id", "74", "--field-id", "78", "--field-id", "83", "--field-id", "94", "--field-id", "95") -Sink $false -SinkPrefix "" -TimeoutSeconds 0 -ExpectedStop $false
-$commands += New-CommandSpec -Step "07_once" -Name "once" -FileName "cargo" -Arguments @("run", "--", "--once") -Sink $false -SinkPrefix "" -TimeoutSeconds 0 -ExpectedStop $false
-$commands += New-CommandSpec -Step "08_once_stats" -Name "once_stats" -FileName "cargo" -Arguments @("run", "--", "--once", "--stats") -Sink $false -SinkPrefix "" -TimeoutSeconds 0 -ExpectedStop $false
+$commands += New-CommandSpec -Step "01_probe" -Name "probe" -FileName $ExePath -DisplayFileName ".\wtg.exe" -Arguments @("--probe") -Sink $false -SinkPrefix "" -TimeoutSeconds 0 -ExpectedStop $false
+$commands += New-CommandSpec -Step "02_probe_sink_csv" -Name "probe_csv" -FileName $ExePath -DisplayFileName ".\wtg.exe" -Arguments @("--probe", "--sink", "csv") -Sink $true -SinkPrefix "02_probe_sink_csv" -TimeoutSeconds 0 -ExpectedStop $false
+$commands += New-CommandSpec -Step "03_probe_fields" -Name "probe_fields" -FileName $ExePath -DisplayFileName ".\wtg.exe" -Arguments @("--probe-fields", "--field-id", "74", "--field-id", "78", "--field-id", "83", "--field-id", "94", "--field-id", "95") -Sink $false -SinkPrefix "" -TimeoutSeconds 0 -ExpectedStop $false
+$commands += New-CommandSpec -Step "04_once" -Name "once" -FileName $ExePath -DisplayFileName ".\wtg.exe" -Arguments @("--once") -Sink $false -SinkPrefix "" -TimeoutSeconds 0 -ExpectedStop $false
+$commands += New-CommandSpec -Step "05_once_stats" -Name "once_stats" -FileName $ExePath -DisplayFileName ".\wtg.exe" -Arguments @("--once", "--stats") -Sink $false -SinkPrefix "" -TimeoutSeconds 0 -ExpectedStop $false
 
 if ($IncludeWatch) {
-    $commands += New-CommandSpec -Step "09_watch_jsonl" -Name "watch" -FileName "cargo" -Arguments @("run", "--", "--watch", "--interval", "1000", "--sink", "jsonl") -Sink $true -SinkPrefix "09_watch_jsonl" -TimeoutSeconds $WatchSeconds -ExpectedStop $true
+    $commands += New-CommandSpec -Step "06_watch_jsonl" -Name "watch" -FileName $ExePath -DisplayFileName ".\wtg.exe" -Arguments @("--watch", "--interval", "1000", "--sink", "jsonl") -Sink $true -SinkPrefix "06_watch_jsonl" -TimeoutSeconds $WatchSeconds -ExpectedStop $true
 }
 
-$GitBranch = Get-CommandValue -FileName "git" -Arguments @("branch", "--show-current") -Fallback "unknown"
-$GitHead = Get-CommandValue -FileName "git" -Arguments @("rev-parse", "HEAD") -Fallback "unknown"
 $ManifestPath = Join-Path $OutputDir "manifest.txt"
 $SummaryPath = Join-Path $OutputDir "summary.txt"
 
@@ -385,17 +372,17 @@ $manifestLines = @(
     "harness name: $HarnessName",
     "timestamp: $Timestamp",
     "computer name: $ComputerName",
-    "label: $Label",
-    "safe label: $SafeLabel",
+    "script path: $ScriptPath",
+    "run folder: $RunFolder",
     "output directory: $OutputDir",
-    "git branch: $GitBranch",
-    "git HEAD: $GitHead",
+    "wtg.exe path: $ExePath",
+    "wtg.exe sha256: $ExeHash",
     "",
     "command list:"
 )
 
 foreach ($command in $commands) {
-    $manifestLines += ("{0}: {1}" -f $command.Step, (Format-CommandLine -FileName $command.FileName -Arguments $command.Arguments))
+    $manifestLines += ("{0}: {1}" -f $command.Step, (Format-CommandLine -FileName $command.DisplayFileName -Arguments $command.Arguments))
 }
 
 Write-AsciiFile -Path $ManifestPath -Lines $manifestLines
@@ -404,16 +391,14 @@ $results = @()
 
 try {
     foreach ($command in $commands) {
-        $results += Invoke-CapturedCommand -Command $command -RepoRoot $RepoRoot -OutputDir $OutputDir
+        $results += Invoke-CapturedCommand -Command $command -RunFolder $RunFolder -OutputDir $OutputDir
     }
 } finally {
-    Remove-RootSinkFiles -RepoRoot $RepoRoot
+    Remove-DropSinkFiles -RunFolder $RunFolder
     $env:NO_COLOR = $oldNoColor
     $env:CLICOLOR = $oldCliColor
-    $env:CARGO_TERM_COLOR = $oldCargoTermColor
 }
 
-$buildResult = Get-Result -Results $results -Name "build"
 $probeResult = Get-Result -Results $results -Name "probe"
 $probeCsvResult = Get-Result -Results $results -Name "probe_csv"
 $probeFieldsResult = Get-Result -Results $results -Name "probe_fields"
@@ -422,7 +407,8 @@ $onceStatsResult = Get-Result -Results $results -Name "once_stats"
 $watchResult = Get-Result -Results $results -Name "watch"
 
 $summaryLines = @(
-    "build: $(if ($null -ne $buildResult -and $buildResult.ExitCode -eq 0) { 'pass' } else { 'fail' })",
+    "exe path: $ExePath",
+    "exe sha256: $ExeHash",
     "probe captured: $(Format-YesNo -Value (Test-LogCaptured -Result $probeResult))",
     "probe CSV captured: $(Format-YesNo -Value (Test-SinkCaptured -Result $probeCsvResult))",
     "probe-fields captured: $(Format-YesNo -Value (Test-LogCaptured -Result $probeFieldsResult))",

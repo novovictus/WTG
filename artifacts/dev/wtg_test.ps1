@@ -48,7 +48,7 @@ $cs   = Get-CimInstance -ClassName Win32_ComputerSystem
 $bios = Get-CimInstance -ClassName Win32_BIOS
 $bb   = Get-CimInstance -ClassName Win32_BaseBoard
 
-# GPU identity (CIM) — query once
+# GPU identity (CIM) - query once
 $vc = Get-CimInstance -ClassName Win32_VideoController |
       Where-Object { $_.Name -match "NVIDIA" } |
       Select-Object -First 1
