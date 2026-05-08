@@ -160,7 +160,7 @@ fn format_probe_block(s: &wtg_core::nvml::GpuSnapshot) -> String {
             "gpu.uuid: {}\n",
             "temp.c: {}\n",
             "util.gpu_pct: {}\n",
-            "util.mem_pct: {}\n",
+            "util.mem_controller_pct: {}\n",
             "vram.used_mib: {}\n",
             "vram.total_mib: {}\n",
             "power.w: {}\n",
