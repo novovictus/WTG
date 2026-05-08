@@ -61,6 +61,10 @@ See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
 
 WTG is currently a command-line proof-of-concept focused on validating NVML-based GPU telemetry on Windows.
 
+### Current probe/sink branch behavior
+
+This branch includes additional CLI paths for probe and sink validation. These are current development behaviors, not release-contract guarantees.
+
 ### Modes
 
 - `--once`  
@@ -74,12 +78,48 @@ WTG is currently a command-line proof-of-concept focused on validating NVML-base
   Default: `1000`  
   Only applies when `--watch` is specified.
 
+- `--stats`  
+  Print the stable key:value stats format. Requires `--once` or `--watch`.
+
+- `--probe`  
+  Capture one snapshot and print a minimal probe block for field validation.
+
+- `--sink jsonl`  
+  Create a timestamped `wtg_sink_*.jsonl` file. JSONL sinks currently write `{"line":"..."}` records for `--once`, non-stats `--watch`, and `--probe`.
+
+- `--sink csv`  
+  Create a timestamped `wtg_sink_*.csv` file. CSV currently writes structured header + row output for `--probe` only. With `--once` or non-stats `--watch`, CSV files are created but no rows are written yet.
+
+### Probe field notes
+
+- `util.mem_controller_pct` is NVML memory-controller utilization, not VRAM occupancy.
+- VRAM occupancy is reported separately as `vram.used_mib` / `vram.total_mib`.
+- On some Windows WDDM / driver combinations, NVML memory utilization may report `100%` at idle.
+
 ### Examples
 
 One-shot snapshot:
 
 ```powershell
 .\wtg.exe --once
+```
+
+Probe snapshot:
+
+```powershell
+.\wtg.exe --probe
+```
+
+Probe CSV sink:
+
+```powershell
+.\wtg.exe --probe --sink csv
+```
+
+Probe JSONL sink:
+
+```powershell
+.\wtg.exe --probe --sink jsonl
 ```
 
 ---
