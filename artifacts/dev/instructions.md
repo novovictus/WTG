@@ -9,7 +9,7 @@ Branch: `probe-fields`
 
 Current focus: repeatable empirical validation of NVML memory-utilization behavior under Windows WDDM.
 
-This branch is no longer in the original CFP/package-freeze state. The previous v0.1.2/v0.2.0-beta2 task list has been completed or superseded. Current work is centered on validating and documenting the probe/probe-fields instrumentation before deciding whether this branch becomes `v0.2.0-beta4`.
+This branch is no longer in the original CFP/package-freeze state. The previous v0.1.2/v0.2.0-beta2 task list has been completed or superseded. Current work is centered on validating and documenting the probe/probe-fields instrumentation as the `v0.2.0-beta4` probe-fields checkpoint.
 
 Current validated capabilities:
 
@@ -232,7 +232,7 @@ Stop after several ticks and preserve the JSONL records.
 4. Compare same-driver behavior across mobile 3080 Laptop and desktop 3060 Ti.
 5. If possible, repeat across a known-good older driver branch and a known-bad newer branch.
 6. Update `artifacts/test-matrix/matrix.md` with results.
-7. Decide whether this branch becomes `v0.2.0-beta4`.
+7. Use this branch as the `v0.2.0-beta4` probe-fields checkpoint before adding the repeatable harness.
 
 Do not version/tag until:
 
