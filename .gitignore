@@ -27,3 +27,7 @@ wtg_sink_*.csv
 wtg_sink_*.jsonl
 artifacts/validation/*
 !artifacts/validation/.gitkeep
+
+# generated package artifacts
+artifacts/packages/*
+!artifacts/packages/.gitkeep
