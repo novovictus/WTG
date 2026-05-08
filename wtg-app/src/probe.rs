@@ -9,6 +9,7 @@ pub(crate) struct ProbeRecord {
     driver_version: String,
     cuda_driver_version: String,
     gpu_compute_mode: String,
+    gpu_perf_state: String,
     gpu_pci_bus_id: String,
     temp_c: Option<u32>,
     util_gpu_pct: u32,
@@ -32,6 +33,7 @@ impl ProbeRecord {
             driver_version: context.driver_version,
             cuda_driver_version: context.cuda_driver_version,
             gpu_compute_mode: context.compute_mode,
+            gpu_perf_state: context.perf_state,
             gpu_pci_bus_id: context.pci_bus_id,
             temp_c: s.temp_c,
             util_gpu_pct: s.gpu_util_pct,
@@ -68,6 +70,7 @@ pub(crate) fn format_probe_record(record: &ProbeRecord) -> String {
             "driver.version: {}\n",
             "cuda.driver_version: {}\n",
             "gpu.compute_mode: {}\n",
+            "gpu.perf_state: {}\n",
             "gpu.pci.bus_id: {}\n",
             "temp.c: {}\n",
             "util.gpu_pct: {}\n",
@@ -86,6 +89,7 @@ pub(crate) fn format_probe_record(record: &ProbeRecord) -> String {
         record.driver_version,
         record.cuda_driver_version,
         record.gpu_compute_mode,
+        record.gpu_perf_state,
         record.gpu_pci_bus_id,
         temp_c,
         record.util_gpu_pct,
@@ -115,7 +119,7 @@ fn csv_escape_field(s: &str) -> String {
 }
 
 pub(crate) fn format_probe_csv_header() -> &'static str {
-    "wtg_version,gpu_index,gpu_name,gpu_uuid,driver_version,cuda_driver_version,gpu_compute_mode,gpu_pci_bus_id,temp_c,util_gpu_pct,util_mem_controller_pct,vram_used_mib,vram_total_mib,power_w,power_limit_w"
+    "wtg_version,gpu_index,gpu_name,gpu_uuid,driver_version,cuda_driver_version,gpu_compute_mode,gpu_perf_state,gpu_pci_bus_id,temp_c,util_gpu_pct,util_mem_controller_pct,vram_used_mib,vram_total_mib,power_w,power_limit_w"
 }
 
 pub(crate) fn format_probe_csv_row(record: &ProbeRecord) -> String {
@@ -140,6 +144,7 @@ pub(crate) fn format_probe_csv_row(record: &ProbeRecord) -> String {
         record.driver_version.clone(),
         record.cuda_driver_version.clone(),
         record.gpu_compute_mode.clone(),
+        record.gpu_perf_state.clone(),
         record.gpu_pci_bus_id.clone(),
         temp_c,
         record.util_gpu_pct.to_string(),
