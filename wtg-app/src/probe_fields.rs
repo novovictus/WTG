@@ -3,16 +3,21 @@
 
 use wtg_core::nvml::{
     field_values::{FieldQueryStatus, NvmlFieldValue},
+    probe_context::GpuProbeContext,
     GpuSnapshot,
 };
 
-pub(crate) fn format_probe_fields_snapshot(s: &GpuSnapshot) -> String {
+pub(crate) fn format_probe_fields_snapshot(s: &GpuSnapshot, context: &GpuProbeContext) -> String {
     format!(
         concat!(
             "[probe-fields] gpu={}\n",
             "gpu.index: {}\n",
             "gpu.name: {}\n",
             "gpu.uuid: {}\n",
+            "driver.version: {}\n",
+            "cuda.driver_version: {}\n",
+            "gpu.compute_mode: {}\n",
+            "gpu.pci.bus_id: {}\n",
             "util.gpu_pct: {}\n",
             "util.mem_controller_pct: {}\n",
             "vram.used_mib: {}\n",
@@ -23,6 +28,10 @@ pub(crate) fn format_probe_fields_snapshot(s: &GpuSnapshot) -> String {
         s.index,
         s.name,
         s.uuid,
+        context.driver_version,
+        context.cuda_driver_version,
+        context.compute_mode,
+        context.pci_bus_id,
         s.gpu_util_pct,
         s.mem_util_pct,
         crate::bytes_to_mib(s.mem_used_bytes),

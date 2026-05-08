@@ -287,7 +287,11 @@ fn main() {
         match wtg_core::nvml::snapshot_all_with_ctx(&ctx) {
             Ok(snaps) => {
                 for s in snaps.iter() {
-                    print!("{}", format_probe_fields_snapshot(s));
+                    let context =
+                        wtg_core::nvml::probe_context::query_probe_context_for_gpu_with_ctx(
+                            &ctx, s.index,
+                        );
+                    print!("{}", format_probe_fields_snapshot(s, &context));
 
                     let fields = wtg_core::nvml::field_values::query_field_values_for_gpu(
                         &ctx, s.index, &field_ids,
@@ -323,9 +327,18 @@ fn main() {
     if probe {
         match wtg_core::nvml::snapshot_all() {
             Ok(snaps) => {
+                let probe_context_ctx = wtg_core::nvml::init_context().ok();
                 let mut wrote_csv_header = false;
                 for s in snaps.iter() {
-                    let record = ProbeRecord::from_snapshot(s);
+                    let context = match &probe_context_ctx {
+                        Some(ctx) => {
+                            wtg_core::nvml::probe_context::query_probe_context_for_gpu_with_ctx(
+                                ctx, s.index,
+                            )
+                        }
+                        None => wtg_core::nvml::probe_context::GpuProbeContext::unavailable(),
+                    };
+                    let record = ProbeRecord::from_snapshot(s, context);
                     let block = format_probe_record(&record);
                     print!("{block}");
                     if let Some(sink) = &_sink {

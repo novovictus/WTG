@@ -6,6 +6,10 @@ pub(crate) struct ProbeRecord {
     gpu_index: u32,
     gpu_name: String,
     gpu_uuid: String,
+    driver_version: String,
+    cuda_driver_version: String,
+    gpu_compute_mode: String,
+    gpu_pci_bus_id: String,
     temp_c: Option<u32>,
     util_gpu_pct: u32,
     util_mem_controller_pct: u32,
@@ -16,12 +20,19 @@ pub(crate) struct ProbeRecord {
 }
 
 impl ProbeRecord {
-    pub(crate) fn from_snapshot(s: &wtg_core::nvml::GpuSnapshot) -> Self {
+    pub(crate) fn from_snapshot(
+        s: &wtg_core::nvml::GpuSnapshot,
+        context: wtg_core::nvml::probe_context::GpuProbeContext,
+    ) -> Self {
         Self {
             wtg_version: env!("CARGO_PKG_VERSION"),
             gpu_index: s.index,
             gpu_name: s.name.clone(),
             gpu_uuid: s.uuid.clone(),
+            driver_version: context.driver_version,
+            cuda_driver_version: context.cuda_driver_version,
+            gpu_compute_mode: context.compute_mode,
+            gpu_pci_bus_id: context.pci_bus_id,
             temp_c: s.temp_c,
             util_gpu_pct: s.gpu_util_pct,
             util_mem_controller_pct: s.mem_util_pct,
@@ -54,6 +65,10 @@ pub(crate) fn format_probe_record(record: &ProbeRecord) -> String {
             "gpu.index: {}\n",
             "gpu.name: {}\n",
             "gpu.uuid: {}\n",
+            "driver.version: {}\n",
+            "cuda.driver_version: {}\n",
+            "gpu.compute_mode: {}\n",
+            "gpu.pci.bus_id: {}\n",
             "temp.c: {}\n",
             "util.gpu_pct: {}\n",
             "util.mem_controller_pct: {}\n",
@@ -68,6 +83,10 @@ pub(crate) fn format_probe_record(record: &ProbeRecord) -> String {
         record.gpu_index,
         record.gpu_name,
         record.gpu_uuid,
+        record.driver_version,
+        record.cuda_driver_version,
+        record.gpu_compute_mode,
+        record.gpu_pci_bus_id,
         temp_c,
         record.util_gpu_pct,
         record.util_mem_controller_pct,
@@ -96,7 +115,7 @@ fn csv_escape_field(s: &str) -> String {
 }
 
 pub(crate) fn format_probe_csv_header() -> &'static str {
-    "wtg_version,gpu_index,gpu_name,gpu_uuid,temp_c,util_gpu_pct,util_mem_controller_pct,vram_used_mib,vram_total_mib,power_w,power_limit_w"
+    "wtg_version,gpu_index,gpu_name,gpu_uuid,driver_version,cuda_driver_version,gpu_compute_mode,gpu_pci_bus_id,temp_c,util_gpu_pct,util_mem_controller_pct,vram_used_mib,vram_total_mib,power_w,power_limit_w"
 }
 
 pub(crate) fn format_probe_csv_row(record: &ProbeRecord) -> String {
@@ -118,6 +137,10 @@ pub(crate) fn format_probe_csv_row(record: &ProbeRecord) -> String {
         record.gpu_index.to_string(),
         record.gpu_name.clone(),
         record.gpu_uuid.clone(),
+        record.driver_version.clone(),
+        record.cuda_driver_version.clone(),
+        record.gpu_compute_mode.clone(),
+        record.gpu_pci_bus_id.clone(),
         temp_c,
         record.util_gpu_pct.to_string(),
         record.util_mem_controller_pct.to_string(),
