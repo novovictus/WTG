@@ -140,15 +140,52 @@ fn mw_to_w(mw: Option<u32>) -> Option<f32> {
     mw.map(|x| (x as f32) / 1000.0)
 }
 
+struct ProbeRecord {
+    gpu_index: u32,
+    gpu_name: String,
+    gpu_uuid: String,
+    temp_c: Option<u32>,
+    util_gpu_pct: u32,
+    util_mem_controller_pct: u32,
+    vram_used_mib: u64,
+    vram_total_mib: u64,
+    power_w: Option<f32>,
+    power_limit_w: Option<f32>,
+}
+
+impl ProbeRecord {
+    fn from_snapshot(s: &wtg_core::nvml::GpuSnapshot) -> Self {
+        Self {
+            gpu_index: s.index,
+            gpu_name: s.name.clone(),
+            gpu_uuid: s.uuid.clone(),
+            temp_c: s.temp_c,
+            util_gpu_pct: s.gpu_util_pct,
+            util_mem_controller_pct: s.mem_util_pct,
+            vram_used_mib: bytes_to_mib(s.mem_used_bytes),
+            vram_total_mib: bytes_to_mib(s.mem_total_bytes),
+            power_w: mw_to_w(s.power_mw),
+            power_limit_w: mw_to_w(s.power_limit_mw),
+        }
+    }
+}
+
 fn format_probe_block(s: &wtg_core::nvml::GpuSnapshot) -> String {
-    let temp_c = s
+    let record = ProbeRecord::from_snapshot(s);
+    format_probe_record(&record)
+}
+
+fn format_probe_record(record: &ProbeRecord) -> String {
+    let temp_c = record
         .temp_c
         .map(|t| t.to_string())
         .unwrap_or_else(|| "N/A".to_string());
-    let power_w = mw_to_w(s.power_mw)
+    let power_w = record
+        .power_w
         .map(|w| format!("{w:.1}"))
         .unwrap_or_else(|| "N/A".to_string());
-    let power_limit_w = mw_to_w(s.power_limit_mw)
+    let power_limit_w = record
+        .power_limit_w
         .map(|w| format!("{w:.1}"))
         .unwrap_or_else(|| "N/A".to_string());
 
@@ -167,15 +204,15 @@ fn format_probe_block(s: &wtg_core::nvml::GpuSnapshot) -> String {
             "power.limit_w: {}\n",
             "\n"
         ),
-        s.index,
-        s.index,
-        s.name,
-        s.uuid,
+        record.gpu_index,
+        record.gpu_index,
+        record.gpu_name,
+        record.gpu_uuid,
         temp_c,
-        s.gpu_util_pct,
-        s.mem_util_pct,
-        bytes_to_mib(s.mem_used_bytes),
-        bytes_to_mib(s.mem_total_bytes),
+        record.util_gpu_pct,
+        record.util_mem_controller_pct,
+        record.vram_used_mib,
+        record.vram_total_mib,
         power_w,
         power_limit_w
     )
