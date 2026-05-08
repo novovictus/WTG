@@ -140,12 +140,6 @@ fn mw_to_w(mw: Option<u32>) -> Option<f32> {
     mw.map(|x| (x as f32) / 1000.0)
 }
 
-/// Print one GPU in minimal probe form.
-fn print_probe_block(s: &wtg_core::nvml::GpuSnapshot) {
-    let block = format_probe_block(s);
-    print!("{block}");
-}
-
 fn format_probe_block(s: &wtg_core::nvml::GpuSnapshot) -> String {
     let temp_c = s
         .temp_c
@@ -351,10 +345,10 @@ fn main() {
         match wtg_core::nvml::snapshot_all() {
             Ok(snaps) => {
                 for s in snaps.iter() {
-                    print_probe_block(s);
+                    let block = format_probe_block(s);
+                    print!("{block}");
                     if let Some(sink) = &_sink {
                         if matches!(sink.kind, SinkKind::Jsonl) {
-                            let block = format_probe_block(s);
                             sink.emit(&block);
                         }
                     }
