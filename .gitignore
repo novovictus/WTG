@@ -21,5 +21,9 @@ Thumbs.db
 *.dylib
 
 # test junk
-artifacts/dev/wtg_stress.ps1
-artifacts/dev/wtg_stress--stats.ps1
+
+# generated validation artifacts
+wtg_sink_*.csv
+wtg_sink_*.jsonl
+artifacts/validation/*
+!artifacts/validation/.gitkeep
