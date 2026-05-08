@@ -142,33 +142,49 @@ fn mw_to_w(mw: Option<u32>) -> Option<f32> {
 
 /// Print one GPU in minimal probe form.
 fn print_probe_block(s: &wtg_core::nvml::GpuSnapshot) {
-    println!("[probe] gpu={}", s.index);
-    println!("gpu.index: {}", s.index);
-    println!("gpu.name: {}", s.name);
-    println!("gpu.uuid: {}", s.uuid);
-    println!(
-        "temp.c: {}",
-        s.temp_c
-            .map(|t| t.to_string())
-            .unwrap_or_else(|| "N/A".to_string())
-    );
-    println!("util.gpu_pct: {}", s.gpu_util_pct);
-    println!("util.mem_pct: {}", s.mem_util_pct);
-    println!("vram.used_mib: {}", bytes_to_mib(s.mem_used_bytes));
-    println!("vram.total_mib: {}", bytes_to_mib(s.mem_total_bytes));
-    println!(
-        "power.w: {}",
-        mw_to_w(s.power_mw)
-            .map(|w| format!("{w:.1}"))
-            .unwrap_or_else(|| "N/A".to_string())
-    );
-    println!(
-        "power.limit_w: {}",
-        mw_to_w(s.power_limit_mw)
-            .map(|w| format!("{w:.1}"))
-            .unwrap_or_else(|| "N/A".to_string())
-    );
-    println!();
+    let block = format_probe_block(s);
+    print!("{block}");
+}
+
+fn format_probe_block(s: &wtg_core::nvml::GpuSnapshot) -> String {
+    let temp_c = s
+        .temp_c
+        .map(|t| t.to_string())
+        .unwrap_or_else(|| "N/A".to_string());
+    let power_w = mw_to_w(s.power_mw)
+        .map(|w| format!("{w:.1}"))
+        .unwrap_or_else(|| "N/A".to_string());
+    let power_limit_w = mw_to_w(s.power_limit_mw)
+        .map(|w| format!("{w:.1}"))
+        .unwrap_or_else(|| "N/A".to_string());
+
+    format!(
+        concat!(
+            "[probe] gpu={}\n",
+            "gpu.index: {}\n",
+            "gpu.name: {}\n",
+            "gpu.uuid: {}\n",
+            "temp.c: {}\n",
+            "util.gpu_pct: {}\n",
+            "util.mem_pct: {}\n",
+            "vram.used_mib: {}\n",
+            "vram.total_mib: {}\n",
+            "power.w: {}\n",
+            "power.limit_w: {}\n",
+            "\n"
+        ),
+        s.index,
+        s.index,
+        s.name,
+        s.uuid,
+        temp_c,
+        s.gpu_util_pct,
+        s.mem_util_pct,
+        bytes_to_mib(s.mem_used_bytes),
+        bytes_to_mib(s.mem_total_bytes),
+        power_w,
+        power_limit_w
+    )
 }
 
 /// Print one GPU in stable "key: value" form.
@@ -336,6 +352,12 @@ fn main() {
             Ok(snaps) => {
                 for s in snaps.iter() {
                     print_probe_block(s);
+                    if let Some(sink) = &_sink {
+                        if matches!(sink.kind, SinkKind::Jsonl) {
+                            let block = format_probe_block(s);
+                            sink.emit(&block);
+                        }
+                    }
                 }
             }
             Err(e) => {
