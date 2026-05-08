@@ -80,6 +80,15 @@ impl Sink {
             }
         }
     }
+
+    fn emit_raw_line(&self, line: &str) {
+        let mut writer = self.writer.borrow_mut();
+        if let Err(e) = writeln!(writer, "{line}") {
+            eprintln!("WTG runtime error: failed to write sink output: {e}");
+        } else if let Err(e) = writer.flush() {
+            eprintln!("WTG runtime error: failed to flush sink output: {e}");
+        }
+    }
 }
 
 fn json_escape(s: &str) -> String {
@@ -170,11 +179,6 @@ impl ProbeRecord {
     }
 }
 
-fn format_probe_block(s: &wtg_core::nvml::GpuSnapshot) -> String {
-    let record = ProbeRecord::from_snapshot(s);
-    format_probe_record(&record)
-}
-
 fn format_probe_record(record: &ProbeRecord) -> String {
     let temp_c = record
         .temp_c
@@ -216,6 +220,59 @@ fn format_probe_record(record: &ProbeRecord) -> String {
         power_w,
         power_limit_w
     )
+}
+
+fn csv_escape_field(s: &str) -> String {
+    if !s.chars().any(|c| matches!(c, ',' | '"' | '\n' | '\r')) {
+        return s.to_string();
+    }
+
+    let mut escaped = String::with_capacity(s.len() + 2);
+    escaped.push('"');
+    for c in s.chars() {
+        if c == '"' {
+            escaped.push('"');
+        }
+        escaped.push(c);
+    }
+    escaped.push('"');
+    escaped
+}
+
+fn format_probe_csv_header() -> &'static str {
+    "gpu_index,gpu_name,gpu_uuid,temp_c,util_gpu_pct,util_mem_controller_pct,vram_used_mib,vram_total_mib,power_w,power_limit_w"
+}
+
+fn format_probe_csv_row(record: &ProbeRecord) -> String {
+    let temp_c = record
+        .temp_c
+        .map(|t| t.to_string())
+        .unwrap_or_else(|| "N/A".to_string());
+    let power_w = record
+        .power_w
+        .map(|w| format!("{w:.1}"))
+        .unwrap_or_else(|| "N/A".to_string());
+    let power_limit_w = record
+        .power_limit_w
+        .map(|w| format!("{w:.1}"))
+        .unwrap_or_else(|| "N/A".to_string());
+
+    [
+        record.gpu_index.to_string(),
+        record.gpu_name.clone(),
+        record.gpu_uuid.clone(),
+        temp_c,
+        record.util_gpu_pct.to_string(),
+        record.util_mem_controller_pct.to_string(),
+        record.vram_used_mib.to_string(),
+        record.vram_total_mib.to_string(),
+        power_w,
+        power_limit_w,
+    ]
+    .iter()
+    .map(|field| csv_escape_field(field))
+    .collect::<Vec<_>>()
+    .join(",")
 }
 
 /// Print one GPU in stable "key: value" form.
@@ -381,12 +438,21 @@ fn main() {
     if probe {
         match wtg_core::nvml::snapshot_all() {
             Ok(snaps) => {
+                let mut wrote_csv_header = false;
                 for s in snaps.iter() {
-                    let block = format_probe_block(s);
+                    let record = ProbeRecord::from_snapshot(s);
+                    let block = format_probe_record(&record);
                     print!("{block}");
                     if let Some(sink) = &_sink {
-                        if matches!(sink.kind, SinkKind::Jsonl) {
-                            sink.emit(&block);
+                        match sink.kind {
+                            SinkKind::Jsonl => sink.emit(&block),
+                            SinkKind::Csv => {
+                                if !wrote_csv_header {
+                                    sink.emit_raw_line(format_probe_csv_header());
+                                    wrote_csv_header = true;
+                                }
+                                sink.emit_raw_line(&format_probe_csv_row(&record));
+                            }
                         }
                     }
                 }
