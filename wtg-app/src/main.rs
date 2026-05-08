@@ -8,6 +8,7 @@
 //!   --once                     : Take one NVML snapshot, print, exit.
 //!   --watch                    : Take repeated NVML snapshots, print each tick.
 //!   --watch --interval <ms>    : Same, but set period in milliseconds (default 1000ms).
+//!   --probe                    : Take one NVML snapshot, print probe fields, exit.
 //!
 //! Optional output mode:
 //!   --stats                    : Print a stable key:value "stats block" format (schema 0).
@@ -139,6 +140,37 @@ fn mw_to_w(mw: Option<u32>) -> Option<f32> {
     mw.map(|x| (x as f32) / 1000.0)
 }
 
+/// Print one GPU in minimal probe form.
+fn print_probe_block(s: &wtg_core::nvml::GpuSnapshot) {
+    println!("[probe] gpu={}", s.index);
+    println!("gpu.index: {}", s.index);
+    println!("gpu.name: {}", s.name);
+    println!("gpu.uuid: {}", s.uuid);
+    println!(
+        "temp.c: {}",
+        s.temp_c
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "N/A".to_string())
+    );
+    println!("util.gpu_pct: {}", s.gpu_util_pct);
+    println!("util.mem_pct: {}", s.mem_util_pct);
+    println!("vram.used_mib: {}", bytes_to_mib(s.mem_used_bytes));
+    println!("vram.total_mib: {}", bytes_to_mib(s.mem_total_bytes));
+    println!(
+        "power.w: {}",
+        mw_to_w(s.power_mw)
+            .map(|w| format!("{w:.1}"))
+            .unwrap_or_else(|| "N/A".to_string())
+    );
+    println!(
+        "power.limit_w: {}",
+        mw_to_w(s.power_limit_mw)
+            .map(|w| format!("{w:.1}"))
+            .unwrap_or_else(|| "N/A".to_string())
+    );
+    println!();
+}
+
 /// Print one GPU in stable "key: value" form.
 /// NOTE: This assumes wtg_core::nvml::GpuSnapshot exposes these fields publicly.
 /// If field names differ, adjust the mappings here (only here).
@@ -184,6 +216,7 @@ fn print_stats_block(s: &wtg_core::nvml::GpuSnapshot) {
 ///
 /// Semantics:
 /// - `--once` and `--watch` are mutually exclusive (error if both).
+/// - `--probe` is mutually exclusive with `--once` and `--watch`.
 /// - `--stats` is an output modifier and requires `--once` or `--watch`.
 /// - `--interval <ms>`:
 ///     - requires a value
@@ -193,6 +226,7 @@ fn print_stats_block(s: &wtg_core::nvml::GpuSnapshot) {
 fn parse_args() -> (
     bool,        /*once*/
     bool,        /*watch*/
+    bool,        /*probe*/
     bool,        /*stats*/
     Option<u64>, /*interval_ms*/
     Option<SinkKind>,
@@ -201,11 +235,17 @@ fn parse_args() -> (
 
     let once = args.iter().any(|a| a == "--once");
     let watch = args.iter().any(|a| a == "--watch");
+    let probe = args.iter().any(|a| a == "--probe");
     let stats = args.iter().any(|a| a == "--stats");
 
     // Hard guard: mutually exclusive modes.
     if once && watch {
         eprintln!("WTG usage error: --once and --watch are mutually exclusive.");
+        process::exit(2);
+    }
+
+    if probe && (once || watch) {
+        eprintln!("WTG usage error: --probe is mutually exclusive with --once and --watch.");
         process::exit(2);
     }
 
@@ -265,7 +305,7 @@ fn parse_args() -> (
         i += 1;
     }
 
-    (once, watch, stats, interval_ms, sink)
+    (once, watch, probe, stats, interval_ms, sink)
 }
 
 fn main() {
@@ -274,7 +314,7 @@ fn main() {
 
     info!("WTG v{} initializing...", env!("CARGO_PKG_VERSION"));
 
-    let (once, watch, stats, interval_ms_opt, sink_opt) = parse_args();
+    let (once, watch, probe, stats, interval_ms_opt, sink_opt) = parse_args();
 
     let _sink = match sink_opt {
         Some(kind) => match Sink::new(kind) {
@@ -289,6 +329,22 @@ fn main() {
         },
         None => None,
     };
+
+    // Mode: `--probe`
+    if probe {
+        match wtg_core::nvml::snapshot_all() {
+            Ok(snaps) => {
+                for s in snaps.iter() {
+                    print_probe_block(s);
+                }
+            }
+            Err(e) => {
+                eprintln!("WTG --probe failed: {e}");
+                process::exit(2);
+            }
+        }
+        return;
+    }
 
     // Print banner once per run (not on every tick).
     println!("WTG - WhatTheGPU v{}", env!("CARGO_PKG_VERSION"));
