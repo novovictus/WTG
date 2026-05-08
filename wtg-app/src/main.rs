@@ -20,15 +20,18 @@
 //! - `--interval` without a value is a hard error (avoids ambiguity).
 //! - This is a proof path: ground-truth telemetry first; UI later.
 
-use std::cell::RefCell;
 use std::env;
-use std::fs::File;
-use std::io::{BufWriter, Write};
 use std::process;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tracing::info;
+
+mod probe;
+mod sink;
+
+use probe::{format_probe_csv_header, format_probe_csv_row, format_probe_record, ProbeRecord};
+use sink::{Sink, SinkKind};
 
 /// Default sampling interval when `--watch` is enabled.
 /// 1000ms is conservative and matches NVML’s practical update cadence for many metrics.
@@ -37,87 +40,6 @@ const DEFAULT_INTERVAL_MS: u64 = 1000;
 /// Stats output schema version.
 /// This lets us evolve the key set while remaining explicit in artifacts.
 const STATS_SCHEMA: u32 = 0;
-
-#[derive(Debug, Clone, Copy)]
-enum SinkKind {
-    Csv,
-    Jsonl,
-}
-
-struct Sink {
-    kind: SinkKind,
-    filename: String,
-    writer: RefCell<BufWriter<File>>,
-}
-
-impl Sink {
-    fn new(kind: SinkKind) -> Result<Self, std::io::Error> {
-        let filename = sink_filename(kind);
-        let file = File::create(&filename)?;
-
-        Ok(Self {
-            kind,
-            filename,
-            writer: RefCell::new(BufWriter::new(file)),
-        })
-    }
-
-    fn filename(&self) -> &str {
-        &self.filename
-    }
-
-    fn emit(&self, line: &str) {
-        match self.kind {
-            SinkKind::Csv => {}
-            SinkKind::Jsonl => {
-                let escaped = json_escape(line);
-                let mut writer = self.writer.borrow_mut();
-                if let Err(e) = writeln!(writer, "{{\"line\":\"{escaped}\"}}") {
-                    eprintln!("WTG runtime error: failed to write sink output: {e}");
-                } else if let Err(e) = writer.flush() {
-                    eprintln!("WTG runtime error: failed to flush sink output: {e}");
-                }
-            }
-        }
-    }
-
-    fn emit_raw_line(&self, line: &str) {
-        let mut writer = self.writer.borrow_mut();
-        if let Err(e) = writeln!(writer, "{line}") {
-            eprintln!("WTG runtime error: failed to write sink output: {e}");
-        } else if let Err(e) = writer.flush() {
-            eprintln!("WTG runtime error: failed to flush sink output: {e}");
-        }
-    }
-}
-
-fn json_escape(s: &str) -> String {
-    let mut escaped = String::with_capacity(s.len());
-
-    for c in s.chars() {
-        match c {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            c if c.is_control() => escaped.push_str(&format!("\\u{:04x}", c as u32)),
-            c => escaped.push(c),
-        }
-    }
-
-    escaped
-}
-
-fn sink_filename(kind: SinkKind) -> String {
-    let extension = match kind {
-        SinkKind::Csv => "csv",
-        SinkKind::Jsonl => "jsonl",
-    };
-    let timestamp = now_ts().replace('.', "_");
-
-    format!("wtg_sink_{timestamp}.{extension}")
-}
 
 /// Returns a simple timestamp like "1707101234.567" (unix seconds.millis).
 /// No external deps; good enough for proof and log correlation.
@@ -147,132 +69,6 @@ fn bytes_to_mib(b: u64) -> u64 {
 /// so we accept Option and propagate None rather than forcing an unwrap.
 fn mw_to_w(mw: Option<u32>) -> Option<f32> {
     mw.map(|x| (x as f32) / 1000.0)
-}
-
-struct ProbeRecord {
-    gpu_index: u32,
-    gpu_name: String,
-    gpu_uuid: String,
-    temp_c: Option<u32>,
-    util_gpu_pct: u32,
-    util_mem_controller_pct: u32,
-    vram_used_mib: u64,
-    vram_total_mib: u64,
-    power_w: Option<f32>,
-    power_limit_w: Option<f32>,
-}
-
-impl ProbeRecord {
-    fn from_snapshot(s: &wtg_core::nvml::GpuSnapshot) -> Self {
-        Self {
-            gpu_index: s.index,
-            gpu_name: s.name.clone(),
-            gpu_uuid: s.uuid.clone(),
-            temp_c: s.temp_c,
-            util_gpu_pct: s.gpu_util_pct,
-            util_mem_controller_pct: s.mem_util_pct,
-            vram_used_mib: bytes_to_mib(s.mem_used_bytes),
-            vram_total_mib: bytes_to_mib(s.mem_total_bytes),
-            power_w: mw_to_w(s.power_mw),
-            power_limit_w: mw_to_w(s.power_limit_mw),
-        }
-    }
-}
-
-fn format_probe_record(record: &ProbeRecord) -> String {
-    let temp_c = record
-        .temp_c
-        .map(|t| t.to_string())
-        .unwrap_or_else(|| "N/A".to_string());
-    let power_w = record
-        .power_w
-        .map(|w| format!("{w:.1}"))
-        .unwrap_or_else(|| "N/A".to_string());
-    let power_limit_w = record
-        .power_limit_w
-        .map(|w| format!("{w:.1}"))
-        .unwrap_or_else(|| "N/A".to_string());
-
-    format!(
-        concat!(
-            "[probe] gpu={}\n",
-            "gpu.index: {}\n",
-            "gpu.name: {}\n",
-            "gpu.uuid: {}\n",
-            "temp.c: {}\n",
-            "util.gpu_pct: {}\n",
-            "util.mem_controller_pct: {}\n",
-            "vram.used_mib: {}\n",
-            "vram.total_mib: {}\n",
-            "power.w: {}\n",
-            "power.limit_w: {}\n",
-            "\n"
-        ),
-        record.gpu_index,
-        record.gpu_index,
-        record.gpu_name,
-        record.gpu_uuid,
-        temp_c,
-        record.util_gpu_pct,
-        record.util_mem_controller_pct,
-        record.vram_used_mib,
-        record.vram_total_mib,
-        power_w,
-        power_limit_w
-    )
-}
-
-fn csv_escape_field(s: &str) -> String {
-    if !s.chars().any(|c| matches!(c, ',' | '"' | '\n' | '\r')) {
-        return s.to_string();
-    }
-
-    let mut escaped = String::with_capacity(s.len() + 2);
-    escaped.push('"');
-    for c in s.chars() {
-        if c == '"' {
-            escaped.push('"');
-        }
-        escaped.push(c);
-    }
-    escaped.push('"');
-    escaped
-}
-
-fn format_probe_csv_header() -> &'static str {
-    "gpu_index,gpu_name,gpu_uuid,temp_c,util_gpu_pct,util_mem_controller_pct,vram_used_mib,vram_total_mib,power_w,power_limit_w"
-}
-
-fn format_probe_csv_row(record: &ProbeRecord) -> String {
-    let temp_c = record
-        .temp_c
-        .map(|t| t.to_string())
-        .unwrap_or_else(|| "N/A".to_string());
-    let power_w = record
-        .power_w
-        .map(|w| format!("{w:.1}"))
-        .unwrap_or_else(|| "N/A".to_string());
-    let power_limit_w = record
-        .power_limit_w
-        .map(|w| format!("{w:.1}"))
-        .unwrap_or_else(|| "N/A".to_string());
-
-    [
-        record.gpu_index.to_string(),
-        record.gpu_name.clone(),
-        record.gpu_uuid.clone(),
-        temp_c,
-        record.util_gpu_pct.to_string(),
-        record.util_mem_controller_pct.to_string(),
-        record.vram_used_mib.to_string(),
-        record.vram_total_mib.to_string(),
-        power_w,
-        power_limit_w,
-    ]
-    .iter()
-    .map(|field| csv_escape_field(field))
-    .collect::<Vec<_>>()
-    .join(",")
 }
 
 /// Print one GPU in stable "key: value" form.
@@ -444,7 +240,7 @@ fn main() {
                     let block = format_probe_record(&record);
                     print!("{block}");
                     if let Some(sink) = &_sink {
-                        match sink.kind {
+                        match sink.kind() {
                             SinkKind::Jsonl => sink.emit(&block),
                             SinkKind::Csv => {
                                 if !wrote_csv_header {
