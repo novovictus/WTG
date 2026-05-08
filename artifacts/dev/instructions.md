@@ -28,6 +28,7 @@ Current probe context fields:
 - `driver.version`
 - `cuda.driver_version`
 - `gpu.compute_mode`
+- `gpu.perf_state`
 - `gpu.pci.bus_id`
 
 Current key evidence fields:
@@ -36,11 +37,15 @@ Current key evidence fields:
 - `util.mem_controller_pct`
 - `vram.used_mib`
 - `vram.total_mib`
+- `gpu.perf_state`
 
 Important interpretation:
 
 - `util.mem_controller_pct` is NVML memory-controller utilization, not VRAM occupancy.
 - VRAM occupancy is shown separately as `vram.used_mib` / `vram.total_mib`.
+- `gpu.perf_state` reports the NVML performance state, such as `P0` through `P15` or `Unknown`.
+- `P0` is the highest-performance state; higher-numbered states are lower-power states. `N/A` means the query was unsupported or failed.
+- `gpu.perf_state` is useful for confirming low-power or idle state during captures.
 - On some Windows WDDM / NVIDIA driver combinations, `util.mem_controller_pct` may report `100` even when VRAM occupancy is low.
 - This branch can show that condition and can also show whether selected NVML field-values queries work in the same device/session.
 - This branch does not infer driver causality in code.
@@ -181,7 +186,7 @@ Targets:
 
 1. Development laptop:
    - RTX 3080 Laptop GPU
-   - Current known regression state: `driver.version: 580.88`, `cuda.driver_version: 13000`, `util.mem_controller_pct: 100`, low VRAM occupancy.
+   - Current known regression state: `driver.version: 580.88`, `cuda.driver_version: 13000`, `gpu.perf_state: P8`, `util.mem_controller_pct: 100`, low VRAM occupancy.
 
 2. Bench system:
    - RTX 3060 Ti desktop GPU
@@ -261,6 +266,7 @@ These are retained only for continuity. Do not treat them as current work items.
   - `wtg.version` in probe output
   - experimental `--probe-fields`
   - driver/runtime context fields
+  - `gpu.perf_state` in probe context
   - README documentation for probe-fields behavior
 
 ---
