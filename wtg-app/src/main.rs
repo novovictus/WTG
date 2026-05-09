@@ -338,7 +338,8 @@ fn main() {
                 for s in snaps.iter() {
                     let context =
                         wtg_core::nvml::probe_context::query_probe_context_for_gpu_with_ctx(
-                            &probe_context_ctx, s.index,
+                            &probe_context_ctx,
+                            s.index,
                         );
                     let record = ProbeRecord::from_snapshot(s, context);
                     let block = format_probe_record(&record);
