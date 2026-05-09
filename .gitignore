@@ -31,3 +31,6 @@ artifacts/validation/*
 # generated package artifacts
 artifacts/packages/*
 !artifacts/packages/.gitkeep
+
+# Local checkpoint package refresh helper
+artifacts/packages/wtg_refresh_checkpoint_package.ps1
