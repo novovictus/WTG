@@ -94,7 +94,7 @@ fn print_stats_block(s: &wtg_core::nvml::GpuSnapshot) {
             .unwrap_or_else(|| "N/A".to_string())
     );
     println!("util.gpu_pct: {}", s.gpu_util_pct);
-    println!("util.mem_pct: {}", s.mem_util_pct);
+    println!("util.mem_controller_pct: {}", s.mem_util_pct);
 
     println!("vram.used_mib: {}", bytes_to_mib(s.mem_used_bytes));
     println!("vram.total_mib: {}", bytes_to_mib(s.mem_total_bytes));
@@ -325,19 +325,21 @@ fn main() {
 
     // Mode: `--probe`
     if probe {
-        match wtg_core::nvml::snapshot_all() {
+        let probe_context_ctx = match wtg_core::nvml::init_context() {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                eprintln!("WTG --probe init failed: {e}");
+                process::exit(2);
+            }
+        };
+        match wtg_core::nvml::snapshot_all_with_ctx(&probe_context_ctx) {
             Ok(snaps) => {
-                let probe_context_ctx = wtg_core::nvml::init_context().ok();
                 let mut wrote_csv_header = false;
                 for s in snaps.iter() {
-                    let context = match &probe_context_ctx {
-                        Some(ctx) => {
-                            wtg_core::nvml::probe_context::query_probe_context_for_gpu_with_ctx(
-                                ctx, s.index,
-                            )
-                        }
-                        None => wtg_core::nvml::probe_context::GpuProbeContext::unavailable(),
-                    };
+                    let context =
+                        wtg_core::nvml::probe_context::query_probe_context_for_gpu_with_ctx(
+                            &probe_context_ctx, s.index,
+                        );
                     let record = ProbeRecord::from_snapshot(s, context);
                     let block = format_probe_record(&record);
                     print!("{block}");
