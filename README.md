@@ -117,6 +117,8 @@ The beta 4 scope is intentionally narrow:
 | `--watch` | Supported as line-oriented JSONL | Not structured | CSV output is not currently implemented for this mode. `--interval` applies here. |
 | `--stats` | Not supported | Not supported | Stats sink integration is deferred. |
 
+Note: plain `--watch` and `--watch --stats` currently have different recovery behavior. `--watch --stats` uses a persistent NVML context and attempts to reinitialize after snapshot failures. Plain `--watch` is stricter and exits on snapshot failure. This behavior may be unified later.
+
 Structured CSV output is currently scoped to `--probe`. `--once --sink csv`, `--watch --sink csv`, and `--stats --sink csv` should not be treated as supported structured CSV modes in beta 4.
 
 `--stats` output is intentionally kept separate from sink output in beta 4. Adding sink integration for `--stats` is deferred so the probe-field work can remain focused on empirical NVML characterization rather than output-format expansion.
