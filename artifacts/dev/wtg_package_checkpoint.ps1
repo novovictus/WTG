@@ -4,7 +4,7 @@
 
 param(
     [string]$OutputRoot = "artifacts\packages",
-    [string]$Label = "probe-fields",
+    [string]$Label = "",
     [switch]$Release,
     [switch]$CleanPackages
 )
@@ -88,11 +88,16 @@ Push-Location $repoRoot
 try {
     $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
     $computer = Safe-Name $env:COMPUTERNAME
-    $labelSafe = Safe-Name $Label
 
     $branch = (git branch --show-current).Trim()
     $head = (git rev-parse --short HEAD).Trim()
     $fullHead = (git rev-parse HEAD).Trim()
+
+    $effectiveLabel = $Label
+    if ([string]::IsNullOrWhiteSpace($effectiveLabel)) {
+        $effectiveLabel = $branch
+    }
+    $labelSafe = Safe-Name $effectiveLabel
 
     # Version from workspace Cargo.toml.
     $versionLine = Select-String -Path ".\Cargo.toml" -Pattern 'version = "' | Select-Object -First 1
@@ -129,17 +134,28 @@ try {
     # Clean prior root sink files.
     Remove-Item .\wtg_sink_*.csv, .\wtg_sink_*.jsonl -ErrorAction SilentlyContinue
 
-    # Capture environment and repo state.
-    Run-ProcessCapture "00_git_status" "git" @("status", "-sb") $outDir | Out-Null
-    Run-ProcessCapture "01_git_log" "git" @("log", "--oneline", "--decorate", "-12") $outDir | Out-Null
-    Run-ProcessCapture "02_rustc_version" "rustc" @("--version") $outDir | Out-Null
-    Run-ProcessCapture "03_cargo_version" "cargo" @("--version") $outDir | Out-Null
-    Run-ProcessCapture "04_cargo_metadata_versions" "cargo" @("metadata", "--no-deps", "--format-version", "1") $outDir | Out-Null
+    # Capture environment and repo state. Numbering intentionally starts at 01 to align with earlier checkpoint bundles.
+    Run-ProcessCapture "01_git_status" "git" @("status", "-sb") $outDir | Out-Null
+    Run-ProcessCapture "02_git_log" "git" @("log", "--oneline", "--decorate", "-12") $outDir | Out-Null
+    Run-ProcessCapture "03_rustc_version" "rustc" @("--version") $outDir | Out-Null
+    Run-ProcessCapture "04_cargo_version" "cargo" @("--version") $outDir | Out-Null
+    Run-ProcessCapture "05_cargo_metadata_versions" "cargo" @("metadata", "--no-deps", "--format-version", "1") $outDir | Out-Null
+
+    # Match the documented validation gate before building/package capture.
+    $fmtExit = Run-ProcessCapture "06_cargo_fmt_check" "cargo" @("fmt", "--check") $outDir
+    if ($fmtExit -ne 0) {
+        throw "cargo fmt --check failed. See $outDir\06_cargo_fmt_check.txt"
+    }
+
+    $testExit = Run-ProcessCapture "07_cargo_test" "cargo" @("test") $outDir
+    if ($testExit -ne 0) {
+        throw "cargo test failed. See $outDir\07_cargo_test.txt"
+    }
 
     # Build.
-    $buildExit = Run-ProcessCapture "05_build" "cargo" $buildArgs $outDir
+    $buildExit = Run-ProcessCapture "08_build" "cargo" $buildArgs $outDir
     if ($buildExit -ne 0) {
-        throw "Build failed. See $outDir\05_build.txt"
+        throw "Build failed. See $outDir\08_build.txt"
     }
 
     if (-not (Test-Path $exePath)) {
@@ -158,9 +174,9 @@ try {
     }
 
     # Capture runtime proof from copied CLI exe, not cargo run. Do not launch wtg-ui.exe.
-    Run-ProcessCapture "06_wtg_probe" $destExe @("--probe") $outDir | Out-Null
-    Run-ProcessCapture "07_wtg_probe_fields" $destExe @("--probe-fields", "--field-id", "74", "--field-id", "78", "--field-id", "83", "--field-id", "94", "--field-id", "95") $outDir | Out-Null
-    Run-ProcessCapture "08_wtg_once" $destExe @("--once") $outDir | Out-Null
+    Run-ProcessCapture "09_wtg_probe" $destExe @("--probe") $outDir | Out-Null
+    Run-ProcessCapture "10_wtg_probe_fields" $destExe @("--probe-fields", "--field-id", "74", "--field-id", "78", "--field-id", "83", "--field-id", "94", "--field-id", "95") $outDir | Out-Null
+    Run-ProcessCapture "11_wtg_once" $destExe @("--once") $outDir | Out-Null
 
     # Hashes. This manifest includes all packaged executables, including wtg-ui.exe when present.
     $hashPath = Join-Path $outDir "SHA256SUMS.txt"
@@ -176,7 +192,7 @@ try {
 WTG checkpoint package
 timestamp: $timestamp
 computer: $env:COMPUTERNAME
-label: $Label
+label: $effectiveLabel
 branch: $branch
 head_short: $head
 head_full: $fullHead
@@ -194,6 +210,8 @@ Included:
 - optional egui UI executable when present
 - git status/log
 - rustc/cargo metadata
+- fmt check
+- cargo test
 - build log
 - probe output
 - probe-fields output
@@ -203,6 +221,8 @@ Included:
 Notes:
 - This is not necessarily a main-branch release artifact.
 - For release packaging, rebuild after merge/tag on main.
+- wtg-ui.exe is copied and hashed when present, but it is not launched or run-validated by this script.
+- CLI outputs remain the validation evidence path.
 "@
 
     Write-TextFile (Join-Path $outDir "manifest.txt") $manifest
