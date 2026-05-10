@@ -40,7 +40,8 @@ Raw run logs are not published to avoid exposing host-specific identifiers.
 * WTG fails fast and explicitly when NVML is unavailable; legacy GPUs may require additional guardrails to avoid instability.
 
 ## Observed Behavioral Deltas
-* RTX 3080 Laptop GPU memory-utilization regression is confined (so far) to 580.88+ branch under WDDM on consumer mobile SKU; not reproduced on desktop Ampere or professional Ampere (A3000).
+* RTX 3080 Laptop GPU memory-utilization regression is observed on the 580.88+ branch under WDDM on tested consumer mobile RTX 3080 Laptop systems; not reproduced on tested desktop Ampere or professional Ampere (A3000).
+* Additional same-platform validation: the RTX 3080 Laptop GPU regression has been reproduced on two distinct ASUS ROG Strix G533QS systems with different serials and GPU UUIDs. Both systems report sane idle NVML memory utilization on older drivers (566.07 / 577.00) and anomalous 100% idle memory-controller utilization on 580.88. Pending Alienware mobile results, treat the current evidence as ASUS ROG Strix G533QS / RTX 3080 Laptop platform-family reproducibility rather than a claim across all RTX 3080 Laptop GPUs or all mobile Ampere GPUs.
 * RTX 3060 Laptop GPU shows branch-dependent power-cap policy shift (105W → 80W between 580 and 591), while maintaining correct idle memory-utilization reporting.
 * Desktop Ampere (RTX 3060 Ti) validates clean NVML telemetry across 580 and 581 branches under both idle and sustained compute load.
 * Professional Ampere (RTX A3000) exhibits stable NVML telemetry across multiple driver branches including 59x.
