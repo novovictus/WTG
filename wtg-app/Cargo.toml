@@ -16,17 +16,8 @@ path = "src/bin/wtg-ui.rs"
 
 [dependencies]
 wtg-core = { path = "../wtg-core" }
-wtg-view = { path = "../wtg-view" }
-
-# TUI for Phase 1
-ratatui = "0.26"
-crossterm = "0.27"
-
 # Experimental egui desktop UI spike
 eframe = "0.27"
-
-# Async
-tokio = { version = "1", features = ["full"] }
 
 # Logging
 tracing = "0.1"
