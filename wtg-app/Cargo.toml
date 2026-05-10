@@ -4,10 +4,15 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+default-run = "wtg"
 
 [[bin]]
 name = "wtg"
 path = "src/main.rs"
+
+[[bin]]
+name = "wtg-ui"
+path = "src/bin/wtg-ui.rs"
 
 [dependencies]
 wtg-core = { path = "../wtg-core" }
@@ -17,13 +22,12 @@ wtg-view = { path = "../wtg-view" }
 ratatui = "0.26"
 crossterm = "0.27"
 
+# Experimental egui desktop UI spike
+eframe = "0.27"
+
 # Async
 tokio = { version = "1", features = ["full"] }
 
 # Logging
 tracing = "0.1"
 tracing-subscriber = "0.3"
-
-# Future: egui for Phase 2
-# egui = "0.27"
-# egui-winit = "0.27"

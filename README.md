@@ -245,6 +245,14 @@ Probe field-values comparison:
 cargo run -- --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id 94 --field-id 95
 ```
 
+Experimental egui UI spike:
+
+```powershell
+cargo run -p wtg-app --bin wtg-ui
+```
+
+The egui UI is a separate experimental binary target. It does not modify the existing `wtg` CLI parser, does not create sink files, and uses the same `wtg-core` NVML snapshot and probe-context paths as the CLI. Unsupported optional values are displayed as `N/A`, and refresh failures are reported in the window without intentionally closing it.
+
 ---
 
 ### Driver Requirements
