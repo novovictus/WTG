@@ -12,6 +12,8 @@ Recent testing has identified a driver-branch regression affecting memory-utiliz
 Findings reflect publicly accessible NVML telemetry behavior under Windows WDDM.
 See `artifacts/test-matrix/matrix.md` for empirical results.
 
+This `spike/beta-5` branch also includes an experimental dual-surface prototype: the existing CLI validation surface (`wtg.exe`) plus a separate egui desktop frontend (`wtg-ui.exe`). The UI is experimental and is not the reference surface for validation evidence.
+
 ---
 
 ## Project Purpose
@@ -45,15 +47,15 @@ See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
 ## Project Scope (Core Engine)
 
 * **Target**: NVIDIA GPUs, CUDA metrics only
-* **Platform**: Windows-native, single executable (`wtg.exe`)
+* **Platform**: Windows-native CLI validation binary (`wtg.exe`) with an experimental separate desktop UI binary (`wtg-ui.exe`) on the `spike/beta-5` branch
 * **Metrics**:
 
   * Per-process memory attribution and NVML-reported utilization metrics
   * VRAM used/reserved per PID
   * Power draw, clocks (contextual)
   * Exclude WDDM/Task Manager compute % from "truth" layer
-* **Refresh Rate**: 250-500 ms
-* **UI**: Initially TUI (text interface) for truth validation, later minimal egui window
+* **Refresh Rate**: CLI watch defaults to 1000 ms; empirical targets remain in the 250-500 ms range where appropriate
+* **UI**: Current validation is CLI/probe/sink based. The egui UI is an experimental visual frontend on `spike/beta-5`, not the validation reference surface.
 
 ---
 
@@ -85,7 +87,7 @@ The beta 4 scope is intentionally narrow:
 - `--interval <ms>`  
   Polling interval in milliseconds.  
   Default: `1000`  
-  Only applies when `--watch` is specified.
+  Applies to CLI `--watch` mode. The experimental UI has its own refresh control in the window.
 
 - `--stats`  
   Print the stable key:value stats format. Requires `--once` or `--watch`.
@@ -112,7 +114,7 @@ The beta 4 scope is intentionally narrow:
 | `--probe` | Supported | Supported | CSV emits structured probe records. |
 | `--probe-fields` | Not supported | Not supported | Experimental console-only comparison mode in beta 4. |
 | `--once` | Supported as line-oriented JSONL | Not structured | CSV output is not currently implemented for this mode. |
-| `--watch` | Supported as line-oriented JSONL | Not structured | CSV output is not currently implemented for this mode. |
+| `--watch` | Supported as line-oriented JSONL | Not structured | CSV output is not currently implemented for this mode. `--interval` applies here. |
 | `--stats` | Not supported | Not supported | Stats sink integration is deferred. |
 
 Structured CSV output is currently scoped to `--probe`. `--once --sink csv`, `--watch --sink csv`, and `--stats --sink csv` should not be treated as supported structured CSV modes in beta 4.
@@ -213,6 +215,29 @@ cargo build -p wtg-app --release
 .\target\release\wtg.exe --probe-fields --field-id 74 --field-id 78 --field-id 83
 ```
 
+### Packaging checkpoint helper
+
+The development packaging helper is:
+
+```powershell
+.\artifacts\dev\wtg_package_checkpoint.ps1
+```
+
+Defaults:
+
+- `-Label probe-fields`
+- debug build unless `-Release` is supplied
+- output under `artifacts\packages`
+
+Useful options:
+
+```powershell
+.\artifacts\dev\wtg_package_checkpoint.ps1 -Release
+.\artifacts\dev\wtg_package_checkpoint.ps1 -Release -CleanPackages
+```
+
+`-CleanPackages` refreshes `artifacts\packages` while preserving `.gitkeep`. The checkpoint package captures git/build metadata and CLI validation outputs from `wtg.exe`. On branches that produce `wtg-ui.exe`, the helper passively includes and hashes the UI binary, but it does not launch the UI.
+
 ### Examples
 
 One-shot snapshot:
@@ -251,11 +276,11 @@ Experimental egui UI spike:
 cargo run -p wtg-app --bin wtg-ui
 ```
 
-The egui UI is a separate experimental binary target. It does not modify the existing `wtg` CLI parser, does not create sink files, and uses the same `wtg-core` NVML snapshot and probe-context paths as the CLI. Unsupported optional values are displayed as `N/A`, and refresh failures are reported in the window without intentionally closing it.
+The egui UI is a separate experimental binary target on `spike/beta-5`. It does not modify the existing `wtg` CLI parser, does not create sink files, and uses the same `wtg-core` NVML snapshot and probe-context paths as the CLI. Unsupported optional values are displayed as `N/A`, and refresh failures are reported in the window without intentionally closing it.
 
 ## Experimental UI build notes and blocking behavior
 
-WTG currently includes two executable surfaces:
+WTG currently includes two executable surfaces on `spike/beta-5`:
 
 - `wtg.exe`: the primary CLI validation, capture, probe, and sink interface.
 - `wtg-ui.exe`: an experimental egui desktop frontend that displays live telemetry from the same `wtg-core` NVML path.
@@ -351,36 +376,38 @@ WTG relies on NVIDIA NVML on Windows. Empirical testing shows:
    * NVML bindings, polling, aggregation, process attribution, snapshot emission
    * Immutable snapshots, append-only, versioned
    * No UI logic in backend
-3. **UI Layers = Consumers**:
+3. **Surfaces = Consumers**:
 
-   * TUI for fast validation
-   * egui for minimal Windows-native window
-   * Optional full Windows-native UI later (Win32/WinUI)
-   * Both UI layers consume the same snapshot format; no backend duplication
+   * `wtg.exe` is the CLI validation, capture, probe, and sink surface.
+   * `wtg-ui.exe` is an experimental egui visual surface on `spike/beta-5`.
+   * Both surfaces consume the same `wtg-core` telemetry path; no backend duplication.
 4. **Extensible Metric Model**: trait-based, allows future integration of other vendors (ROCm, DX12)
 5. **Phased Approach**:
 
-   * Phase 1 (In progress): TUI validation and snapshot contract stabilization.
-   * Phase 2 (Planned): Minimal egui table window.
-   * Phase 3: Optional tray integration and UI polish.
+   * Current: CLI validation and empirical NVML characterization.
+   * Spike: experimental egui desktop frontend as a second surface.
+   * Later: optional native window, tray integration, and UI polish.
 6. **Repository / Licensing**: GitHub-hosted / GPLv3.
 
 ---
 
 ## Technical Architecture
 
-```
-wtg-core/         # Backend / truth layer
-  nvml/           # NVML bindings
-  metrics/        # Metric providers & trait definitions
-  scheduler/      # Refresh loop
-  snapshot/       # Immutable Snapshot structs & process mapping
+Current `spike/beta-5` source layout:
+
+```text
+wtg-core/                         # Backend / truth layer
+  src/                            # NVML context, snapshots, probe context, field queries
 
 wtg-app/
-  ui-egui/        # Immediate-mode table, minimal window
-  ui-native/      # Optional full Windows-native UI (Win32/WinUI)
-wtg-view/         # Shared view helpers: sorting, filtering, formatting
+  src/main.rs                     # Builds wtg.exe, the CLI validation/capture surface
+  src/bin/wtg-ui.rs               # Builds wtg-ui.exe, the experimental UI entrypoint
+  src/ui.rs                       # Current egui UI implementation
+
+wtg-view/                         # Shared view helpers where applicable
 ```
+
+Future UI organization may split the current `src/ui.rs` into dedicated modules or crates if the UI grows. Earlier roadmap language referred to TUI, `ui-egui/`, and `ui-native/` layouts; those should be treated as planned or historical organization notes, not the current source tree.
 
 **Snapshot Example (Rust)**:
 
@@ -394,8 +421,8 @@ struct Snapshot {
 
 * Snapshots are append-only, immutable
 * UI layers render snapshots without modifying them
-* Sorting, filtering, and column helpers shared in `wtg-view/`
-* OS-specific differences handled only in UI layers
+* Sorting, filtering, and column helpers can be shared in `wtg-view/`
+* OS-specific differences should stay out of `wtg-core`
 
 ---
 
@@ -410,17 +437,19 @@ struct Snapshot {
 
 ## Refresh Loop
 
-* Fixed timestep (250-500 ms)
+* CLI `--watch` uses a fixed interval, defaulting to 1000 ms unless `--interval <ms>` is supplied
+* Probe and once modes capture point-in-time snapshots
+* The experimental egui UI has its own refresh control in the window
 * No smoothing; snapshots reflect raw, instantaneous utilization
-* Diff snapshots for UI efficiency
 
 ---
 
 ## Validation Strategy
 
-* Compare WTG output vs `nvidia-smi` and WSL NVML metrics
-* Compare NVML telemetry against Windows-reported metrics to characterize abstraction differences.
-* TUI allows fast, metric validation
+* Compare WTG CLI output vs `nvidia-smi` and WSL NVML metrics
+* Compare NVML telemetry against Windows-reported metrics to characterize abstraction differences
+* Use CLI, probe, field-values, and sink artifacts for validation evidence
+* Use the experimental UI for visual corroboration and demos only
 
 ---
 
@@ -432,32 +461,34 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 
 ## Architectural Roadmap (Post-Validation)
 
-1. **TUI (Phase 1)**: truth validation, fast refresh, developer-grade snapshots
-2. **egui (Phase 2)**: minimal window, table view only, sub-second refresh
-3. **Native window control**: chrome, always-on-top, keyboard shortcuts
-4. **Tray integration**: background polling, popup on demand
-5. **Optional native panels**: use egui for tables, native only for tray/notifications/startup hooks
+1. **CLI validation surface**: truth validation, probe output, field-values comparison, and structured sinks
+2. **Experimental egui surface**: live desktop view over the same `wtg-core` telemetry path
+3. **UI refinement**: module split, display polish, and optional charting only after validation workflows remain stable
+4. **Native window control**: chrome, always-on-top, keyboard shortcuts
+5. **Tray integration**: background polling, popup on demand
 6. **Plugin expansion**: ROCm, DX12, vendor-specific metrics
 7. **Distribution hardening**: signed binary, single-file EXE, crash-resilient NVML paths
-8. **Reference UI retained**: egui remains the canonical dev/debug interface
+8. **Reference surfaces retained**: CLI remains the validation surface; egui remains a visual/debug/operator surface unless explicitly promoted later
 
-**Key Principle:** UI layers are interchangeable lenses; backend is the immutable source of truth. This prevents logic drift and double-work while allowing phased expansion.
+**Key Principle:** Surfaces are interchangeable lenses; backend is the immutable source of truth. This prevents logic drift and double-work while allowing phased expansion.
 
 ---
 
 ## Milestones
 
-| Version | Goal                                                                            |
-| ------- | ------------------------------------------------------------------------------- |
-| v0.1    | Truth-layer validation: one GPU, TUI window, correct NVML metrics vs Windows telemetry  |
-| v0.2    | Minimal egui table window, sub-second refresh, immutable snapshot visualization |
-| v0.3+   | Optional full Windows-native UI, tray integration, cross-vendor extensibility   |
+| Version / Branch | Goal |
+| ------- | ---- |
+| v0.1.x | Truth-layer validation: one GPU, CLI output, correct NVML metrics vs Windows telemetry |
+| v0.2.0-beta4 | Probe, sink, field-values, and driver-behavior validation |
+| spike/beta-5 | Experimental dual-surface build: CLI validation surface plus `wtg-ui.exe` visual frontend |
+| Future beta 5 candidate | Package both binaries if the dual-surface spike is promoted |
+| v0.3+ | Optional native UI, tray integration, cross-vendor extensibility |
 
 ---
 
 ## Next Immediate Step
 
-* Complete v0.1 TUI implementation and finalize snapshot contract
-* Validate NVML metric pipeline, refresh loop, per-process attribution
-* Capture screenshots to prove correctness
-* Lock snapshot structure and contract for downstream UI layers
+* Finish beta 4 regression writeup once remaining test results are available
+* Keep `spike/beta-5` isolated until dual-surface scope is intentionally promoted
+* Validate packaging helper behavior on release builds that include optional `wtg-ui.exe`
+* Preserve CLI/probe/sink outputs as the formal validation path
