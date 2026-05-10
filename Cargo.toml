@@ -8,5 +8,5 @@ edition = "2021"
 rust-version = "1.80"
 authors = ["Adam Hooper"]
 license = "GPL-3.0-only"
-repository = "https://github.com/<YOUR_GITHUB_USER>/WTG"
+repository = "https://github.com/novovictus/WTG"
 description = "WTG (WhatTheGPU): honest NVML-based GPU telemetry for Windows"
