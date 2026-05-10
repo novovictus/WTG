@@ -18,7 +18,7 @@ Current validated capabilities:
 - `--stats` output remains unchanged.
 - `--sink jsonl` writes `{"line":"..."}` records for `--once`, non-stats `--watch`, and `--probe`.
 - `--sink csv` writes structured header + row output for `--probe` only.
-- `--once --sink csv` and non-stats `--watch --sink csv` create placeholder CSV files with no rows.
+- `--once --sink csv` and non-stats `--watch --sink csv` create zero-byte placeholder CSV files.
 - `--probe` emits context-rich one-shot probe output.
 - `--probe-fields --field-id <u32>` compares the normal NVML utilization path against selected `nvmlDeviceGetFieldValues` results using safe `nvml-wrapper` APIs.
 
