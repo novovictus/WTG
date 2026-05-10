@@ -12,11 +12,17 @@ use wtg_core::nvml::{
 const DEFAULT_REFRESH_MS: u64 = 1000;
 const MIN_REFRESH_MS: u64 = 250;
 const MAX_REFRESH_MS: u64 = 5_000;
+const WINDOW_WIDTH: f32 = 800.0;
+const WINDOW_HEIGHT: f32 = 600.0;
 
 pub(crate) fn run() -> Result<(), eframe::Error> {
     eframe::run_native(
-        "WTG",
-        eframe::NativeOptions::default(),
+        "WTG UI Experimental",
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([WINDOW_WIDTH, WINDOW_HEIGHT]),
+            ..Default::default()
+        },
         Box::new(|_cc| Box::new(WtgUiApp::new())),
     )
 }
@@ -28,7 +34,7 @@ struct WtgUiApp {
     refresh_interval_ms: u64,
     running: bool,
     last_refresh: Option<Instant>,
-    last_refresh_label: String,
+    last_refresh_unix_label: String,
     last_error: Option<String>,
 }
 
@@ -41,7 +47,7 @@ impl WtgUiApp {
             refresh_interval_ms: DEFAULT_REFRESH_MS,
             running: true,
             last_refresh: None,
-            last_refresh_label: "N/A".to_string(),
+            last_refresh_unix_label: "N/A".to_string(),
             last_error: None,
         };
         app.refresh();
@@ -104,7 +110,7 @@ impl WtgUiApp {
 
     fn mark_refreshed(&mut self) {
         self.last_refresh = Some(Instant::now());
-        self.last_refresh_label = now_ts();
+        self.last_refresh_unix_label = now_ts();
     }
 }
 
@@ -116,7 +122,8 @@ impl eframe::App for WtgUiApp {
 
         egui::TopBottomPanel::top("toolbar").show(egui_ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("WTG");
+                ui.heading("WTG UI Experimental");
+                ui.label(format!("WTG v{}", env!("CARGO_PKG_VERSION")));
 
                 let toggle_label = if self.running { "Pause" } else { "Resume" };
                 if ui.button(toggle_label).clicked() {
@@ -138,7 +145,10 @@ impl eframe::App for WtgUiApp {
                 );
 
                 ui.separator();
-                ui.label(format!("Last: {}", self.last_refresh_label));
+                ui.label(format_refresh_label(
+                    self.last_refresh,
+                    &self.last_refresh_unix_label,
+                ));
             });
 
             if let Some(error) = &self.last_error {
@@ -313,6 +323,30 @@ fn bytes_to_mib(bytes: u64) -> u64 {
 
 fn mw_to_w(mw: Option<u32>) -> Option<f32> {
     mw.map(|mw| mw as f32 / 1000.0)
+}
+
+fn format_refresh_label(last_refresh: Option<Instant>, unix_label: &str) -> String {
+    format!(
+        "Refreshed: {} | unix {}",
+        format_refresh_age(last_refresh),
+        unix_label
+    )
+}
+
+fn format_refresh_age(last_refresh: Option<Instant>) -> String {
+    let Some(last_refresh) = last_refresh else {
+        return unavailable();
+    };
+
+    let elapsed = last_refresh.elapsed();
+    if elapsed < Duration::from_secs(1) {
+        "just now".to_string()
+    } else if elapsed < Duration::from_secs(60) {
+        format!("{}s ago", elapsed.as_secs())
+    } else {
+        let total_seconds = elapsed.as_secs();
+        format!("{}m {}s ago", total_seconds / 60, total_seconds % 60)
+    }
 }
 
 fn now_ts() -> String {
