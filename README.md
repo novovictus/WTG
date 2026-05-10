@@ -225,15 +225,16 @@ The development packaging helper is:
 .\artifacts\dev\wtg_package_checkpoint.ps1
 ```
 
-Defaults:
+Default behavior:
 
-- `-Label probe-fields`
+- derives the package label from the current branch when `-Label` is omitted
 - debug build unless `-Release` is supplied
 - output under `artifacts\packages`
 
 Useful options:
 
 ```powershell
+.\artifacts\dev\wtg_package_checkpoint.ps1 -Label probe-fields
 .\artifacts\dev\wtg_package_checkpoint.ps1 -Release
 .\artifacts\dev\wtg_package_checkpoint.ps1 -Release -CleanPackages
 ```
