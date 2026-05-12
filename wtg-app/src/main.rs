@@ -502,5 +502,5 @@ fn main() {
 
     // Default behavior (no flags):
     // Keep the placeholder, because TUI is explicitly not built yet.
-    println!("\nTUI initialization in progress...");
+    println!("\nRun with --once, --watch, --probe, or --probe-fields. Use wtg-ui.exe for the experimental UI.");
 }
