@@ -7,4 +7,3 @@ license.workspace = true
 
 [dependencies]
 wtg-core = { path = "../wtg-core" }
-

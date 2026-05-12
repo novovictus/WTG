@@ -11,4 +11,3 @@ nvml-wrapper = "0.9"
 
 # Logging
 tracing = "0.1"
-

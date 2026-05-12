@@ -278,4 +278,3 @@ These are retained only for continuity. Do not treat them as current work items.
 - Treat WTG as the engine-dyno truth layer compared with Task Manager's higher-level abstraction model.
 - Do not infer causality in code. Emit raw observations and let the test matrix support the conclusion.
 - Do not merge or tag experimental probe work until validation artifacts support the release claim.
-
