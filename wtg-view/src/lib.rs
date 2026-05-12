@@ -1,17 +1,16 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Adam Hooper
-//! WTG View - Shared view helpers for UI layers
+
+//! WTG View - Reserved shared view helpers for future UI layers.
 //!
-//! This crate provides:
-//! - Sorting and filtering helpers
-//! - Column formatting
-//! - View transformations
-//! - Reusable components for TUI and egui
+//! This crate is retained as a workspace placeholder for shared formatting,
+//! sorting, filtering, and view-model helpers. The current beta keeps active
+//! UI logic in `wtg-app`.
 
 use wtg_core::nvml::GpuSnapshot;
 
-/// Format a snapshot for display
+/// Reserved formatting hook for future shared UI code.
+#[doc(hidden)]
 pub fn format_snapshot(_snapshot: &GpuSnapshot) -> String {
-    // TODO: Implement formatting helpers
-    "TODO: format_snapshot".to_string()
+    String::new()
 }

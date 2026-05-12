@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Adam Hooper
-// //! WTG App - TUI for GPU metric validation
+//! WTG App - CLI for GPU metric validation.
 //!
 //! Entry point for the WTG proof-of-concept.
 //!
@@ -250,6 +250,11 @@ fn parse_args() -> (
 
     if probe_fields && field_ids.is_empty() {
         eprintln!("WTG usage error: --probe-fields requires at least one --field-id <u32>.");
+        process::exit(2);
+    }
+
+    if stats && sink.is_some() {
+        eprintln!("WTG usage error: --sink is not supported with --stats in this beta.");
         process::exit(2);
     }
 
