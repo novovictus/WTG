@@ -258,6 +258,11 @@ fn parse_args() -> (
         process::exit(2);
     }
 
+    if probe_fields && sink.is_some() {
+        eprintln!("WTG usage error: --sink is not supported with --probe-fields in this beta.");
+        process::exit(2);
+    }
+
     (
         once,
         watch,
