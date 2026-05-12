@@ -121,14 +121,25 @@ try {
     $bundleName = "wtg_${labelSafe}_v${version}_${branch}_${head}_${timestamp}"
     $bundleName = Safe-Name $bundleName
 
-    New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
+    $expectedPackageRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "artifacts\packages"))
+    $resolvedOutputRoot = $OutputRoot
+    if (-not [System.IO.Path]::IsPathRooted($resolvedOutputRoot)) {
+        $resolvedOutputRoot = Join-Path $repoRoot $resolvedOutputRoot
+    }
+    $resolvedOutputRoot = [System.IO.Path]::GetFullPath($resolvedOutputRoot)
+
+    if ($CleanPackages -and -not [string]::Equals($resolvedOutputRoot, $expectedPackageRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "-CleanPackages only supports the repository package root. Expected: $expectedPackageRoot. Got: $resolvedOutputRoot"
+    }
+
+    New-Item -ItemType Directory -Force -Path $resolvedOutputRoot | Out-Null
     if ($CleanPackages) {
-        Get-ChildItem -LiteralPath $OutputRoot -Force |
+        Get-ChildItem -LiteralPath $resolvedOutputRoot -Force |
             Where-Object { $_.Name -ne ".gitkeep" } |
             Remove-Item -Recurse -Force
     }
 
-    $outDir = Join-Path $OutputRoot $bundleName
+    $outDir = Join-Path $resolvedOutputRoot $bundleName
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
     # Clean prior root sink files.
@@ -256,7 +267,7 @@ Notes:
     Write-Host "  .\$exeName --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id 94 --field-id 95"
     Write-Host ""
     Write-Host "Package root contents:"
-    Get-ChildItem -LiteralPath $OutputRoot -Force |
+    Get-ChildItem -LiteralPath $resolvedOutputRoot -Force |
         Sort-Object Name |
         Select-Object Mode, Length, LastWriteTime, Name |
         Format-Table -AutoSize
