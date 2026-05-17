@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Adam Hooper
 
 use wtg_core::nvml::{
@@ -11,6 +11,7 @@ pub(crate) fn format_probe_fields_snapshot(s: &GpuSnapshot, context: &GpuProbeCo
     format!(
         concat!(
             "[probe-fields] gpu={}\n",
+            "wtg.version: {}\n",
             "gpu.index: {}\n",
             "gpu.name: {}\n",
             "gpu.uuid: {}\n",
@@ -26,6 +27,7 @@ pub(crate) fn format_probe_fields_snapshot(s: &GpuSnapshot, context: &GpuProbeCo
             "\n"
         ),
         s.index,
+        env!("CARGO_PKG_VERSION"),
         s.index,
         s.name,
         s.uuid,

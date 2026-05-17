@@ -3,10 +3,10 @@ members = ["wtg-core", "wtg-app", "wtg-view"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0-beta4"
+version = "0.2.0-beta5"
 edition = "2021"
 rust-version = "1.80"
 authors = ["Adam Hooper"]
 license = "GPL-3.0-only"
-repository = "https://github.com/<YOUR_GITHUB_USER>/WTG"
+repository = "https://github.com/novovictus/WTG"
 description = "WTG (WhatTheGPU): honest NVML-based GPU telemetry for Windows"

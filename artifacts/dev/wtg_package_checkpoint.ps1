@@ -4,8 +4,9 @@
 
 param(
     [string]$OutputRoot = "artifacts\packages",
-    [string]$Label = "probe-fields",
-    [switch]$Release
+    [string]$Label = "",
+    [switch]$Release,
+    [switch]$CleanPackages
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,93 +74,143 @@ function Run-ProcessCapture {
     return [int]$proc.ExitCode
 }
 
-# Ensure repo root.
-if (-not (Test-Path ".\Cargo.toml")) {
-    throw "Run this script from the WTG repository root."
+$scriptRoot = $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($scriptRoot)) {
+    $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
 
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$computer = Safe-Name $env:COMPUTERNAME
-$labelSafe = Safe-Name $Label
-
-$branch = (git branch --show-current).Trim()
-$head = (git rev-parse --short HEAD).Trim()
-$fullHead = (git rev-parse HEAD).Trim()
-
-# Version from workspace Cargo.toml.
-$versionLine = Select-String -Path ".\Cargo.toml" -Pattern 'version = "' | Select-Object -First 1
-$version = "unknown"
-if ($versionLine) {
-    $version = ($versionLine.Line -replace '.*version = "', '') -replace '".*', ''
+$repoRoot = (Resolve-Path (Join-Path $scriptRoot "..\..")).Path
+if (-not (Test-Path (Join-Path $repoRoot "Cargo.toml"))) {
+    throw "Unable to resolve WTG repository root from script location: $scriptRoot"
 }
 
-$profile = "debug"
-$buildArgs = @("build")
-$exePath = ".\target\debug\wtg.exe"
+Push-Location $repoRoot
+try {
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $computer = Safe-Name $env:COMPUTERNAME
 
-if ($Release) {
-    $profile = "release"
-    $buildArgs = @("build", "--release")
-    $exePath = ".\target\release\wtg.exe"
-}
+    $branch = (git branch --show-current).Trim()
+    $head = (git rev-parse --short HEAD).Trim()
+    $fullHead = (git rev-parse HEAD).Trim()
 
-$bundleName = "wtg_${labelSafe}_v${version}_${branch}_${head}_${timestamp}"
-$bundleName = Safe-Name $bundleName
-$outDir = Join-Path $OutputRoot $bundleName
+    $effectiveLabel = $Label
+    if ([string]::IsNullOrWhiteSpace($effectiveLabel)) {
+        $effectiveLabel = $branch
+    }
+    $labelSafe = Safe-Name $effectiveLabel
 
-New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    # Version from workspace Cargo.toml.
+    $versionLine = Select-String -Path ".\Cargo.toml" -Pattern 'version = "' | Select-Object -First 1
+    $version = "unknown"
+    if ($versionLine) {
+        $version = ($versionLine.Line -replace '.*version = "', '') -replace '".*', ''
+    }
 
-# Clean prior root sink files.
-Remove-Item .\wtg_sink_*.csv, .\wtg_sink_*.jsonl -ErrorAction SilentlyContinue
+    $profile = "debug"
+    $buildArgs = @("build")
+    $exePath = ".\target\debug\wtg.exe"
+    $uiExePath = ".\target\debug\wtg-ui.exe"
 
-# Capture environment and repo state.
-Run-ProcessCapture "00_git_status" "git" @("status", "-sb") $outDir | Out-Null
-Run-ProcessCapture "01_git_log" "git" @("log", "--oneline", "--decorate", "-12") $outDir | Out-Null
-Run-ProcessCapture "02_rustc_version" "rustc" @("--version") $outDir | Out-Null
-Run-ProcessCapture "03_cargo_version" "cargo" @("--version") $outDir | Out-Null
-Run-ProcessCapture "04_cargo_metadata_versions" "cargo" @("metadata", "--no-deps", "--format-version", "1") $outDir | Out-Null
+    if ($Release) {
+        $profile = "release"
+        $buildArgs = @("build", "--release")
+        $exePath = ".\target\release\wtg.exe"
+        $uiExePath = ".\target\release\wtg-ui.exe"
+    }
 
-# Build.
-$buildExit = Run-ProcessCapture "05_build" "cargo" $buildArgs $outDir
-if ($buildExit -ne 0) {
-    throw "Build failed. See $outDir\05_build.txt"
-}
+    $bundleName = "wtg_${labelSafe}_v${version}_${branch}_${head}_${timestamp}"
+    $bundleName = Safe-Name $bundleName
 
-if (-not (Test-Path $exePath)) {
-    throw "Expected executable not found: $exePath"
-}
+    $expectedPackageRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "artifacts\packages"))
+    $resolvedOutputRoot = $OutputRoot
+    if (-not [System.IO.Path]::IsPathRooted($resolvedOutputRoot)) {
+        $resolvedOutputRoot = Join-Path $repoRoot $resolvedOutputRoot
+    }
+    $resolvedOutputRoot = [System.IO.Path]::GetFullPath($resolvedOutputRoot)
 
-$exeName = "wtg_${labelSafe}_v${version}_${branch}_${head}.exe"
-$exeName = Safe-Name $exeName
-$destExe = Join-Path $outDir $exeName
-Copy-Item $exePath $destExe -Force
+    if ($CleanPackages -and -not [string]::Equals($resolvedOutputRoot, $expectedPackageRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "-CleanPackages only supports the repository package root. Expected: $expectedPackageRoot. Got: $resolvedOutputRoot"
+    }
 
-# Capture runtime proof from copied exe, not cargo run.
-Run-ProcessCapture "06_wtg_probe" $destExe @("--probe") $outDir | Out-Null
-Run-ProcessCapture "07_wtg_probe_fields" $destExe @("--probe-fields", "--field-id", "74", "--field-id", "78", "--field-id", "83", "--field-id", "94", "--field-id", "95") $outDir | Out-Null
-Run-ProcessCapture "08_wtg_once" $destExe @("--once") $outDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $resolvedOutputRoot | Out-Null
+    if ($CleanPackages) {
+        Get-ChildItem -LiteralPath $resolvedOutputRoot -Force |
+            Where-Object { $_.Name -ne ".gitkeep" } |
+            Remove-Item -Recurse -Force
+    }
 
-# Hashes.
-$hashPath = Join-Path $outDir "SHA256SUMS.txt"
-Get-ChildItem $outDir -File |
-    Where-Object { $_.Name -ne "SHA256SUMS.txt" -and $_.Name -notlike "*.tmp" } |
-    ForEach-Object {
-        $hash = Get-FileHash -Algorithm SHA256 -Path $_.FullName
-        "$($hash.Hash)  $($_.Name)"
-    } | Out-File -FilePath $hashPath -Encoding ASCII
+    $outDir = Join-Path $resolvedOutputRoot $bundleName
+    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-# Manifest.
-$manifest = @"
+    # Clean prior root sink files.
+    Remove-Item .\wtg_sink_*.csv, .\wtg_sink_*.jsonl -ErrorAction SilentlyContinue
+
+    # Capture environment and repo state. Numbering intentionally starts at 01 to align with earlier checkpoint bundles.
+    Run-ProcessCapture "01_git_status" "git" @("status", "-sb") $outDir | Out-Null
+    Run-ProcessCapture "02_git_log" "git" @("log", "--oneline", "--decorate", "-12") $outDir | Out-Null
+    Run-ProcessCapture "03_rustc_version" "rustc" @("--version") $outDir | Out-Null
+    Run-ProcessCapture "04_cargo_version" "cargo" @("--version") $outDir | Out-Null
+    Run-ProcessCapture "05_cargo_metadata_versions" "cargo" @("metadata", "--no-deps", "--format-version", "1") $outDir | Out-Null
+
+    # Match the documented validation gate before building/package capture.
+    $fmtExit = Run-ProcessCapture "06_cargo_fmt_check" "cargo" @("fmt", "--check") $outDir
+    if ($fmtExit -ne 0) {
+        throw "cargo fmt --check failed. See $outDir\06_cargo_fmt_check.txt"
+    }
+
+    $testExit = Run-ProcessCapture "07_cargo_test" "cargo" @("test") $outDir
+    if ($testExit -ne 0) {
+        throw "cargo test failed. See $outDir\07_cargo_test.txt"
+    }
+
+    # Build.
+    $buildExit = Run-ProcessCapture "08_build" "cargo" $buildArgs $outDir
+    if ($buildExit -ne 0) {
+        throw "Build failed. See $outDir\08_build.txt"
+    }
+
+    if (-not (Test-Path $exePath)) {
+        throw "Expected executable not found: $exePath"
+    }
+
+    $exeName = "wtg_${labelSafe}_v${version}_${branch}_${head}.exe"
+    $exeName = Safe-Name $exeName
+    $destExe = Join-Path $outDir $exeName
+    Copy-Item $exePath $destExe -Force
+
+    $uiExeName = "N/A"
+    if (Test-Path $uiExePath) {
+        $uiExeName = "wtg-ui.exe"
+        Copy-Item $uiExePath (Join-Path $outDir $uiExeName) -Force
+    }
+
+    # Capture runtime proof from copied CLI exe, not cargo run. Do not launch wtg-ui.exe.
+    Run-ProcessCapture "09_wtg_probe" $destExe @("--probe") $outDir | Out-Null
+    Run-ProcessCapture "10_wtg_probe_fields" $destExe @("--probe-fields", "--field-id", "74", "--field-id", "78", "--field-id", "83", "--field-id", "94", "--field-id", "95") $outDir | Out-Null
+    Run-ProcessCapture "11_wtg_once" $destExe @("--once") $outDir | Out-Null
+
+    # Hashes. This manifest includes all packaged executables, including wtg-ui.exe when present.
+    $hashPath = Join-Path $outDir "SHA256SUMS.txt"
+    Get-ChildItem -LiteralPath $outDir -File |
+        Where-Object { $_.Name -ne "SHA256SUMS.txt" -and $_.Name -notlike "*.tmp" } |
+        ForEach-Object {
+            $hash = Get-FileHash -Algorithm SHA256 -Path $_.FullName
+            "$($hash.Hash)  $($_.Name)"
+        } | Out-File -FilePath $hashPath -Encoding ASCII
+
+    # Manifest.
+    $manifest = @"
 WTG checkpoint package
 timestamp: $timestamp
 computer: $env:COMPUTERNAME
-label: $Label
+label: $effectiveLabel
 branch: $branch
 head_short: $head
 head_full: $fullHead
 version: $version
 profile: $profile
 exe: $exeName
+ui_exe: $uiExeName
 
 Purpose:
 Branch checkpoint artifact for probe/probe-fields validation.
@@ -167,8 +218,11 @@ Use this bundle for dev laptop and bench comparison before main merge/release pa
 
 Included:
 - executable
+- optional egui UI executable when present
 - git status/log
 - rustc/cargo metadata
+- fmt check
+- cargo test
 - build log
 - probe output
 - probe-fields output
@@ -178,34 +232,46 @@ Included:
 Notes:
 - This is not necessarily a main-branch release artifact.
 - For release packaging, rebuild after merge/tag on main.
+- wtg-ui.exe is copied and hashed when present, but it is not launched or run-validated by this script.
+- CLI outputs remain the validation evidence path.
 "@
 
-Write-TextFile (Join-Path $outDir "manifest.txt") $manifest
+    Write-TextFile (Join-Path $outDir "manifest.txt") $manifest
 
-# Recompute hashes after manifest creation so it is included too.
-Get-ChildItem $outDir -File |
-    Where-Object { $_.Name -ne "SHA256SUMS.txt" -and $_.Name -notlike "*.tmp" } |
-    ForEach-Object {
-        $hash = Get-FileHash -Algorithm SHA256 -Path $_.FullName
-        "$($hash.Hash)  $($_.Name)"
-    } | Out-File -FilePath $hashPath -Encoding ASCII
+    # Recompute hashes after manifest creation so it is included too.
+    Get-ChildItem -LiteralPath $outDir -File |
+        Where-Object { $_.Name -ne "SHA256SUMS.txt" -and $_.Name -notlike "*.tmp" } |
+        ForEach-Object {
+            $hash = Get-FileHash -Algorithm SHA256 -Path $_.FullName
+            "$($hash.Hash)  $($_.Name)"
+        } | Out-File -FilePath $hashPath -Encoding ASCII
 
-# Zip bundle.
-$zipPath = "$outDir.zip"
-if (Test-Path $zipPath) {
-    Remove-Item $zipPath -Force
+    # Zip bundle.
+    $zipPath = "$outDir.zip"
+    if (Test-Path $zipPath) {
+        Remove-Item $zipPath -Force
+    }
+    Compress-Archive -Path (Join-Path $outDir "*") -DestinationPath $zipPath -Force
+
+    # Clean root sink files again.
+    Remove-Item .\wtg_sink_*.csv, .\wtg_sink_*.jsonl -ErrorAction SilentlyContinue
+
+    Write-Host ""
+    Write-Host "WTG checkpoint package complete."
+    Write-Host "Directory: $outDir"
+    Write-Host "Zip:       $zipPath"
+    Write-Host ""
+    Write-Host "Recommended next:"
+    Write-Host "  Copy the zip to the bench system and run the included executable with:"
+    Write-Host "  .\$exeName --probe"
+    Write-Host "  .\$exeName --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id 94 --field-id 95"
+    Write-Host ""
+    Write-Host "Package root contents:"
+    Get-ChildItem -LiteralPath $resolvedOutputRoot -Force |
+        Sort-Object Name |
+        Select-Object Mode, Length, LastWriteTime, Name |
+        Format-Table -AutoSize
 }
-Compress-Archive -Path (Join-Path $outDir "*") -DestinationPath $zipPath -Force
-
-# Clean root sink files again.
-Remove-Item .\wtg_sink_*.csv, .\wtg_sink_*.jsonl -ErrorAction SilentlyContinue
-
-Write-Host ""
-Write-Host "WTG checkpoint package complete."
-Write-Host "Directory: $outDir"
-Write-Host "Zip:       $zipPath"
-Write-Host ""
-Write-Host "Recommended next:"
-Write-Host "  Copy the zip to the bench system and run the included executable with:"
-Write-Host "  .\$exeName --probe"
-Write-Host "  .\$exeName --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id 94 --field-id 95"
+finally {
+    Pop-Location
+}

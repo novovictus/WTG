@@ -5,11 +5,11 @@
 
 ## Current branch status
 
-Branch: `probe-fields`
+Branch: beta 5 promotion branch
 
-Current focus: repeatable empirical validation of NVML memory-utilization behavior under Windows WDDM.
+Current focus: promote the experimental egui UI surface while preserving the CLI/probe/probe-fields validation path.
 
-This branch is no longer in the original CFP/package-freeze state. The previous v0.1.2/v0.2.0-beta2 task list has been completed or superseded. Current work is centered on validating and documenting the probe/probe-fields instrumentation as the `v0.2.0-beta4` probe-fields checkpoint.
+This branch carries the v0.2.0-beta5 promotion work. The CLI remains the validation and capture surface. `wtg-ui.exe` is the experimental visual/demo/operator surface. Probe, sink, and field-values diagnostics remain available as retained beta4-era instrumentation.
 
 Current validated capabilities:
 
@@ -18,7 +18,7 @@ Current validated capabilities:
 - `--stats` output remains unchanged.
 - `--sink jsonl` writes `{"line":"..."}` records for `--once`, non-stats `--watch`, and `--probe`.
 - `--sink csv` writes structured header + row output for `--probe` only.
-- `--once --sink csv` and non-stats `--watch --sink csv` create placeholder CSV files with no rows.
+- `--once --sink csv` and non-stats `--watch --sink csv` create zero-byte placeholder CSV files.
 - `--probe` emits context-rich one-shot probe output.
 - `--probe-fields --field-id <u32>` compares the normal NVML utilization path against selected `nvmlDeviceGetFieldValues` results using safe `nvml-wrapper` APIs.
 
@@ -66,7 +66,7 @@ cargo build
 Expected clean state:
 
 ```text
-## probe-fields...origin/probe-fields
+## <current-branch>...origin/<current-branch>
 ```
 
 If generated sink files exist, remove them before committing:

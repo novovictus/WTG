@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Adam Hooper
-// //! WTG App - TUI for GPU metric validation
+//! WTG App - CLI for GPU metric validation.
 //!
 //! Entry point for the WTG proof-of-concept.
 //!
@@ -20,7 +20,7 @@
 //! - Keep "mode" flags separate from "parameter" flags.
 //! - `--interval` only matters when `--watch` is present.
 //! - `--interval` without a value is a hard error (avoids ambiguity).
-//! - This is a proof path: ground-truth telemetry first; UI later.
+//! - CLI remains the validation/capture path; wtg-ui.exe is the visual/demo/operator surface.
 
 use std::env;
 use std::process;
@@ -250,6 +250,16 @@ fn parse_args() -> (
 
     if probe_fields && field_ids.is_empty() {
         eprintln!("WTG usage error: --probe-fields requires at least one --field-id <u32>.");
+        process::exit(2);
+    }
+
+    if stats && sink.is_some() {
+        eprintln!("WTG usage error: --sink is not supported with --stats in this beta.");
+        process::exit(2);
+    }
+
+    if probe_fields && sink.is_some() {
+        eprintln!("WTG usage error: --sink is not supported with --probe-fields in this beta.");
         process::exit(2);
     }
 
@@ -492,5 +502,5 @@ fn main() {
 
     // Default behavior (no flags):
     // Keep the placeholder, because TUI is explicitly not built yet.
-    println!("\nTUI initialization in progress...");
+    println!("\nRun with --once, --watch, --probe, or --probe-fields. Use wtg-ui.exe for the experimental UI.");
 }
