@@ -20,7 +20,7 @@
 //! - Keep "mode" flags separate from "parameter" flags.
 //! - `--interval` only matters when `--watch` is present.
 //! - `--interval` without a value is a hard error (avoids ambiguity).
-//! - This is a proof path: ground-truth telemetry first; UI later.
+//! - CLI remains the validation/capture path; wtg-ui.exe is the visual/demo/operator surface.
 
 use std::env;
 use std::process;

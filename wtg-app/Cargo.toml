@@ -16,7 +16,7 @@ path = "src/bin/wtg-ui.rs"
 
 [dependencies]
 wtg-core = { path = "../wtg-core" }
-# Experimental egui desktop UI spike
+# Experimental egui desktop UI
 eframe = "0.27"
 
 # Logging

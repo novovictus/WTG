@@ -5,14 +5,14 @@ Copyright (C) 2026 Adam Hooper
 
 **Tagline:** Honest GPU compute stats for Windows
 
-## Current Status (v0.2.0-beta4 - Empirical Validation Phase)
+## Current Status (v0.2.0-beta5 - Experimental UI Surface)
 
 WTG is currently focused on empirical NVML telemetry validation under Windows WDDM.  
 Recent testing has identified a driver-branch regression affecting memory-utilization reporting on specific consumer mobile Ampere GPUs (580.88+), not reproduced on tested desktop or professional SKUs.
 Findings reflect publicly accessible NVML telemetry behavior under Windows WDDM.
 See `artifacts/test-matrix/matrix.md` for empirical results.
 
-This `spike/beta-5` branch also includes an experimental dual-surface prototype: the existing CLI validation surface (`wtg.exe`) plus a separate egui desktop frontend (`wtg-ui.exe`). The UI is experimental and is not the reference surface for validation evidence.
+WTG v0.2.0-beta5 adds an experimental dual-surface build: the existing CLI validation surface (`wtg.exe`) plus a separate egui desktop frontend (`wtg-ui.exe`). The CLI remains the reference surface for validation evidence; the UI is a visual inspection and demo surface.
 
 ---
 
@@ -47,7 +47,7 @@ See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
 ## Project Scope (Core Engine)
 
 * **Target**: NVIDIA GPUs, CUDA metrics only
-* **Platform**: Windows-native CLI validation binary (`wtg.exe`) with an experimental separate desktop UI binary (`wtg-ui.exe`) on the `spike/beta-5` branch
+* **Platform**: Windows-native CLI validation binary (`wtg.exe`) with an experimental separate desktop UI binary (`wtg-ui.exe`)
 * **Metrics**:
 
   * Per-process memory attribution and NVML-reported utilization metrics
@@ -55,7 +55,7 @@ See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
   * Power draw, clocks (contextual)
   * Exclude WDDM/Task Manager compute % from "truth" layer
 * **Refresh Rate**: CLI watch defaults to 1000 ms; empirical targets remain in the 250-500 ms range where appropriate
-* **UI**: Current validation is CLI/probe/sink based. The egui UI is an experimental visual frontend on `spike/beta-5`, not the validation reference surface.
+* **UI**: Current validation is CLI/probe/sink based. The egui UI is an experimental visual frontend, not the validation reference surface.
 
 ---
 
@@ -63,11 +63,11 @@ See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
 
 WTG is currently a command-line proof-of-concept focused on validating NVML-based GPU telemetry on Windows.
 
-### Current probe/sink branch behavior
+### Probe, sink, and field-values behavior
 
-This branch includes additional CLI paths for probe, field-value, and sink validation. These are current beta 4 development behaviors, not broad release-contract guarantees.
+WTG includes additional CLI paths for probe, field-value, and sink validation. These diagnostic paths were introduced during beta 4 probe/probe-fields work and remain available in beta 5; they are not broad release-contract guarantees.
 
-The beta 4 scope is intentionally narrow:
+The diagnostic CLI scope is intentionally narrow:
 
 - preserve existing `--once`, `--watch`, and `--stats` behavior
 - add probe-oriented diagnostic output
@@ -119,9 +119,9 @@ The beta 4 scope is intentionally narrow:
 
 Note: plain `--watch` and `--watch --stats` currently have different recovery behavior. `--watch --stats` uses a persistent NVML context and attempts to reinitialize after snapshot failures. Plain `--watch` is stricter and exits on snapshot failure. This behavior may be unified later.
 
-Structured CSV output is currently scoped to `--probe`. `--once --sink csv`, `--watch --sink csv`, and `--stats --sink csv` should not be treated as supported structured CSV modes in beta 4.
+Structured CSV output is currently scoped to `--probe`. `--once --sink csv`, `--watch --sink csv`, and `--stats --sink csv` should not be treated as supported structured CSV modes.
 
-`--stats` output is intentionally kept separate from sink output in beta 4. Adding sink integration for `--stats` is deferred so the probe-field work can remain focused on empirical NVML characterization rather than output-format expansion.
+`--stats` output is intentionally kept separate from sink output. Adding sink integration for `--stats` is deferred so the probe-field work can remain focused on empirical NVML characterization rather than output-format expansion.
 
 ### Probe context fields
 
@@ -201,9 +201,9 @@ field.value: 1280086850
 
 Field-values queries working for supported field IDs show that the field-values API is callable on the same device/session. This does not by itself prove driver causality. Cross-driver comparison still requires capturing the same `--probe` and `--probe-fields` outputs on different NVIDIA driver versions.
 
-### Beta 4 validation target
+### Diagnostic validation target
 
-Before tagging beta 4, validate on Windows NVML hardware:
+Before tagging or packaging a beta build, validate on Windows NVML hardware:
 
 ```powershell
 cargo fmt --check
@@ -297,17 +297,17 @@ Probe field-values comparison:
 cargo run -- --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id 94 --field-id 95
 ```
 
-Experimental egui UI spike:
+Experimental egui UI:
 
 ```powershell
 cargo run -p wtg-app --bin wtg-ui
 ```
 
-The egui UI is a separate experimental binary target on `spike/beta-5`. It does not modify the existing `wtg` CLI parser, does not create sink files, and uses the same `wtg-core` NVML snapshot and probe-context paths as the CLI. Unsupported optional values are displayed as `N/A`, and refresh failures are reported in the window without intentionally closing it.
+The egui UI is a separate experimental binary target. It does not modify the existing `wtg` CLI parser, does not create sink files, and uses the same `wtg-core` NVML snapshot and probe-context paths as the CLI. Unsupported optional values are displayed as `N/A`, and refresh failures are reported in the window without intentionally closing it.
 
 ## Experimental UI build notes and blocking behavior
 
-WTG currently includes two executable surfaces on `spike/beta-5`:
+WTG v0.2.0-beta5 includes two executable surfaces:
 
 - `wtg.exe`: the primary CLI validation, capture, probe, and sink interface.
 - `wtg-ui.exe`: an experimental egui desktop frontend that displays live telemetry from the same `wtg-core` NVML path.
@@ -406,7 +406,7 @@ WTG relies on NVIDIA NVML on Windows. Empirical testing shows:
 3. **Surfaces = Consumers**:
 
    * `wtg.exe` is the CLI validation, capture, probe, and sink surface.
-   * `wtg-ui.exe` is an experimental egui visual surface on `spike/beta-5`.
+   * `wtg-ui.exe` is an experimental egui visual surface.
    * Both surfaces consume the same `wtg-core` telemetry path; no backend duplication.
 4. **Extensible Metric Model**: trait-based, allows future integration of other vendors (ROCm, DX12)
 5. **Phased Approach**:
@@ -420,7 +420,7 @@ WTG relies on NVIDIA NVML on Windows. Empirical testing shows:
 
 ## Technical Architecture
 
-Current `spike/beta-5` source layout:
+Current source layout:
 
 ```text
 wtg-core/                         # Backend / truth layer
@@ -507,15 +507,14 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 | ------- | ---- |
 | v0.1.x | Truth-layer validation: one GPU, CLI output, correct NVML metrics vs Windows telemetry |
 | v0.2.0-beta4 | Probe, sink, field-values, and driver-behavior validation |
-| spike/beta-5 | Experimental dual-surface build: CLI validation surface plus `wtg-ui.exe` visual frontend |
-| Future beta 5 candidate | Package both binaries if the dual-surface spike is promoted |
+| v0.2.0-beta5 | Experimental dual-surface build: CLI validation surface plus `wtg-ui.exe` visual frontend |
 | v0.3+ | Optional native UI, tray integration, cross-vendor extensibility |
 
 ---
 
 ## Next Immediate Step
 
-* Finish beta 4 regression writeup once remaining test results are available
-* Keep `spike/beta-5` isolated until dual-surface scope is intentionally promoted
-* Validate packaging helper behavior on release builds that include optional `wtg-ui.exe`
-* Preserve CLI/probe/sink outputs as the formal validation path
+* Preserve CLI/probe/sink outputs as the formal validation path.
+* Use `wtg-ui.exe` for visual corroboration, demos, and operator-facing inspection.
+* Validate packaging helper behavior on release builds that include both executable surfaces.
+* Continue empirical driver-behavior documentation using captured CLI and structured artifacts.

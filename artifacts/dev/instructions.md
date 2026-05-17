@@ -5,11 +5,11 @@
 
 ## Current branch status
 
-Branch: `spike/beta-5`
+Branch: beta 5 promotion branch
 
-Current focus: repeatable empirical validation of NVML memory-utilization behavior under Windows WDDM.
+Current focus: promote the experimental egui UI surface while preserving the CLI/probe/probe-fields validation path.
 
-This branch is no longer in the original CFP/package-freeze state. The previous v0.1.2/v0.2.0-beta2 task list has been completed or superseded. Current work is centered on validating and documenting the probe/probe-fields instrumentation as the `v0.2.0-beta4` probe-fields checkpoint.
+This branch carries the v0.2.0-beta5 promotion work. The CLI remains the validation and capture surface. `wtg-ui.exe` is the experimental visual/demo/operator surface. Probe, sink, and field-values diagnostics remain available as retained beta4-era instrumentation.
 
 Current validated capabilities:
 
@@ -66,7 +66,7 @@ cargo build
 Expected clean state:
 
 ```text
-## spike/beta-5...origin/spike/beta-5
+## <current-branch>...origin/<current-branch>
 ```
 
 If generated sink files exist, remove them before committing:
