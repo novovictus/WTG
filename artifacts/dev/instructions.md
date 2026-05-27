@@ -118,6 +118,18 @@ cargo run -- --interval
 cargo run -- --field-id
 ```
 
+## Sink smoke harness
+
+For quick, no-frills validation of the sink + mode surfaces using a single command list, run:
+
+  artifacts\dev\wtg_sink.ps1
+
+Notes:
+- Raw output only: no parsing, no interpretation.
+- Uses cmd.exe start /b + timeout 2 + taskkill /F /IM wtg.exe per command.
+- Assumes only one wtg.exe instance is running on the system.
+- Any wtg_sink_*.csv / wtg_sink_*.jsonl files are created in the current working directory.
+
 Expected behavior:
 
 - `cargo build` passes.
