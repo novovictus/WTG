@@ -7,6 +7,8 @@
 #   Capture to file when needed:
 #     .\wtg_sink.ps1 > wtg_validation_output.txt 2>&1
 #
+#   Run from a directory containing wtg.exe, or copy artifacts\dev\wtg_sink.ps1 beside target\release\wtg.exe before running.
+#
 # Behavior:
 #   - Starts each WTG command.
 #   - Waits 2 seconds.
