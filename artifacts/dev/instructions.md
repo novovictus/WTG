@@ -5,20 +5,21 @@
 
 ## Current branch status
 
-Branch: beta 5 promotion branch
+Branch: sanitization/cli-output-sinks
 
-Current focus: promote the experimental egui UI surface while preserving the CLI/probe/probe-fields validation path.
+Current focus: complete the CLI sink surface while preserving existing console output and leaving the experimental egui UI out of scope.
 
-This branch carries the v0.2.0-beta5 promotion work. The CLI remains the validation and capture surface. `wtg-ui.exe` is the experimental visual/demo/operator surface. Probe, sink, and field-values diagnostics remain available as retained beta4-era instrumentation.
+This branch carries CLI output and sink realization work. The CLI remains the validation and capture surface. `wtg-ui.exe` is the experimental visual/demo/operator surface and is not changed by this branch. Probe, sink, and field-values diagnostics remain available as retained beta4-era instrumentation.
 
 Current validated capabilities:
 
 - `--once` normal snapshot output remains available.
 - `--watch --interval <ms>` normal watch output remains available.
 - `--stats` output remains unchanged.
-- `--sink jsonl` writes `{"line":"..."}` records for `--once`, non-stats `--watch`, and `--probe`.
-- `--sink csv` writes structured header + row output for `--probe` only.
-- `--once --sink csv` and non-stats `--watch --sink csv` create zero-byte placeholder CSV files.
+- `--help`, `-h`, `--version`, and `-V` are explicit CLI surfaces.
+- Unknown flags fail with exit code 2.
+- `--sink jsonl` writes `{"line":"..."}` records for snapshot, stats, probe, and probe-fields output paths.
+- `--sink csv` writes structured header + row output for snapshot, stats, probe, and probe-fields output paths.
 - `--probe` emits context-rich one-shot probe output.
 - `--probe-fields --field-id <u32>` compares the normal NVML utilization path against selected `nvmlDeviceGetFieldValues` results using safe `nvml-wrapper` APIs.
 
@@ -87,42 +88,64 @@ Run after code or documentation changes that could affect CLI behavior:
 ```powershell
 cargo build
 
+cargo run -- --help
+cargo run -- --version
+
 cargo run -- --once
 cargo run -- --once --stats
 cargo run -- --once --sink jsonl
 cargo run -- --once --sink csv
+cargo run -- --once --stats --sink jsonl
+cargo run -- --once --stats --sink csv
 
 cargo run -- --probe
 cargo run -- --probe --sink csv
 cargo run -- --probe --sink jsonl
 
 cargo run -- --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id 94 --field-id 95
+cargo run -- --probe-fields --field-id 74 --sink jsonl
+cargo run -- --probe-fields --field-id 74 --sink csv
 
+cargo run -- --bogus
 cargo run -- --probe-fields
 cargo run -- --field-id 83
 cargo run -- --probe-fields --probe
+cargo run -- --once --interval 1000
+cargo run -- --probe --interval 1000
+cargo run -- --sink xml
+cargo run -- --sink
+cargo run -- --interval
+cargo run -- --field-id
 ```
 
 Expected behavior:
 
 - `cargo build` passes.
+- `--help` and `--version` exit successfully.
 - `--once` output remains human-readable snapshot output.
 - `--once --stats` remains the existing stats contract.
 - `--once --sink jsonl` writes a non-empty JSONL file with `{"line":"..."}` records.
-- `--once --sink csv` creates a zero-byte placeholder CSV file.
+- `--once --sink csv` writes structured snapshot CSV header + rows.
+- `--once --stats --sink jsonl` writes stats output as JSONL line records.
+- `--once --stats --sink csv` writes structured stats CSV header + rows.
 - `--probe` prints one context-rich probe block.
 - `--probe --sink csv` writes one structured CSV header + row.
 - `--probe --sink jsonl` writes a JSONL `{"line":"..."}` probe record.
 - `--probe-fields --field-id ...` prints the utilization path and one field block per requested field ID.
+- `--probe-fields --field-id ... --sink jsonl` writes probe-fields output as JSONL line records.
+- `--probe-fields --field-id ... --sink csv` writes one structured CSV header and one row per requested field ID per GPU.
 - Invalid invocations exit with code `2` from the child app. `cargo run` may report the child failure as a command failure.
 
 Windows watch interruption note:
 
 ```powershell
 cargo run -- --watch --interval 1000 --sink jsonl
+cargo run -- --watch --interval 1000 --sink csv
+cargo run -- --watch --stats --interval 1000 --sink jsonl
+cargo run -- --watch --stats --interval 1000 --sink csv
 ```
 
-Stop after a few ticks with Ctrl+C. Through `cargo run`, Windows may report `STATUS_CONTROL_C_EXIT`. That is expected for manual interruption. The JSONL sink should contain flushed records.
+Stop after a few ticks with Ctrl+C. Through `cargo run`, Windows may report `STATUS_CONTROL_C_EXIT`. That is expected for manual interruption. The generated sink should contain flushed records.
 
 ---
 
@@ -200,7 +223,7 @@ Harness requirements:
 - Run from repository root or from a portable drop folder.
 - Capture command, stdout, stderr, exit code, timestamp, git commit, and generated sink files.
 - Preserve `--probe` and `--probe-fields` outputs as plain text.
-- Preserve `--probe --sink csv` as structured CSV.
+- Preserve CSV sinks as structured CSV for snapshot, stats, probe, and probe-fields paths.
 - Do not require Codex or external network access.
 - Do not modify repo state except writing ignored artifact output under an explicit validation folder.
 

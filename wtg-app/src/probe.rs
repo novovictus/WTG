@@ -101,23 +101,6 @@ pub(crate) fn format_probe_record(record: &ProbeRecord) -> String {
     )
 }
 
-fn csv_escape_field(s: &str) -> String {
-    if !s.chars().any(|c| matches!(c, ',' | '"' | '\n' | '\r')) {
-        return s.to_string();
-    }
-
-    let mut escaped = String::with_capacity(s.len() + 2);
-    escaped.push('"');
-    for c in s.chars() {
-        if c == '"' {
-            escaped.push('"');
-        }
-        escaped.push(c);
-    }
-    escaped.push('"');
-    escaped
-}
-
 pub(crate) fn format_probe_csv_header() -> &'static str {
     "wtg_version,gpu_index,gpu_name,gpu_uuid,driver_version,cuda_driver_version,gpu_compute_mode,gpu_perf_state,gpu_pci_bus_id,temp_c,util_gpu_pct,util_mem_controller_pct,vram_used_mib,vram_total_mib,power_w,power_limit_w"
 }
@@ -136,7 +119,7 @@ pub(crate) fn format_probe_csv_row(record: &ProbeRecord) -> String {
         .map(|w| format!("{w:.1}"))
         .unwrap_or_else(|| "N/A".to_string());
 
-    [
+    crate::sink::format_csv_row(&[
         record.wtg_version.to_string(),
         record.gpu_index.to_string(),
         record.gpu_name.clone(),
@@ -153,9 +136,5 @@ pub(crate) fn format_probe_csv_row(record: &ProbeRecord) -> String {
         record.vram_total_mib.to_string(),
         power_w,
         power_limit_w,
-    ]
-    .iter()
-    .map(|field| csv_escape_field(field))
-    .collect::<Vec<_>>()
-    .join(",")
+    ])
 }

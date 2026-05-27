@@ -34,7 +34,10 @@ mod probe_fields;
 mod sink;
 
 use probe::{format_probe_csv_header, format_probe_csv_row, format_probe_record, ProbeRecord};
-use probe_fields::{format_field_value, format_probe_fields_snapshot};
+use probe_fields::{
+    format_field_value, format_probe_fields_csv_header, format_probe_fields_csv_row,
+    format_probe_fields_snapshot,
+};
 use sink::{Sink, SinkKind};
 
 /// Default sampling interval when `--watch` is enabled.
@@ -44,6 +47,19 @@ const DEFAULT_INTERVAL_MS: u64 = 1000;
 /// Stats output schema version.
 /// This lets us evolve the key set while remaining explicit in artifacts.
 const STATS_SCHEMA: u32 = 0;
+
+struct CliArgs {
+    once: bool,
+    watch: bool,
+    probe: bool,
+    probe_fields: bool,
+    stats: bool,
+    help: bool,
+    version: bool,
+    interval_ms: Option<u64>,
+    sink: Option<SinkKind>,
+    field_ids: Vec<u32>,
+}
 
 /// Returns a simple timestamp like "1707101234.567" (unix seconds.millis).
 /// No external deps; good enough for proof and log correlation.
@@ -55,9 +71,8 @@ fn now_ts() -> String {
 }
 
 /// Print the stats schema once per run when `--stats` is enabled.
-fn print_stats_schema_header() {
-    println!("stats.schema: {}", STATS_SCHEMA);
-    println!();
+fn format_stats_schema_header() -> String {
+    format!("stats.schema: {}\n\n", STATS_SCHEMA)
 }
 
 /// --- Unit conversion helpers ------------------------------------------------
@@ -75,251 +90,304 @@ fn mw_to_w(mw: Option<u32>) -> Option<f32> {
     mw.map(|x| (x as f32) / 1000.0)
 }
 
+fn optional_u32_string(value: Option<u32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "N/A".to_string())
+}
+
+fn optional_w_string(value: Option<f32>) -> String {
+    value
+        .map(|value| format!("{value:.1}"))
+        .unwrap_or_else(|| "N/A".to_string())
+}
+
+fn format_snapshot_csv_header() -> &'static str {
+    "wtg_version,tick_seq,tick_ts,gpu_index,gpu_name,gpu_uuid,temp_c,util_gpu_pct,util_mem_controller_pct,vram_used_mib,vram_total_mib,power_w,power_limit_w"
+}
+
+fn format_snapshot_csv_row(
+    s: &wtg_core::nvml::GpuSnapshot,
+    tick_seq: u64,
+    tick_ts: &str,
+) -> String {
+    sink::format_csv_row(&[
+        env!("CARGO_PKG_VERSION").to_string(),
+        tick_seq.to_string(),
+        tick_ts.to_string(),
+        s.index.to_string(),
+        s.name.clone(),
+        s.uuid.clone(),
+        optional_u32_string(s.temp_c),
+        s.gpu_util_pct.to_string(),
+        s.mem_util_pct.to_string(),
+        bytes_to_mib(s.mem_used_bytes).to_string(),
+        bytes_to_mib(s.mem_total_bytes).to_string(),
+        optional_w_string(mw_to_w(s.power_mw)),
+        optional_w_string(mw_to_w(s.power_limit_mw)),
+    ])
+}
+
+fn format_stats_csv_header() -> &'static str {
+    "wtg_version,stats_schema,tick_seq,tick_ts,gpu_index,gpu_name,gpu_uuid,temp_c,util_gpu_pct,util_mem_controller_pct,vram_used_mib,vram_total_mib,power_w,power_limit_w"
+}
+
+fn format_stats_csv_row(s: &wtg_core::nvml::GpuSnapshot, tick_seq: u64, tick_ts: &str) -> String {
+    sink::format_csv_row(&[
+        env!("CARGO_PKG_VERSION").to_string(),
+        STATS_SCHEMA.to_string(),
+        tick_seq.to_string(),
+        tick_ts.to_string(),
+        s.index.to_string(),
+        s.name.clone(),
+        s.uuid.clone(),
+        optional_u32_string(s.temp_c),
+        s.gpu_util_pct.to_string(),
+        s.mem_util_pct.to_string(),
+        bytes_to_mib(s.mem_used_bytes).to_string(),
+        bytes_to_mib(s.mem_total_bytes).to_string(),
+        optional_w_string(mw_to_w(s.power_mw)),
+        optional_w_string(mw_to_w(s.power_limit_mw)),
+    ])
+}
+
 /// Print one GPU in stable "key: value" form.
 /// NOTE: This assumes wtg_core::nvml::GpuSnapshot exposes these fields publicly.
 /// If field names differ, adjust the mappings here (only here).
-fn print_stats_block(s: &wtg_core::nvml::GpuSnapshot) {
-    println!("[stats] gpu={}", s.index);
-
-    // Identity
-    println!("gpu.index: {}", s.index);
-    println!("gpu.name: {}", s.name);
-    println!("gpu.uuid: {}", s.uuid);
-
-    // Core telemetry (Basic tier)
-    println!(
-        "temp.c: {}",
-        s.temp_c
-            .map(|t| t.to_string())
-            .unwrap_or_else(|| "N/A".to_string())
-    );
-    println!("util.gpu_pct: {}", s.gpu_util_pct);
-    println!("util.mem_controller_pct: {}", s.mem_util_pct);
-
-    println!("vram.used_mib: {}", bytes_to_mib(s.mem_used_bytes));
-    println!("vram.total_mib: {}", bytes_to_mib(s.mem_total_bytes));
-
-    println!(
-        "power.w: {}",
-        mw_to_w(s.power_mw)
-            .map(|w| format!("{w:.1}"))
-            .unwrap_or_else(|| "N/A".to_string())
-    );
-
-    println!(
-        "power.limit_w: {}",
-        mw_to_w(s.power_limit_mw)
-            .map(|w| format!("{w:.1}"))
-            .unwrap_or_else(|| "N/A".to_string())
-    );
-
-    println!();
-}
-
-/// Minimal argument parser for our small surface area.
-///
-/// Semantics:
-/// - `--once` and `--watch` are mutually exclusive (error if both).
-/// - `--probe` is mutually exclusive with `--once` and `--watch`.
-/// - `--probe-fields` is mutually exclusive with `--once`, `--watch`, and `--probe`.
-/// - `--stats` is an output modifier and requires `--once` or `--watch`.
-/// - `--interval <ms>`:
-///     - requires a value
-///     - parsed as u64 milliseconds
-///     - only used with `--watch`
-/// - `--field-id <u32>`:
-///     - repeatable
-///     - required by `--probe-fields`
-///     - invalid without `--probe-fields`
-/// - Unknown flags are ignored for now (keeps dev friction low during bootstrap).
-fn parse_args() -> (
-    bool,        /*once*/
-    bool,        /*watch*/
-    bool,        /*probe*/
-    bool,        /*probe_fields*/
-    bool,        /*stats*/
-    Option<u64>, /*interval_ms*/
-    Option<SinkKind>,
-    Vec<u32>, /*field_ids*/
-) {
-    let args: Vec<String> = env::args().collect();
-
-    let once = args.iter().any(|a| a == "--once");
-    let watch = args.iter().any(|a| a == "--watch");
-    let probe = args.iter().any(|a| a == "--probe");
-    let probe_fields = args.iter().any(|a| a == "--probe-fields");
-    let stats = args.iter().any(|a| a == "--stats");
-
-    // Hard guard: mutually exclusive modes.
-    if once && watch {
-        eprintln!("WTG usage error: --once and --watch are mutually exclusive.");
-        process::exit(2);
-    }
-
-    if probe && (once || watch) {
-        eprintln!("WTG usage error: --probe is mutually exclusive with --once and --watch.");
-        process::exit(2);
-    }
-
-    if probe_fields && (once || watch || probe) {
-        eprintln!(
-            "WTG usage error: --probe-fields is mutually exclusive with --once, --watch, and --probe."
-        );
-        process::exit(2);
-    }
-
-    // `--stats` is a modifier; do not change default behavior.
-    // Require an explicit mode so "wtg.exe --stats" doesn't unexpectedly change output.
-    if stats && !once && !watch {
-        eprintln!("WTG usage error: --stats requires --once or --watch.");
-        process::exit(2);
-    }
-
-    // Parse `--interval <ms>` if present.
-    // We intentionally *do not* accept `--interval` without a value.
-    let mut interval_ms: Option<u64> = None;
-    let mut sink: Option<SinkKind> = None;
-    let mut field_ids: Vec<u32> = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--interval" {
-            // Require a next token.
-            if i + 1 >= args.len() {
-                eprintln!(
-                    "WTG usage error: --interval requires a value in milliseconds (e.g., --interval 1000)."
-                );
-                process::exit(2);
-            }
-
-            let v = &args[i + 1];
-            let parsed = v.parse::<u64>().unwrap_or_else(|_| {
-                eprintln!("WTG usage error: --interval value must be an integer milliseconds value. Got: {v}");
-                process::exit(2);
-            });
-
-            interval_ms = Some(parsed);
-            i += 2;
-            continue;
-        }
-
-        if args[i] == "--field-id" {
-            // Require a next token.
-            if i + 1 >= args.len() {
-                eprintln!("WTG usage error: --field-id requires a u32 field ID value.");
-                process::exit(2);
-            }
-
-            let v = &args[i + 1];
-            let parsed = v.parse::<u32>().unwrap_or_else(|_| {
-                eprintln!("WTG usage error: --field-id value must be a u32 integer. Got: {v}");
-                process::exit(2);
-            });
-
-            field_ids.push(parsed);
-            i += 2;
-            continue;
-        }
-
-        if args[i] == "--sink" {
-            // Require a next token.
-            if i + 1 >= args.len() {
-                eprintln!("WTG usage error: --sink requires a value (csv or jsonl).");
-                process::exit(2);
-            }
-
-            let v = &args[i + 1];
-            sink = Some(match v.as_str() {
-                "csv" => SinkKind::Csv,
-                "jsonl" => SinkKind::Jsonl,
-                _ => {
-                    eprintln!("WTG usage error: --sink value must be csv or jsonl. Got: {v}");
-                    process::exit(2);
-                }
-            });
-
-            i += 2;
-            continue;
-        }
-        i += 1;
-    }
-
-    if !probe_fields && !field_ids.is_empty() {
-        eprintln!("WTG usage error: --field-id requires --probe-fields.");
-        process::exit(2);
-    }
-
-    if probe_fields && field_ids.is_empty() {
-        eprintln!("WTG usage error: --probe-fields requires at least one --field-id <u32>.");
-        process::exit(2);
-    }
-
-    if stats && sink.is_some() {
-        eprintln!("WTG usage error: --sink is not supported with --stats in this beta.");
-        process::exit(2);
-    }
-
-    if probe_fields && sink.is_some() {
-        eprintln!("WTG usage error: --sink is not supported with --probe-fields in this beta.");
-        process::exit(2);
-    }
-
-    (
-        once,
-        watch,
-        probe,
-        probe_fields,
-        stats,
-        interval_ms,
-        sink,
-        field_ids,
+fn format_stats_block(s: &wtg_core::nvml::GpuSnapshot) -> String {
+    format!(
+        concat!(
+            "[stats] gpu={}\n",
+            "gpu.index: {}\n",
+            "gpu.name: {}\n",
+            "gpu.uuid: {}\n",
+            "temp.c: {}\n",
+            "util.gpu_pct: {}\n",
+            "util.mem_controller_pct: {}\n",
+            "vram.used_mib: {}\n",
+            "vram.total_mib: {}\n",
+            "power.w: {}\n",
+            "power.limit_w: {}\n",
+            "\n"
+        ),
+        s.index,
+        s.index,
+        s.name,
+        s.uuid,
+        optional_u32_string(s.temp_c),
+        s.gpu_util_pct,
+        s.mem_util_pct,
+        bytes_to_mib(s.mem_used_bytes),
+        bytes_to_mib(s.mem_total_bytes),
+        optional_w_string(mw_to_w(s.power_mw)),
+        optional_w_string(mw_to_w(s.power_limit_mw))
     )
 }
 
+fn print_and_mirror_jsonl(text: &str, sink: &Option<Sink>) {
+    print!("{text}");
+    if let Some(sink) = sink {
+        if sink.kind() == SinkKind::Jsonl {
+            sink.emit_jsonl_lines(text);
+        }
+    }
+}
+
+fn print_help() {
+    print!(concat!(
+        "WTG - WhatTheGPU v",
+        env!("CARGO_PKG_VERSION"),
+        "\n",
+        "\n",
+        "Usage:\n",
+        "  wtg.exe --once [--stats] [--sink jsonl|csv]\n",
+        "  wtg.exe --watch [--interval <ms>] [--stats] [--sink jsonl|csv]\n",
+        "  wtg.exe --probe [--sink jsonl|csv]\n",
+        "  wtg.exe --probe-fields --field-id <u32> [--field-id <u32> ...] [--sink jsonl|csv]\n",
+        "\n",
+        "Options:\n",
+        "  --once                  Capture a single GPU snapshot and exit.\n",
+        "  --watch                 Continuously poll GPU state.\n",
+        "  --interval <ms>         Polling interval in milliseconds for --watch.\n",
+        "  --stats                 Print stable key:value stats output for --once or --watch.\n",
+        "  --probe                 Capture one context-rich probe block.\n",
+        "  --probe-fields          Query explicit NVML field-value IDs.\n",
+        "  --field-id <u32>        Repeatable field ID for --probe-fields.\n",
+        "  --sink jsonl|csv        Write a timestamped sink file.\n",
+        "  --help / -h             Print this help text.\n",
+        "  --version / -V          Print version and exit.\n"
+    ));
+}
+
+fn print_version() {
+    println!("WTG - WhatTheGPU v{}", env!("CARGO_PKG_VERSION"));
+}
+
+fn usage_error(message: &str) -> ! {
+    eprintln!("WTG usage error: {message}");
+    process::exit(2);
+}
+
+fn parse_args() -> CliArgs {
+    let args: Vec<String> = env::args().collect();
+
+    let mut parsed = CliArgs {
+        once: false,
+        watch: false,
+        probe: false,
+        probe_fields: false,
+        stats: false,
+        help: false,
+        version: false,
+        interval_ms: None,
+        sink: None,
+        field_ids: Vec::new(),
+    };
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--once" => {
+                parsed.once = true;
+                i += 1;
+            }
+            "--watch" => {
+                parsed.watch = true;
+                i += 1;
+            }
+            "--probe" => {
+                parsed.probe = true;
+                i += 1;
+            }
+            "--probe-fields" => {
+                parsed.probe_fields = true;
+                i += 1;
+            }
+            "--stats" => {
+                parsed.stats = true;
+                i += 1;
+            }
+            "--help" | "-h" => {
+                parsed.help = true;
+                i += 1;
+            }
+            "--version" | "-V" => {
+                parsed.version = true;
+                i += 1;
+            }
+            "--interval" => {
+                if i + 1 >= args.len() {
+                    usage_error(
+                        "--interval requires a value in milliseconds (e.g., --interval 1000).",
+                    );
+                }
+
+                let v = &args[i + 1];
+                let interval_ms = v.parse::<u64>().unwrap_or_else(|_| {
+                    usage_error(&format!(
+                        "--interval value must be an integer milliseconds value. Got: {v}"
+                    ));
+                });
+
+                parsed.interval_ms = Some(interval_ms);
+                i += 2;
+            }
+            "--field-id" => {
+                if i + 1 >= args.len() {
+                    usage_error("--field-id requires a u32 field ID value.");
+                }
+
+                let v = &args[i + 1];
+                let field_id = v.parse::<u32>().unwrap_or_else(|_| {
+                    usage_error(&format!("--field-id value must be a u32 integer. Got: {v}"));
+                });
+
+                parsed.field_ids.push(field_id);
+                i += 2;
+            }
+            "--sink" => {
+                if i + 1 >= args.len() {
+                    usage_error("--sink requires a value (csv or jsonl).");
+                }
+
+                let v = &args[i + 1];
+                parsed.sink = Some(match v.as_str() {
+                    "csv" => SinkKind::Csv,
+                    "jsonl" => SinkKind::Jsonl,
+                    _ => usage_error(&format!("--sink value must be csv or jsonl. Got: {v}")),
+                });
+
+                i += 2;
+            }
+            other if other.starts_with('-') => {
+                usage_error(&format!("unknown flag: {other}"));
+            }
+            other => {
+                usage_error(&format!("unexpected argument: {other}"));
+            }
+        }
+    }
+
+    let once = parsed.once;
+    let watch = parsed.watch;
+    let probe = parsed.probe;
+    let probe_fields = parsed.probe_fields;
+    let stats = parsed.stats;
+
+    if once && watch {
+        usage_error("--once and --watch are mutually exclusive.");
+    }
+
+    if probe && (once || watch) {
+        usage_error("--probe is mutually exclusive with --once and --watch.");
+    }
+
+    if probe_fields && (once || watch || probe) {
+        usage_error("--probe-fields is mutually exclusive with --once, --watch, and --probe.");
+    }
+
+    if stats && !once && !watch {
+        usage_error("--stats requires --once or --watch.");
+    }
+
+    if parsed.interval_ms.is_some() && !watch {
+        usage_error("--interval is valid only with --watch.");
+    }
+
+    if !probe_fields && !parsed.field_ids.is_empty() {
+        usage_error("--field-id requires --probe-fields.");
+    }
+
+    if probe_fields && parsed.field_ids.is_empty() {
+        usage_error("--probe-fields requires at least one --field-id <u32>.");
+    }
+
+    if parsed.sink.is_some() && !once && !watch && !probe && !probe_fields {
+        usage_error("--sink requires --once, --watch, --probe, or --probe-fields.");
+    }
+
+    parsed
+}
+
 fn main() {
+    let args = parse_args();
+
+    if args.help {
+        print_help();
+        return;
+    }
+
+    if args.version {
+        print_version();
+        return;
+    }
+
     // Initialize logging early. This is safe in all modes and helps diagnostics on Windows.
     tracing_subscriber::fmt::init();
 
     info!("WTG v{} initializing...", env!("CARGO_PKG_VERSION"));
 
-    let (once, watch, probe, probe_fields, stats, interval_ms_opt, sink_opt, field_ids) =
-        parse_args();
-
-    // Mode: `--probe-fields`
-    if probe_fields {
-        let ctx = match wtg_core::nvml::init_context() {
-            Ok(ctx) => ctx,
-            Err(e) => {
-                eprintln!("WTG --probe-fields init failed: {e}");
-                process::exit(2);
-            }
-        };
-
-        match wtg_core::nvml::snapshot_all_with_ctx(&ctx) {
-            Ok(snaps) => {
-                for s in snaps.iter() {
-                    let context =
-                        wtg_core::nvml::probe_context::query_probe_context_for_gpu_with_ctx(
-                            &ctx, s.index,
-                        );
-                    print!("{}", format_probe_fields_snapshot(s, &context));
-
-                    let fields = wtg_core::nvml::field_values::query_field_values_for_gpu(
-                        &ctx, s.index, &field_ids,
-                    );
-                    for field in fields.iter() {
-                        print!("{}", format_field_value(s.index, field));
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("WTG --probe-fields failed: {e}");
-                process::exit(2);
-            }
-        }
-        return;
-    }
-
-    let _sink = match sink_opt {
+    let sink = match args.sink {
         Some(kind) => match Sink::new(kind) {
             Ok(sink) => {
                 eprintln!("WTG note: sink enabled: {}", sink.filename());
@@ -333,8 +401,61 @@ fn main() {
         None => None,
     };
 
+    // Mode: `--probe-fields`
+    if args.probe_fields {
+        let ctx = match wtg_core::nvml::init_context() {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                eprintln!("WTG --probe-fields init failed: {e}");
+                process::exit(2);
+            }
+        };
+
+        match wtg_core::nvml::snapshot_all_with_ctx(&ctx) {
+            Ok(snaps) => {
+                let mut wrote_csv_header = false;
+                for s in snaps.iter() {
+                    let context =
+                        wtg_core::nvml::probe_context::query_probe_context_for_gpu_with_ctx(
+                            &ctx, s.index,
+                        );
+                    let block = format_probe_fields_snapshot(s, &context);
+                    print_and_mirror_jsonl(&block, &sink);
+
+                    let fields = wtg_core::nvml::field_values::query_field_values_for_gpu(
+                        &ctx,
+                        s.index,
+                        &args.field_ids,
+                    );
+                    if let Some(sink) = &sink {
+                        if sink.kind() == SinkKind::Csv && !wrote_csv_header {
+                            sink.emit_raw_line(format_probe_fields_csv_header());
+                            wrote_csv_header = true;
+                        }
+                    }
+                    for field in fields.iter() {
+                        let field_block = format_field_value(s.index, field);
+                        print_and_mirror_jsonl(&field_block, &sink);
+                        if let Some(sink) = &sink {
+                            if sink.kind() == SinkKind::Csv {
+                                sink.emit_raw_line(&format_probe_fields_csv_row(
+                                    s, &context, field,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("WTG --probe-fields failed: {e}");
+                process::exit(2);
+            }
+        }
+        return;
+    }
+
     // Mode: `--probe`
-    if probe {
+    if args.probe {
         let probe_context_ctx = match wtg_core::nvml::init_context() {
             Ok(ctx) => ctx,
             Err(e) => {
@@ -353,10 +474,10 @@ fn main() {
                         );
                     let record = ProbeRecord::from_snapshot(s, context);
                     let block = format_probe_record(&record);
-                    print!("{block}");
-                    if let Some(sink) = &_sink {
+                    print_and_mirror_jsonl(&block, &sink);
+                    if let Some(sink) = &sink {
                         match sink.kind() {
-                            SinkKind::Jsonl => sink.emit(&block),
+                            SinkKind::Jsonl => {}
                             SinkKind::Csv => {
                                 if !wrote_csv_header {
                                     sink.emit_raw_line(format_probe_csv_header());
@@ -376,32 +497,53 @@ fn main() {
         return;
     }
 
-    // Print banner once per run (not on every tick).
+    // Print banner once per run (not on every tick). This is console-only for
+    // snapshot/watch modes; JSONL remains telemetry-oriented on those paths.
     println!("WTG - WhatTheGPU v{}", env!("CARGO_PKG_VERSION"));
     println!("Honest GPU compute stats for Windows");
 
-    // NOTE: `--interval` is a parameter, not a mode.
-    // If user provides it without `--watch`, we ignore it (optionally warn).
-    if interval_ms_opt.is_some() && !watch {
-        eprintln!("WTG note: --interval is only used with --watch; ignoring for this run.");
-    }
-
     // Mode: `--once`
-    if once {
+    if args.once {
         match wtg_core::nvml::snapshot_all() {
             Ok(snaps) => {
-                if stats {
-                    print_stats_schema_header();
+                let tick_seq = 0;
+                let tick_ts = now_ts();
+                if args.stats {
+                    let header = format_stats_schema_header();
+                    print_and_mirror_jsonl(&header, &sink);
+                    if let Some(sink) = &sink {
+                        if sink.kind() == SinkKind::Csv {
+                            sink.emit_raw_line(format_stats_csv_header());
+                        }
+                    }
                     for s in snaps.iter() {
-                        print_stats_block(s);
+                        let block = format_stats_block(s);
+                        print_and_mirror_jsonl(&block, &sink);
+                        if let Some(sink) = &sink {
+                            if sink.kind() == SinkKind::Csv {
+                                sink.emit_raw_line(&format_stats_csv_row(s, tick_seq, &tick_ts));
+                            }
+                        }
                     }
                 } else {
                     println!("\nWTG snapshot (NVML)\n");
-                    for s in snaps {
+                    if let Some(sink) = &sink {
+                        if sink.kind() == SinkKind::Csv {
+                            sink.emit_raw_line(format_snapshot_csv_header());
+                        }
+                    }
+                    for s in snaps.iter() {
                         let line = format!("{s}");
                         println!("{line}");
-                        if let Some(sink) = &_sink {
-                            sink.emit(&line);
+                        if let Some(sink) = &sink {
+                            match sink.kind() {
+                                SinkKind::Jsonl => sink.emit_jsonl_lines(&line),
+                                SinkKind::Csv => {
+                                    sink.emit_raw_line(&format_snapshot_csv_row(
+                                        s, tick_seq, &tick_ts,
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
@@ -415,27 +557,34 @@ fn main() {
     }
 
     // Mode: `--watch`
-    if watch {
-        // Determine the sampling period.
-        let interval_ms = interval_ms_opt.unwrap_or(DEFAULT_INTERVAL_MS);
+    if args.watch {
+        let interval_ms = args.interval_ms.unwrap_or(DEFAULT_INTERVAL_MS);
 
-        // Guardrail: avoid accidental near-zero hot loops that add noise.
-        // We still allow low values if you intentionally set them, but we can warn.
         if interval_ms < 100 {
             eprintln!("WTG note: very low interval ({interval_ms}ms). NVML metrics may not update this quickly; expect duplicates.");
         }
 
-        if stats {
-            print_stats_schema_header();
-            println!("watch.interval_ms: {interval_ms}");
-            println!();
+        if args.stats {
+            let header = format_stats_schema_header();
+            print_and_mirror_jsonl(&header, &sink);
+            print_and_mirror_jsonl(&format!("watch.interval_ms: {interval_ms}\n\n"), &sink);
+            if let Some(sink) = &sink {
+                if sink.kind() == SinkKind::Csv {
+                    sink.emit_raw_line(format_stats_csv_header());
+                }
+            }
         } else {
             println!("\nWTG watch mode (NVML) - interval {} ms\n", interval_ms);
+            if let Some(sink) = &sink {
+                if sink.kind() == SinkKind::Csv {
+                    sink.emit_raw_line(format_snapshot_csv_header());
+                }
+            }
         }
 
         let sleep_dur = Duration::from_millis(interval_ms);
 
-        if stats {
+        if args.stats {
             let mut ctx = loop {
                 match wtg_core::nvml::init_context() {
                     Ok(ctx) => break ctx,
@@ -450,10 +599,19 @@ fn main() {
             loop {
                 match wtg_core::nvml::snapshot_all_with_ctx(&ctx) {
                     Ok(snaps) => {
-                        println!("tick.seq: {tick_seq}");
-                        println!("tick.ts: {}", now_ts());
+                        let tick_ts = now_ts();
+                        print_and_mirror_jsonl(&format!("tick.seq: {tick_seq}\n"), &sink);
+                        print_and_mirror_jsonl(&format!("tick.ts: {tick_ts}\n"), &sink);
                         for s in snaps.iter() {
-                            print_stats_block(s);
+                            let block = format_stats_block(s);
+                            print_and_mirror_jsonl(&block, &sink);
+                            if let Some(sink) = &sink {
+                                if sink.kind() == SinkKind::Csv {
+                                    sink.emit_raw_line(&format_stats_csv_row(
+                                        s, tick_seq, &tick_ts,
+                                    ));
+                                }
+                            }
                         }
                         tick_seq += 1;
                     }
@@ -470,23 +628,32 @@ fn main() {
                     }
                 }
 
-                // Sleep until next tick. Ctrl+C will terminate the process naturally.
                 thread::sleep(sleep_dur);
             }
         } else {
+            let mut tick_seq: u64 = 0;
             loop {
                 match wtg_core::nvml::snapshot_all() {
                     Ok(snaps) => {
-                        // Timestamp each tick for correlation and to prove we are refreshing.
-                        println!("--- tick {} ---", now_ts());
-                        for s in snaps {
+                        let tick_ts = now_ts();
+                        let tick_line = format!("--- tick {tick_ts} ---");
+                        println!("{tick_line}");
+                        for s in snaps.iter() {
                             let line = format!("{s}");
                             println!("{line}");
-                            if let Some(sink) = &_sink {
-                                sink.emit(&line);
+                            if let Some(sink) = &sink {
+                                match sink.kind() {
+                                    SinkKind::Jsonl => sink.emit_jsonl_lines(&line),
+                                    SinkKind::Csv => {
+                                        sink.emit_raw_line(&format_snapshot_csv_row(
+                                            s, tick_seq, &tick_ts,
+                                        ));
+                                    }
+                                }
                             }
                         }
                         println!();
+                        tick_seq += 1;
                     }
                     Err(e) => {
                         eprintln!("WTG --watch failed: {e}");
@@ -494,7 +661,6 @@ fn main() {
                     }
                 }
 
-                // Sleep until next tick. Ctrl+C will terminate the process naturally.
                 thread::sleep(sleep_dur);
             }
         }

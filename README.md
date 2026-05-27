@@ -71,8 +71,8 @@ The diagnostic CLI scope is intentionally narrow:
 
 - preserve existing `--once`, `--watch`, and `--stats` behavior
 - add probe-oriented diagnostic output
-- add structured probe CSV output
-- add line-oriented JSONL sink output where currently supported
+- add structured CSV output for snapshot, stats, probe, and probe-fields paths
+- add line-oriented JSONL sink output for snapshot, stats, probe, and probe-fields paths
 - add experimental raw NVML field-value probing through explicit field IDs
 - avoid interpreting raw field IDs as proof of driver causality in code or documentation
 
@@ -96,32 +96,37 @@ The diagnostic CLI scope is intentionally narrow:
   Capture one snapshot and print a minimal probe block for field validation.
 
 - `--probe-fields`  
-  Experimental console-only mode that captures one snapshot, prints the normal utilization path, and then queries selected NVML field-value IDs.
+  Experimental mode that captures one snapshot, prints the normal utilization path, and then queries selected NVML field-value IDs.
 
 - `--field-id <u32>`  
   Repeatable field ID argument for `--probe-fields`. At least one `--field-id` is required when using `--probe-fields`.
 
 - `--sink jsonl`  
-  Create a timestamped `wtg_sink_*.jsonl` file. JSONL sinks currently write `{"line":"..."}` records for supported line-oriented output paths.
+  Create a timestamped `wtg_sink_*.jsonl` file. JSONL sinks write `{"line":"..."}` records for supported output lines.
 
 - `--sink csv`  
-  Create a timestamped `wtg_sink_*.csv` file. CSV currently writes structured header + row output for `--probe` only.
+  Create a timestamped `wtg_sink_*.csv` file. CSV sinks write structured headers and rows for snapshot, stats, probe, and probe-fields output.
+
+- `--help`, `-h`
+  Print CLI usage information and exit.
+
+- `--version`, `-V`
+  Print the WTG / WhatTheGPU version and exit.
 
 ### Sink support matrix
 
 | Mode | `--sink jsonl` | `--sink csv` | Notes |
 | --- | --- | --- | --- |
 | `--probe` | Supported | Supported | CSV emits structured probe records. |
-| `--probe-fields` | Not supported | Not supported | Experimental console-only comparison mode in beta 4. |
-| `--once` | Supported as line-oriented JSONL | Not structured | CSV output is not currently implemented for this mode. |
-| `--watch` | Supported as line-oriented JSONL | Not structured | CSV output is not currently implemented for this mode. `--interval` applies here. |
-| `--stats` | Not supported | Not supported | Stats sink integration is deferred. |
+| `--probe-fields` | Supported | Supported | CSV emits one self-contained row per GPU field result. |
+| `--once` | Supported | Supported | CSV emits snapshot rows. |
+| `--watch` | Supported | Supported | CSV emits snapshot rows per tick. `--interval` applies here. |
+| `--once --stats` | Supported | Supported | CSV emits stats rows. |
+| `--watch --stats` | Supported | Supported | CSV emits stats rows per tick. |
 
 Note: plain `--watch` and `--watch --stats` currently have different recovery behavior. `--watch --stats` uses a persistent NVML context and attempts to reinitialize after snapshot failures. Plain `--watch` is stricter and exits on snapshot failure. This behavior may be unified later.
 
-Structured CSV output is currently scoped to `--probe`. `--once --sink csv`, `--watch --sink csv`, and `--stats --sink csv` should not be treated as supported structured CSV modes.
-
-`--stats` output is intentionally kept separate from sink output. Adding sink integration for `--stats` is deferred so the probe-field work can remain focused on empirical NVML characterization rather than output-format expansion.
+CSV sinks emit exactly one header row per sink file. Unsupported optional values are written as `N/A`.
 
 ### Probe context fields
 
@@ -136,7 +141,7 @@ Structured CSV output is currently scoped to `--probe`. `--once --sink csv`, `--
 
 `gpu.perf_state` reports the NVML performance state, such as `P0` through `P15` or `Unknown`. `P0` is the highest-performance state. Higher-numbered states are lower-power states. `N/A` means the query was unsupported or failed.
 
-The structured `--probe --sink csv` output includes the same context as CSV columns, including `gpu_perf_state`.
+The structured `--probe --sink csv` and `--probe-fields --sink csv` outputs include the same context as CSV columns, including `gpu_perf_state`.
 
 ### Probe field notes
 
