@@ -15,6 +15,7 @@
 //! Optional output mode:
 //!   --stats                    : Print a stable key:value "stats block" format (schema 0).
 //!                               Requires --once or --watch. Does not change default output.
+//!   --sink mqtt                : Publish experimental MQTT state payloads during --watch.
 //!
 //! Design intent:
 //! - Keep "mode" flags separate from "parameter" flags.
@@ -29,10 +30,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tracing::info;
 
+mod mqtt;
 mod probe;
 mod probe_fields;
 mod sink;
 
+use mqtt::{MqttOptions, MqttSink, DEFAULT_MQTT_PORT, DEFAULT_TOPIC_PREFIX};
 use probe::{format_probe_csv_header, format_probe_csv_row, format_probe_record, ProbeRecord};
 use probe_fields::{
     format_field_value, format_probe_fields_csv_header, format_probe_fields_csv_row,
@@ -58,6 +61,10 @@ struct CliArgs {
     version: bool,
     interval_ms: Option<u64>,
     sink: Option<SinkKind>,
+    mqtt_host: Option<String>,
+    mqtt_port: Option<String>,
+    mqtt_topic_prefix: Option<String>,
+    mqtt_node_id: Option<String>,
     field_ids: Vec<u32>,
 }
 
@@ -201,7 +208,7 @@ fn print_help() {
         "\n",
         "Usage:\n",
         "  wtg.exe --once [--stats] [--sink jsonl|csv]\n",
-        "  wtg.exe --watch [--interval <ms>] [--stats] [--sink jsonl|csv]\n",
+        "  wtg.exe --watch [--interval <ms>] [--stats] [--sink jsonl|csv|mqtt]\n",
         "  wtg.exe --probe [--sink jsonl|csv]\n",
         "  wtg.exe --probe-fields --field-id <u32> [--field-id <u32> ...] [--sink jsonl|csv]\n",
         "\n",
@@ -213,7 +220,11 @@ fn print_help() {
         "  --probe                 Capture one context-rich probe block.\n",
         "  --probe-fields          Query explicit NVML field-value IDs.\n",
         "  --field-id <u32>        Repeatable field ID for --probe-fields.\n",
-        "  --sink jsonl|csv        Write a timestamped sink file.\n",
+        "  --sink jsonl|csv|mqtt   Select an output sink. jsonl/csv write timestamped files; mqtt publishes during --watch.\n",
+        "  --mqtt-host <host>      MQTT broker host. Required with --sink mqtt.\n",
+        "  --mqtt-port <port>      MQTT broker port. Default: 1883.\n",
+        "  --mqtt-topic-prefix <p> MQTT topic prefix. Default: wtg.\n",
+        "  --mqtt-node-id <id>     MQTT node ID. Required with --sink mqtt.\n",
         "  --help / -h             Print this help text.\n",
         "  --version / -V          Print version and exit.\n"
     ));
@@ -241,6 +252,10 @@ fn parse_args() -> CliArgs {
         version: false,
         interval_ms: None,
         sink: None,
+        mqtt_host: None,
+        mqtt_port: None,
+        mqtt_topic_prefix: None,
+        mqtt_node_id: None,
         field_ids: Vec::new(),
     };
 
@@ -307,16 +322,51 @@ fn parse_args() -> CliArgs {
             }
             "--sink" => {
                 if i + 1 >= args.len() {
-                    usage_error("--sink requires a value (csv or jsonl).");
+                    usage_error("--sink requires a value (csv, jsonl, or mqtt).");
                 }
 
                 let v = &args[i + 1];
                 parsed.sink = Some(match v.as_str() {
                     "csv" => SinkKind::Csv,
                     "jsonl" => SinkKind::Jsonl,
-                    _ => usage_error(&format!("--sink value must be csv or jsonl. Got: {v}")),
+                    "mqtt" => SinkKind::Mqtt,
+                    _ => usage_error(&format!(
+                        "--sink value must be csv, jsonl, or mqtt. Got: {v}"
+                    )),
                 });
 
+                i += 2;
+            }
+            "--mqtt-host" => {
+                if i + 1 >= args.len() {
+                    usage_error("--mqtt-host requires a host value.");
+                }
+
+                parsed.mqtt_host = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--mqtt-port" => {
+                if i + 1 >= args.len() {
+                    usage_error("--mqtt-port requires a port value.");
+                }
+
+                parsed.mqtt_port = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--mqtt-topic-prefix" => {
+                if i + 1 >= args.len() {
+                    usage_error("--mqtt-topic-prefix requires a topic prefix value.");
+                }
+
+                parsed.mqtt_topic_prefix = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--mqtt-node-id" => {
+                if i + 1 >= args.len() {
+                    usage_error("--mqtt-node-id requires a node ID value.");
+                }
+
+                parsed.mqtt_node_id = Some(args[i + 1].clone());
                 i += 2;
             }
             other if other.starts_with('-') => {
@@ -366,7 +416,61 @@ fn parse_args() -> CliArgs {
         usage_error("--sink requires --once, --watch, --probe, or --probe-fields.");
     }
 
+    if parsed.sink == Some(SinkKind::Mqtt) {
+        if !watch {
+            usage_error("--sink mqtt is valid only with --watch for this experimental spike.");
+        }
+        if parsed
+            .mqtt_host
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .is_empty()
+        {
+            usage_error("--sink mqtt requires --mqtt-host <host>.");
+        }
+        if parsed
+            .mqtt_node_id
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .is_empty()
+        {
+            usage_error("--sink mqtt requires --mqtt-node-id <id>.");
+        }
+    }
+
     parsed
+}
+
+fn mqtt_options_from_args(args: &CliArgs) -> Option<MqttOptions> {
+    if args.sink != Some(SinkKind::Mqtt) {
+        return None;
+    }
+
+    let port = match args.mqtt_port.as_deref() {
+        Some(value) => value.parse::<u16>().unwrap_or_else(|_| {
+            usage_error(&format!(
+                "--mqtt-port must be a TCP port number. Got: {value}"
+            ));
+        }),
+        None => DEFAULT_MQTT_PORT,
+    };
+
+    let topic_prefix = args
+        .mqtt_topic_prefix
+        .clone()
+        .unwrap_or_else(|| DEFAULT_TOPIC_PREFIX.to_string());
+
+    Some(
+        MqttOptions::new(
+            args.mqtt_host.clone().unwrap_or_default(),
+            port,
+            topic_prefix,
+            args.mqtt_node_id.clone().unwrap_or_default(),
+        )
+        .unwrap_or_else(|e| usage_error(&e)),
+    )
 }
 
 fn main() {
@@ -388,13 +492,27 @@ fn main() {
     info!("WTG v{} initializing...", env!("CARGO_PKG_VERSION"));
 
     let sink = match args.sink {
-        Some(kind) => match Sink::new(kind) {
+        Some(kind @ (SinkKind::Csv | SinkKind::Jsonl)) => match Sink::new(kind) {
             Ok(sink) => {
                 eprintln!("WTG note: sink enabled: {}", sink.filename());
                 Some(sink)
             }
             Err(e) => {
                 eprintln!("WTG runtime error: failed to create sink output file: {e}");
+                process::exit(2);
+            }
+        },
+        Some(SinkKind::Mqtt) | None => None,
+    };
+
+    let mut mqtt_sink = match mqtt_options_from_args(&args) {
+        Some(options) => match MqttSink::connect(options) {
+            Ok(sink) => {
+                eprintln!("WTG note: MQTT sink enabled.");
+                Some(sink)
+            }
+            Err(e) => {
+                eprintln!("WTG MQTT error: {e}");
                 process::exit(2);
             }
         },
@@ -485,6 +603,7 @@ fn main() {
                                 }
                                 sink.emit_raw_line(&format_probe_csv_row(&record));
                             }
+                            SinkKind::Mqtt => {}
                         }
                     }
                 }
@@ -543,6 +662,7 @@ fn main() {
                                         s, tick_seq, &tick_ts,
                                     ));
                                 }
+                                SinkKind::Mqtt => {}
                             }
                         }
                     }
@@ -598,11 +718,11 @@ fn main() {
             let mut tick_seq: u64 = 0;
             loop {
                 match wtg_core::nvml::snapshot_all_with_ctx(&ctx) {
-                    Ok(snaps) => {
+                    Ok(snapshots) => {
                         let tick_ts = now_ts();
                         print_and_mirror_jsonl(&format!("tick.seq: {tick_seq}\n"), &sink);
                         print_and_mirror_jsonl(&format!("tick.ts: {tick_ts}\n"), &sink);
-                        for s in snaps.iter() {
+                        for s in snapshots.iter() {
                             let block = format_stats_block(s);
                             print_and_mirror_jsonl(&block, &sink);
                             if let Some(sink) = &sink {
@@ -611,6 +731,12 @@ fn main() {
                                         s, tick_seq, &tick_ts,
                                     ));
                                 }
+                            }
+                        }
+                        if let Some(mqtt_sink) = mqtt_sink.as_mut() {
+                            if let Err(e) = mqtt_sink.publish_snapshots(&snapshots) {
+                                eprintln!("WTG MQTT error: {e}");
+                                process::exit(2);
                             }
                         }
                         tick_seq += 1;
@@ -634,11 +760,11 @@ fn main() {
             let mut tick_seq: u64 = 0;
             loop {
                 match wtg_core::nvml::snapshot_all() {
-                    Ok(snaps) => {
+                    Ok(snapshots) => {
                         let tick_ts = now_ts();
                         let tick_line = format!("--- tick {tick_ts} ---");
                         println!("{tick_line}");
-                        for s in snaps.iter() {
+                        for s in snapshots.iter() {
                             let line = format!("{s}");
                             println!("{line}");
                             if let Some(sink) = &sink {
@@ -649,7 +775,14 @@ fn main() {
                                             s, tick_seq, &tick_ts,
                                         ));
                                     }
+                                    SinkKind::Mqtt => {}
                                 }
+                            }
+                        }
+                        if let Some(mqtt_sink) = mqtt_sink.as_mut() {
+                            if let Err(e) = mqtt_sink.publish_snapshots(&snapshots) {
+                                eprintln!("WTG MQTT error: {e}");
+                                process::exit(2);
                             }
                         }
                         println!();

@@ -9,6 +9,7 @@ use std::io::{BufWriter, Write};
 pub(crate) enum SinkKind {
     Csv,
     Jsonl,
+    Mqtt,
 }
 
 pub(crate) struct Sink {
@@ -75,6 +76,7 @@ fn sink_filename(kind: SinkKind) -> String {
     let extension = match kind {
         SinkKind::Csv => "csv",
         SinkKind::Jsonl => "jsonl",
+        SinkKind::Mqtt => "mqtt",
     };
     let timestamp = crate::now_ts().replace('.', "_");
 
