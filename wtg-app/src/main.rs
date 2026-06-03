@@ -650,11 +650,7 @@ fn main() {
 
     let mut mqtt_sink = match mqtt_options_from_args(&args) {
         Some(options) => match MqttSink::connect(options) {
-            Ok(mut sink) => {
-                if let Err(e) = sink.publish_ha_availability_online() {
-                    eprintln!("WTG MQTT error: {e}");
-                    process::exit(2);
-                }
+            Ok(sink) => {
                 eprintln!("WTG note: MQTT sink enabled.");
                 Some(sink)
             }

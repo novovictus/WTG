@@ -173,6 +173,8 @@ impl MqttSink {
 
         let availability_topic = self.availability_topic();
 
+        // Home Assistant subscribes to availability after processing discovery.
+        // Publish configs first, then the non-retained online marker.
         for snapshot in snapshots {
             for metric in HA_SENSOR_METRICS {
                 let topic = format_ha_discovery_topic(
@@ -193,15 +195,6 @@ impl MqttSink {
             }
         }
 
-        Ok(())
-    }
-
-    pub(crate) fn publish_ha_availability_online(&mut self) -> Result<(), String> {
-        if self.options.ha_discovery.is_none() {
-            return Ok(());
-        }
-
-        let availability_topic = self.availability_topic();
         self.publish(&availability_topic, b"online", false)
     }
 

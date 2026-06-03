@@ -270,9 +270,9 @@ Current unreleased behavior:
 * MQTT username/password auth requires both `--mqtt-username` and `--mqtt-password-env`
 * WTG reads the password from the named environment variable before connecting
 * Home Assistant discovery is emitted only when `--mqtt-ha-discovery` is set
-* discovery configs publish once after MQTT connect and after the first successful snapshot set, before state publishing
+* discovery configs publish once after MQTT connect and after the first successful snapshot set, before online availability and state publishing
 * discovery configs are retained only when `--mqtt-retain-discovery` is set
-* when Home Assistant discovery is enabled, WTG publishes `online` to `wtg/<node_id>/status` after MQTT connect
+* when Home Assistant discovery is enabled, WTG publishes discovery configs first, then publishes `online` to `wtg/<node_id>/status`, then publishes state
 * MQTT Last Will and Testament / offline availability is deferred
 * no config file support is included
 * WTG does not install, run, or configure the broker
