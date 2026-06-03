@@ -36,8 +36,8 @@ mod probe_fields;
 mod sink;
 
 use mqtt::{
-    MqttHaDiscoveryOptions, MqttOptions, MqttSink, DEFAULT_HA_DISCOVERY_PREFIX, DEFAULT_MQTT_PORT,
-    DEFAULT_TOPIC_PREFIX,
+    MqttAuthOptions, MqttHaDiscoveryOptions, MqttOptions, MqttSink, DEFAULT_HA_DISCOVERY_PREFIX,
+    DEFAULT_MQTT_PORT, DEFAULT_TOPIC_PREFIX,
 };
 use probe::{format_probe_csv_header, format_probe_csv_row, format_probe_record, ProbeRecord};
 use probe_fields::{
@@ -68,6 +68,8 @@ struct CliArgs {
     mqtt_port: Option<String>,
     mqtt_topic_prefix: Option<String>,
     mqtt_node_id: Option<String>,
+    mqtt_username: Option<String>,
+    mqtt_password_env: Option<String>,
     mqtt_ha_discovery: bool,
     mqtt_ha_prefix: Option<String>,
     mqtt_retain_discovery: bool,
@@ -231,6 +233,8 @@ fn print_help() {
         "  --mqtt-port <port>      MQTT broker port. Default: 1883.\n",
         "  --mqtt-topic-prefix <p> MQTT topic prefix. Default: wtg.\n",
         "  --mqtt-node-id <id>     MQTT node ID. Required with --sink mqtt.\n",
+        "  --mqtt-username <user>  MQTT username. Requires --mqtt-password-env.\n",
+        "  --mqtt-password-env <v> Read MQTT password from environment variable. Requires --mqtt-username.\n",
         "  --mqtt-ha-discovery     Publish Home Assistant MQTT discovery configs with --sink mqtt.\n",
         "  --mqtt-ha-prefix <p>    Home Assistant discovery prefix. Default: homeassistant.\n",
         "  --mqtt-retain-discovery Retain Home Assistant discovery configs. State messages remain non-retained.\n",
@@ -265,6 +269,8 @@ fn parse_args() -> CliArgs {
         mqtt_port: None,
         mqtt_topic_prefix: None,
         mqtt_node_id: None,
+        mqtt_username: None,
+        mqtt_password_env: None,
         mqtt_ha_discovery: false,
         mqtt_ha_prefix: None,
         mqtt_retain_discovery: false,
@@ -381,6 +387,22 @@ fn parse_args() -> CliArgs {
                 parsed.mqtt_node_id = Some(args[i + 1].clone());
                 i += 2;
             }
+            "--mqtt-username" => {
+                if i + 1 >= args.len() {
+                    usage_error("--mqtt-username requires a username value.");
+                }
+
+                parsed.mqtt_username = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--mqtt-password-env" => {
+                if i + 1 >= args.len() {
+                    usage_error("--mqtt-password-env requires an environment variable name.");
+                }
+
+                parsed.mqtt_password_env = Some(args[i + 1].clone());
+                i += 2;
+            }
             "--mqtt-ha-discovery" => {
                 parsed.mqtt_ha_discovery = true;
                 i += 1;
@@ -472,6 +494,14 @@ fn parse_args() -> CliArgs {
         usage_error("--mqtt-ha-discovery is valid only with --sink mqtt.");
     }
 
+    if let Err(e) = validate_mqtt_auth_flags(
+        parsed.sink,
+        parsed.mqtt_username.as_deref(),
+        parsed.mqtt_password_env.as_deref(),
+    ) {
+        usage_error(&e);
+    }
+
     if parsed.mqtt_ha_prefix.is_some() && !parsed.mqtt_ha_discovery {
         usage_error("--mqtt-ha-prefix requires --mqtt-ha-discovery.");
     }
@@ -481,6 +511,26 @@ fn parse_args() -> CliArgs {
     }
 
     parsed
+}
+
+fn validate_mqtt_auth_flags(
+    sink: Option<SinkKind>,
+    username: Option<&str>,
+    password_env: Option<&str>,
+) -> Result<(), String> {
+    if (username.is_some() || password_env.is_some()) && sink != Some(SinkKind::Mqtt) {
+        return Err(
+            "--mqtt-username and --mqtt-password-env are valid only with --sink mqtt.".to_string(),
+        );
+    }
+
+    if username.is_some() != password_env.is_some() {
+        return Err(
+            "--mqtt-username and --mqtt-password-env must be provided together.".to_string(),
+        );
+    }
+
+    Ok(())
 }
 
 fn mqtt_options_from_args(args: &CliArgs) -> Option<MqttOptions> {
@@ -501,6 +551,7 @@ fn mqtt_options_from_args(args: &CliArgs) -> Option<MqttOptions> {
         .mqtt_topic_prefix
         .clone()
         .unwrap_or_else(|| DEFAULT_TOPIC_PREFIX.to_string());
+    let auth = mqtt_auth_from_args(args);
     let ha_discovery = if args.mqtt_ha_discovery {
         let prefix = args
             .mqtt_ha_prefix
@@ -520,10 +571,49 @@ fn mqtt_options_from_args(args: &CliArgs) -> Option<MqttOptions> {
             port,
             topic_prefix,
             args.mqtt_node_id.clone().unwrap_or_default(),
+            auth,
             ha_discovery,
         )
         .unwrap_or_else(|e| usage_error(&e)),
     )
+}
+
+fn mqtt_auth_from_args(args: &CliArgs) -> Option<MqttAuthOptions> {
+    match (
+        args.mqtt_username.as_deref(),
+        args.mqtt_password_env.as_deref(),
+    ) {
+        (Some(username), Some(password_env)) => Some(
+            resolve_mqtt_auth(username, password_env, |name| env::var(name).ok())
+                .unwrap_or_else(|e| usage_error(&e)),
+        ),
+        _ => None,
+    }
+}
+
+fn resolve_mqtt_auth<F>(
+    username: &str,
+    password_env: &str,
+    get_env: F,
+) -> Result<MqttAuthOptions, String>
+where
+    F: FnOnce(&str) -> Option<String>,
+{
+    let password_env = password_env.trim();
+    if password_env.is_empty() {
+        return Err("--mqtt-password-env must not be empty.".to_string());
+    }
+
+    let password = get_env(password_env).ok_or_else(|| {
+        format!("--mqtt-password-env variable {password_env} is not set or is not valid Unicode.")
+    })?;
+    if password.is_empty() {
+        return Err(format!(
+            "--mqtt-password-env variable {password_env} must not be empty."
+        ));
+    }
+
+    MqttAuthOptions::new(username.to_string(), password)
 }
 
 fn main() {
@@ -902,4 +992,56 @@ fn main() {
     // Default behavior (no flags):
     // Keep the placeholder, because TUI is explicitly not built yet.
     println!("\nRun with --once, --watch, --probe, or --probe-fields. Use wtg-ui.exe for the experimental UI.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mqtt_auth_flags_require_mqtt_sink() {
+        let err =
+            validate_mqtt_auth_flags(None, Some("user"), Some("WTG_MQTT_PASSWORD")).unwrap_err();
+
+        assert!(err.contains("valid only with --sink mqtt"));
+    }
+
+    #[test]
+    fn mqtt_auth_flags_reject_password_without_username() {
+        let err = validate_mqtt_auth_flags(Some(SinkKind::Mqtt), None, Some("WTG_MQTT_PASSWORD"))
+            .unwrap_err();
+
+        assert!(err.contains("must be provided together"));
+    }
+
+    #[test]
+    fn mqtt_auth_flags_reject_username_without_password_env() {
+        let err = validate_mqtt_auth_flags(Some(SinkKind::Mqtt), Some("user"), None).unwrap_err();
+
+        assert!(err.contains("must be provided together"));
+    }
+
+    #[test]
+    fn mqtt_auth_resolution_rejects_missing_password_env_var() {
+        let err = resolve_mqtt_auth("user", "WTG_MQTT_PASSWORD", |_| None).unwrap_err();
+
+        assert!(err.contains("WTG_MQTT_PASSWORD"));
+        assert!(err.contains("not set"));
+    }
+
+    #[test]
+    fn mqtt_auth_resolution_rejects_empty_password_env_var() {
+        let err =
+            resolve_mqtt_auth("user", "WTG_MQTT_PASSWORD", |_| Some(String::new())).unwrap_err();
+
+        assert!(err.contains("WTG_MQTT_PASSWORD"));
+        assert!(err.contains("must not be empty"));
+    }
+
+    #[test]
+    fn mqtt_auth_resolution_accepts_username_and_password_env_var() {
+        let password = String::from_utf8(vec![115, 101, 99, 114, 101, 116]).unwrap();
+
+        assert!(resolve_mqtt_auth("user", "WTG_MQTT_PASSWORD", |_| Some(password)).is_ok());
+    }
 }

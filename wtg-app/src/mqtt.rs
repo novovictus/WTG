@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Adam Hooper
 
 use std::env;
+use std::fmt;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process;
@@ -15,6 +16,35 @@ use wtg_core::nvml::{
 pub(crate) const DEFAULT_MQTT_PORT: u16 = 1883;
 pub(crate) const DEFAULT_TOPIC_PREFIX: &str = "wtg";
 pub(crate) const DEFAULT_HA_DISCOVERY_PREFIX: &str = "homeassistant";
+
+#[derive(Clone)]
+pub(crate) struct MqttAuthOptions {
+    username: String,
+    password: String,
+}
+
+impl MqttAuthOptions {
+    pub(crate) fn new(username: String, password: String) -> Result<Self, String> {
+        let username = username.trim().to_string();
+        if username.is_empty() {
+            return Err("--mqtt-username must not be empty.".to_string());
+        }
+        if password.is_empty() {
+            return Err("MQTT password environment variable must not be empty.".to_string());
+        }
+
+        Ok(Self { username, password })
+    }
+}
+
+impl fmt::Debug for MqttAuthOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MqttAuthOptions")
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .finish()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct MqttHaDiscoveryOptions {
@@ -37,6 +67,7 @@ pub(crate) struct MqttOptions {
     port: u16,
     topic_prefix: String,
     node_id: String,
+    auth: Option<MqttAuthOptions>,
     ha_discovery: Option<MqttHaDiscoveryOptions>,
 }
 
@@ -46,6 +77,7 @@ impl MqttOptions {
         port: u16,
         topic_prefix: String,
         node_id: String,
+        auth: Option<MqttAuthOptions>,
         ha_discovery: Option<MqttHaDiscoveryOptions>,
     ) -> Result<Self, String> {
         if port == 0 {
@@ -65,6 +97,7 @@ impl MqttOptions {
             port,
             topic_prefix,
             node_id,
+            auth,
             ha_discovery,
         })
     }
@@ -96,7 +129,7 @@ impl MqttSink {
             .map_err(|e| format!("failed to configure MQTT write timeout: {e}"))?;
 
         let client_id = format!("wtg-{}-{}", options.node_id, process::id());
-        send_connect_packet(&mut stream, &client_id)?;
+        send_connect_packet(&mut stream, &client_id, options.auth.as_ref())?;
         read_connack(&mut stream)?;
 
         Ok(Self {
@@ -188,15 +221,37 @@ impl MqttSink {
     }
 }
 
-fn send_connect_packet(stream: &mut TcpStream, client_id: &str) -> Result<(), String> {
+fn send_connect_packet(
+    stream: &mut TcpStream,
+    client_id: &str,
+    auth: Option<&MqttAuthOptions>,
+) -> Result<(), String> {
+    let body = build_connect_body(client_id, auth)?;
+    write_packet(stream, 0x10, &body)
+}
+
+fn build_connect_body(client_id: &str, auth: Option<&MqttAuthOptions>) -> Result<Vec<u8>, String> {
     let mut body = Vec::new();
     push_mqtt_string(&mut body, "MQTT")?;
     body.push(4);
-    body.push(0x02);
+    body.push(connect_flags(auth));
     body.extend_from_slice(&0u16.to_be_bytes());
     push_mqtt_string(&mut body, client_id)?;
 
-    write_packet(stream, 0x10, &body)
+    if let Some(auth) = auth {
+        push_mqtt_string(&mut body, &auth.username)?;
+        push_mqtt_string(&mut body, &auth.password)?;
+    }
+
+    Ok(body)
+}
+
+fn connect_flags(auth: Option<&MqttAuthOptions>) -> u8 {
+    if auth.is_some() {
+        0xc2
+    } else {
+        0x02
+    }
 }
 
 fn write_packet(stream: &mut TcpStream, packet_type: u8, body: &[u8]) -> Result<(), String> {
@@ -638,6 +693,7 @@ mod tests {
             "/wtg/".to_string(),
             "node-a".to_string(),
             None,
+            None,
         )
         .unwrap();
 
@@ -645,7 +701,32 @@ mod tests {
         assert_eq!(options.port, 1883);
         assert_eq!(options.topic_prefix, "wtg");
         assert_eq!(options.node_id, "node-a");
+        assert!(options.auth.is_none());
         assert!(options.ha_discovery.is_none());
+    }
+
+    #[test]
+    fn options_support_username_password_auth_with_redacted_debug() {
+        let password = String::from_utf8(vec![115, 101, 99, 114, 101, 116]).unwrap();
+        let auth = MqttAuthOptions::new(" user ".to_string(), password.clone()).unwrap();
+        let options = MqttOptions::new(
+            "broker".to_string(),
+            DEFAULT_MQTT_PORT,
+            "wtg".to_string(),
+            "node-a".to_string(),
+            Some(auth),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(options.auth.as_ref().unwrap().username, "user");
+        let debug = format!("{:?}", options.auth.as_ref().unwrap());
+        assert!(debug.contains("user"));
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains(&password));
+        let options_debug = format!("{options:?}");
+        assert!(options_debug.contains("<redacted>"));
+        assert!(!options_debug.contains(&password));
     }
 
     #[test]
@@ -667,6 +748,31 @@ mod tests {
             encode_remaining_length(16_384).unwrap(),
             vec![0x80, 0x80, 0x01]
         );
+    }
+
+    #[test]
+    fn anonymous_connect_uses_clean_session_flags() {
+        let body = build_connect_body("client-a", None).unwrap();
+
+        assert_eq!(body[7], 0x02);
+        let strings = connect_payload_strings(&body);
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0], "client-a");
+    }
+
+    #[test]
+    fn authenticated_connect_uses_username_password_flags_and_payload_order() {
+        let password = String::from_utf8(vec![115, 101, 99, 114, 101, 116]).unwrap();
+        let auth = MqttAuthOptions::new("user".to_string(), password.clone()).unwrap();
+
+        let body = build_connect_body("client-a", Some(&auth)).unwrap();
+
+        assert_eq!(body[7], 0xc2);
+        let strings = connect_payload_strings(&body);
+        assert_eq!(strings.len(), 3);
+        assert_eq!(strings[0], "client-a");
+        assert_eq!(strings[1], "user");
+        assert!(strings[2] == password);
     }
 
     #[test]
@@ -822,5 +928,19 @@ mod tests {
         assert!(!payload.contains("unit_of_measurement"));
         assert!(!payload.contains("device_class"));
         assert!(!payload.contains("state_class"));
+    }
+
+    fn connect_payload_strings(body: &[u8]) -> Vec<String> {
+        let mut offset = 10;
+        let mut strings = Vec::new();
+
+        while offset < body.len() {
+            let len = ((body[offset] as usize) << 8) | body[offset + 1] as usize;
+            offset += 2;
+            strings.push(String::from_utf8(body[offset..offset + len].to_vec()).unwrap());
+            offset += len;
+        }
+
+        strings
     }
 }

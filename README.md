@@ -5,7 +5,7 @@ Copyright (C) 2026 Adam Hooper
 
 **Tagline:** Honest GPU compute stats for Windows
 
-## Current Status (unreleased v0.2.2 - Home Assistant MQTT Discovery)
+## Current Status (unreleased v0.2.3 - MQTT Authentication)
 
 WTG is currently focused on empirical NVML telemetry validation under Windows WDDM.  
 Recent testing has identified a driver-branch regression affecting memory-utilization reporting on specific consumer mobile Ampere GPUs (580.88+), not reproduced on tested desktop or professional SKUs.
@@ -14,7 +14,7 @@ See `artifacts/test-matrix/matrix.md` for empirical results.
 
 WTG v0.2.0-beta5 adds an experimental dual-surface build: the existing CLI validation surface (`wtg.exe`) plus a separate egui desktop frontend (`wtg-ui.exe`). The CLI remains the reference surface for validation evidence; the UI is a visual inspection and demo surface.
 
-WTG v0.2.1 proved the generic experimental MQTT watch sink and expanded payload parity. Unreleased WTG v0.2.2 adds opt-in Home Assistant MQTT discovery on top of that sink. WTG remains an MQTT publisher, not a broker: it does not expose a listening network service, configure the broker, open firewall rules, or manage subscriber access.
+WTG v0.2.1 proved the generic experimental MQTT watch sink and expanded payload parity. WTG v0.2.2 added opt-in Home Assistant MQTT discovery on top of that sink. Unreleased WTG v0.2.3 adds MQTT username/password authentication for brokers such as the Home Assistant Mosquitto add-on. WTG remains an MQTT publisher, not a broker: it does not expose a listening network service, configure the broker, open firewall rules, or manage subscriber access.
 
 ---
 
@@ -77,6 +77,7 @@ The diagnostic CLI scope is intentionally narrow:
 - add line-oriented JSONL sink output for snapshot, stats, probe, and probe-fields paths
 - add experimental MQTT publishing for live `--watch` snapshots
 - add optional Home Assistant MQTT discovery for the experimental MQTT watch sink
+- add optional MQTT username/password authentication through a password environment variable
 - add experimental raw NVML field-value probing through explicit field IDs
 - avoid interpreting raw field IDs as proof of driver causality in code or documentation
 
@@ -126,6 +127,12 @@ The diagnostic CLI scope is intentionally narrow:
 - `--mqtt-node-id <id>`
   Stable WTG node identifier used in MQTT topics. Required with `--sink mqtt`.
 
+- `--mqtt-username <user>`
+  MQTT username. Requires `--mqtt-password-env`.
+
+- `--mqtt-password-env <var>`
+  Read the MQTT password from the named environment variable. Requires `--mqtt-username`.
+
 - `--mqtt-ha-discovery`
   Publish Home Assistant MQTT discovery configs for the MQTT watch sink. Requires `--sink mqtt`.
 
@@ -152,26 +159,37 @@ The diagnostic CLI scope is intentionally narrow:
 | `--once --stats` | Supported | Supported | Not supported | CSV emits stats rows. MQTT is watch-only in this spike. |
 | `--watch --stats` | Supported | Supported | Supported | CSV emits stats rows per tick. MQTT publishes snapshot payloads, not stats-formatted text. |
 
+Home Assistant discovery is an option on top of `--sink mqtt`, not a separate sink. It is available only for the same MQTT-supported watch modes: `--watch` and `--watch --stats`.
+
 Note: plain `--watch` and `--watch --stats` currently have different recovery behavior. `--watch --stats` uses a persistent NVML context and attempts to reinitialize after snapshot failures. Plain `--watch` is stricter and exits on snapshot failure. This behavior may be unified later.
 
 CSV sinks emit exactly one header row per sink file. Unsupported optional values are written as `N/A`.
 
-MQTT publishes live snapshot payloads only while WTG is running and connected to the broker. State messages are QoS 0 and not retained, so subscribers receive samples only while connected. Optional Home Assistant discovery configs are published once when `--mqtt-ha-discovery` is enabled and may be retained only with `--mqtt-retain-discovery`. WTG is an MQTT publisher, not a broker. Broker setup, firewall policy, retention, and subscriber access are outside WTG's scope.
+MQTT publishes live snapshot payloads only while WTG is running and connected to the broker. State messages are QoS 0 and not retained, so subscribers receive samples only while connected. Optional username/password authentication is configured with `--mqtt-username` and `--mqtt-password-env`; WTG reads the password from the named environment variable and never accepts a literal password argument. Optional Home Assistant discovery configs are published once when `--mqtt-ha-discovery` is enabled and may be retained only with `--mqtt-retain-discovery`. WTG is an MQTT publisher, not a broker. Broker setup, firewall policy, retention, and subscriber access are outside WTG's scope.
 
 ### Experimental MQTT watch sink
 
 The MQTT sink publishes live telemetry from `--watch` to a user-specified broker.
 
-Example:
+Anonymous local broker example:
 
 ```powershell
 .\wtg.exe --watch --sink mqtt --mqtt-host 127.0.0.1 --mqtt-port 1884 --mqtt-node-id testnode
 ```
 
-Home Assistant discovery example:
+Authenticated Home Assistant Mosquitto example:
 
 ```powershell
-.\wtg.exe --watch --sink mqtt --mqtt-host 127.0.0.1 --mqtt-port 1884 --mqtt-node-id testnode --mqtt-ha-discovery --mqtt-retain-discovery
+$env:WTG_MQTT_PASSWORD = "your-password"
+
+.\target\release\wtg.exe --watch `
+  --sink mqtt `
+  --mqtt-host homeassistant.local `
+  --mqtt-node-id bench1 `
+  --mqtt-username wtg `
+  --mqtt-password-env WTG_MQTT_PASSWORD `
+  --mqtt-ha-discovery `
+  --mqtt-retain-discovery
 ```
 
 Topic shape:
@@ -192,6 +210,18 @@ Availability topic:
 wtg/<node_id>/status
 ```
 
+Home Assistant discovery notes:
+
+* `--mqtt-ha-discovery` requires `--sink mqtt`
+* `--mqtt-ha-discovery` still requires an MQTT broker
+* Home Assistant Core is not the broker
+* a typical Home Assistant setup uses the Mosquitto broker add-on plus the Home Assistant MQTT integration
+* discovery configs are published to the broker under the discovery prefix
+* retained discovery is controlled by `--mqtt-retain-discovery`
+* state messages remain non-retained
+* availability topic is `wtg/<node_id>/status`
+* MQTT Last Will and Testament / offline availability is deferred
+
 Example topic:
 
 ```text
@@ -202,7 +232,7 @@ Example payload:
 
 ```json
 {
-  "wtg_version": "0.2.2",
+  "wtg_version": "0.2.3",
   "payload_schema": 1,
   "tick_seq": 123,
   "tick_ts": "1780420000.123",
@@ -236,6 +266,9 @@ Current unreleased behavior:
 * topic prefix defaults to `wtg`
 * payloads are live QoS 0 messages
 * payloads are not retained
+* anonymous MQTT remains supported when no auth flags are provided
+* MQTT username/password auth requires both `--mqtt-username` and `--mqtt-password-env`
+* WTG reads the password from the named environment variable before connecting
 * Home Assistant discovery is emitted only when `--mqtt-ha-discovery` is set
 * discovery configs publish once after MQTT connect and after the first successful snapshot set, before state publishing
 * discovery configs are retained only when `--mqtt-retain-discovery` is set
@@ -661,7 +694,8 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 | v0.2.0-beta4 | Probe, sink, field-values, and driver-behavior validation |
 | v0.2.0-beta5 | Experimental dual-surface build: CLI validation surface plus `wtg-ui.exe` visual frontend |
 | dev/0.2.1 | Experimental MQTT watch sink for publishing live telemetry to a user-specified broker |
-| unreleased v0.2.2 (`dev/0.2.2`) | Optional Home Assistant MQTT discovery for the experimental MQTT watch sink |
+| dev/0.2.2 | Optional Home Assistant MQTT discovery for the experimental MQTT watch sink |
+| unreleased v0.2.3 (`dev/0.2.3`) | MQTT username/password authentication through password environment variables |
 | v0.3+ | Optional native UI, tray integration, cross-vendor extensibility |
 
 ---
@@ -669,6 +703,7 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 ## Next Immediate Step
 
 * Preserve CLI/probe/sink outputs as the formal validation path.
+* Validate authenticated MQTT publishing against a Mosquitto broker.
 * Validate Home Assistant MQTT discovery against a local broker, subscriber, and Home Assistant instance.
 * Decide whether MQTT Last Will and Testament / offline availability belongs in a later phase.
 * Use `wtg-ui.exe` for visual corroboration, demos, and operator-facing inspection.
