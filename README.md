@@ -5,7 +5,7 @@ Copyright (C) 2026 Adam Hooper
 
 **Tagline:** Honest GPU compute stats for Windows
 
-## Current Status (v0.2.0-beta6 - Experimental MQTT Watch Sink)
+## Current Status (unreleased v0.2.2 - Home Assistant MQTT Discovery)
 
 WTG is currently focused on empirical NVML telemetry validation under Windows WDDM.  
 Recent testing has identified a driver-branch regression affecting memory-utilization reporting on specific consumer mobile Ampere GPUs (580.88+), not reproduced on tested desktop or professional SKUs.
@@ -14,7 +14,7 @@ See `artifacts/test-matrix/matrix.md` for empirical results.
 
 WTG v0.2.0-beta5 adds an experimental dual-surface build: the existing CLI validation surface (`wtg.exe`) plus a separate egui desktop frontend (`wtg-ui.exe`). The CLI remains the reference surface for validation evidence; the UI is a visual inspection and demo surface.
 
-WTG v0.2.0-beta6 adds an experimental MQTT watch sink. WTG can publish live `--watch` telemetry to a user-specified MQTT broker using predictable topics. WTG is an MQTT publisher, not a broker: it does not expose a listening network service, configure the broker, open firewall rules, or manage subscriber access.
+WTG v0.2.1 proved the generic experimental MQTT watch sink and expanded payload parity. Unreleased WTG v0.2.2 adds opt-in Home Assistant MQTT discovery on top of that sink. WTG remains an MQTT publisher, not a broker: it does not expose a listening network service, configure the broker, open firewall rules, or manage subscriber access.
 
 ---
 
@@ -67,7 +67,7 @@ WTG is currently a command-line proof-of-concept focused on validating NVML-base
 
 ### Probe, sink, and field-values behavior
 
-WTG includes additional CLI paths for probe, field-value, and sink validation. These diagnostic paths were introduced during beta 4 probe/probe-fields work and remain available in beta 6; they are not broad release-contract guarantees.
+WTG includes additional CLI paths for probe, field-value, and sink validation. These diagnostic paths were introduced during beta 4 probe/probe-fields work and remain available in current development builds; they are not broad release-contract guarantees.
 
 The diagnostic CLI scope is intentionally narrow:
 
@@ -76,6 +76,7 @@ The diagnostic CLI scope is intentionally narrow:
 - add structured CSV output for snapshot, stats, probe, and probe-fields paths
 - add line-oriented JSONL sink output for snapshot, stats, probe, and probe-fields paths
 - add experimental MQTT publishing for live `--watch` snapshots
+- add optional Home Assistant MQTT discovery for the experimental MQTT watch sink
 - add experimental raw NVML field-value probing through explicit field IDs
 - avoid interpreting raw field IDs as proof of driver causality in code or documentation
 
@@ -125,6 +126,15 @@ The diagnostic CLI scope is intentionally narrow:
 - `--mqtt-node-id <id>`
   Stable WTG node identifier used in MQTT topics. Required with `--sink mqtt`.
 
+- `--mqtt-ha-discovery`
+  Publish Home Assistant MQTT discovery configs for the MQTT watch sink. Requires `--sink mqtt`.
+
+- `--mqtt-ha-prefix <prefix>`
+  Home Assistant MQTT discovery prefix. Default: `homeassistant`.
+
+- `--mqtt-retain-discovery`
+  Retain Home Assistant MQTT discovery configs. State messages remain non-retained.
+
 - `--help`, `-h`
   Print CLI usage information and exit.
 
@@ -146,7 +156,7 @@ Note: plain `--watch` and `--watch --stats` currently have different recovery be
 
 CSV sinks emit exactly one header row per sink file. Unsupported optional values are written as `N/A`.
 
-MQTT publishes live snapshot payloads only while WTG is running and connected to the broker. Messages are QoS 0 and not retained, so subscribers receive samples only while connected. WTG is an MQTT publisher, not a broker. Broker setup, firewall policy, retention, and subscriber access are outside WTG's scope.
+MQTT publishes live snapshot payloads only while WTG is running and connected to the broker. State messages are QoS 0 and not retained, so subscribers receive samples only while connected. Optional Home Assistant discovery configs are published once when `--mqtt-ha-discovery` is enabled and may be retained only with `--mqtt-retain-discovery`. WTG is an MQTT publisher, not a broker. Broker setup, firewall policy, retention, and subscriber access are outside WTG's scope.
 
 ### Experimental MQTT watch sink
 
@@ -158,10 +168,28 @@ Example:
 .\wtg.exe --watch --sink mqtt --mqtt-host 127.0.0.1 --mqtt-port 1884 --mqtt-node-id testnode
 ```
 
+Home Assistant discovery example:
+
+```powershell
+.\wtg.exe --watch --sink mqtt --mqtt-host 127.0.0.1 --mqtt-port 1884 --mqtt-node-id testnode --mqtt-ha-discovery --mqtt-retain-discovery
+```
+
 Topic shape:
 
 ```text
 wtg/<node_id>/gpu<index>/state
+```
+
+Home Assistant discovery topic shape:
+
+```text
+homeassistant/sensor/wtg_<node_id>_gpu<index>_<metric>/config
+```
+
+Availability topic:
+
+```text
+wtg/<node_id>/status
 ```
 
 Example topic:
@@ -174,7 +202,7 @@ Example payload:
 
 ```json
 {
-  "wtg_version": "0.2.0-beta6",
+  "wtg_version": "0.2.2",
   "payload_schema": 1,
   "tick_seq": 123,
   "tick_ts": "1780420000.123",
@@ -198,7 +226,7 @@ Example payload:
 }
 ```
 
-Current beta behavior:
+Current unreleased behavior:
 
 * `--sink mqtt` is supported only with `--watch`
 * WTG opens an outbound connection to the configured broker
@@ -208,7 +236,11 @@ Current beta behavior:
 * topic prefix defaults to `wtg`
 * payloads are live QoS 0 messages
 * payloads are not retained
-* no Home Assistant discovery is emitted
+* Home Assistant discovery is emitted only when `--mqtt-ha-discovery` is set
+* discovery configs publish once after MQTT connect and after the first successful snapshot set, before state publishing
+* discovery configs are retained only when `--mqtt-retain-discovery` is set
+* when Home Assistant discovery is enabled, WTG publishes `online` to `wtg/<node_id>/status` after MQTT connect
+* MQTT Last Will and Testament / offline availability is deferred
 * no config file support is included
 * WTG does not install, run, or configure the broker
 
@@ -628,7 +660,8 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 | v0.1.x | Truth-layer validation: one GPU, CLI output, correct NVML metrics vs Windows telemetry |
 | v0.2.0-beta4 | Probe, sink, field-values, and driver-behavior validation |
 | v0.2.0-beta5 | Experimental dual-surface build: CLI validation surface plus `wtg-ui.exe` visual frontend |
-| v0.2.0-beta6 | Experimental MQTT watch sink for publishing live telemetry to a user-specified broker |
+| dev/0.2.1 | Experimental MQTT watch sink for publishing live telemetry to a user-specified broker |
+| unreleased v0.2.2 (`dev/0.2.2`) | Optional Home Assistant MQTT discovery for the experimental MQTT watch sink |
 | v0.3+ | Optional native UI, tray integration, cross-vendor extensibility |
 
 ---
@@ -636,7 +669,8 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 ## Next Immediate Step
 
 * Preserve CLI/probe/sink outputs as the formal validation path.
-* Validate the experimental MQTT sink against a local broker and subscriber before adding Home Assistant discovery.
+* Validate Home Assistant MQTT discovery against a local broker, subscriber, and Home Assistant instance.
+* Decide whether MQTT Last Will and Testament / offline availability belongs in a later phase.
 * Use `wtg-ui.exe` for visual corroboration, demos, and operator-facing inspection.
 * Validate packaging helper behavior on release builds that include both executable surfaces.
 * Continue empirical driver-behavior documentation using captured CLI and structured artifacts.
