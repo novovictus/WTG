@@ -14,6 +14,22 @@ use wtg_core::nvml::{
 
 pub(crate) const DEFAULT_MQTT_PORT: u16 = 1883;
 pub(crate) const DEFAULT_TOPIC_PREFIX: &str = "wtg";
+pub(crate) const DEFAULT_HA_DISCOVERY_PREFIX: &str = "homeassistant";
+
+#[derive(Debug, Clone)]
+pub(crate) struct MqttHaDiscoveryOptions {
+    prefix: String,
+    retain: bool,
+}
+
+impl MqttHaDiscoveryOptions {
+    pub(crate) fn new(prefix: String, retain: bool) -> Result<Self, String> {
+        Ok(Self {
+            prefix: validate_topic_prefix("--mqtt-ha-prefix", &prefix)?,
+            retain,
+        })
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct MqttOptions {
@@ -21,6 +37,7 @@ pub(crate) struct MqttOptions {
     port: u16,
     topic_prefix: String,
     node_id: String,
+    ha_discovery: Option<MqttHaDiscoveryOptions>,
 }
 
 impl MqttOptions {
@@ -29,6 +46,7 @@ impl MqttOptions {
         port: u16,
         topic_prefix: String,
         node_id: String,
+        ha_discovery: Option<MqttHaDiscoveryOptions>,
     ) -> Result<Self, String> {
         if port == 0 {
             return Err("--mqtt-port must be between 1 and 65535.".to_string());
@@ -39,7 +57,7 @@ impl MqttOptions {
             return Err("--sink mqtt requires --mqtt-host <host>.".to_string());
         }
 
-        let topic_prefix = validate_topic_prefix(&topic_prefix)?;
+        let topic_prefix = validate_topic_prefix("--mqtt-topic-prefix", &topic_prefix)?;
         let node_id = validate_node_id(&node_id)?;
 
         Ok(Self {
@@ -47,6 +65,7 @@ impl MqttOptions {
             port,
             topic_prefix,
             node_id,
+            ha_discovery,
         })
     }
 }
@@ -105,21 +124,67 @@ impl MqttSink {
                 tick_seq,
                 tick_ts,
             );
-            self.publish(&topic, payload.as_bytes())?;
+            self.publish(&topic, payload.as_bytes(), false)?;
         }
 
         Ok(())
+    }
+
+    pub(crate) fn publish_ha_discovery_for_snapshots(
+        &mut self,
+        snapshots: &[GpuSnapshot],
+    ) -> Result<(), String> {
+        let Some(discovery) = self.options.ha_discovery.clone() else {
+            return Ok(());
+        };
+
+        let availability_topic = self.availability_topic();
+
+        for snapshot in snapshots {
+            for metric in HA_SENSOR_METRICS {
+                let topic = format_ha_discovery_topic(
+                    &discovery.prefix,
+                    &self.options.node_id,
+                    snapshot.index,
+                    metric.key,
+                );
+                let state_topic = self.topic_for_gpu(snapshot.index);
+                let payload = format_ha_discovery_payload(
+                    &self.options.node_id,
+                    snapshot,
+                    metric,
+                    &state_topic,
+                    &availability_topic,
+                );
+                self.publish(&topic, payload.as_bytes(), discovery.retain)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn publish_ha_availability_online(&mut self) -> Result<(), String> {
+        if self.options.ha_discovery.is_none() {
+            return Ok(());
+        }
+
+        let availability_topic = self.availability_topic();
+        self.publish(&availability_topic, b"online", false)
     }
 
     fn topic_for_gpu(&self, gpu_index: u32) -> String {
         format_state_topic(&self.options.topic_prefix, &self.options.node_id, gpu_index)
     }
 
-    fn publish(&mut self, topic: &str, payload: &[u8]) -> Result<(), String> {
+    fn availability_topic(&self) -> String {
+        format_availability_topic(&self.options.topic_prefix, &self.options.node_id)
+    }
+
+    fn publish(&mut self, topic: &str, payload: &[u8], retain: bool) -> Result<(), String> {
         let mut body = Vec::with_capacity(2 + topic.len() + payload.len());
         push_mqtt_string(&mut body, topic)?;
         body.extend_from_slice(payload);
-        write_packet(&mut self.stream, 0x30, &body)
+        write_packet(&mut self.stream, publish_packet_type(retain), &body)
     }
 }
 
@@ -245,12 +310,12 @@ fn connack_reason(code: u8) -> &'static str {
     }
 }
 
-fn validate_topic_prefix(prefix: &str) -> Result<String, String> {
+fn validate_topic_prefix(label: &str, prefix: &str) -> Result<String, String> {
     let trimmed = prefix.trim().trim_matches('/').to_string();
     if trimmed.is_empty() {
-        return Err("--mqtt-topic-prefix must not be empty.".to_string());
+        return Err(format!("{label} must not be empty."));
     }
-    validate_topic_text("--mqtt-topic-prefix", &trimmed)?;
+    validate_topic_text(label, &trimmed)?;
     Ok(trimmed)
 }
 
@@ -282,6 +347,27 @@ fn format_state_topic(topic_prefix: &str, node_id: &str, gpu_index: u32) -> Stri
     format!("{topic_prefix}/{node_id}/gpu{gpu_index}/state")
 }
 
+fn format_availability_topic(topic_prefix: &str, node_id: &str) -> String {
+    format!("{topic_prefix}/{node_id}/status")
+}
+
+fn format_ha_discovery_topic(
+    ha_prefix: &str,
+    node_id: &str,
+    gpu_index: u32,
+    metric: &str,
+) -> String {
+    format!("{ha_prefix}/sensor/wtg_{node_id}_gpu{gpu_index}_{metric}/config")
+}
+
+fn publish_packet_type(retain: bool) -> u8 {
+    if retain {
+        0x31
+    } else {
+        0x30
+    }
+}
+
 fn local_hostname() -> String {
     env::var("COMPUTERNAME")
         .or_else(|_| env::var("HOSTNAME"))
@@ -289,6 +375,164 @@ fn local_hostname() -> String {
         .ok()
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+struct HaSensorMetric {
+    key: &'static str,
+    name: &'static str,
+    unit: Option<&'static str>,
+    device_class: Option<&'static str>,
+    state_class: Option<&'static str>,
+}
+
+const HA_SENSOR_METRICS: &[HaSensorMetric] = &[
+    HaSensorMetric {
+        key: "util_gpu_pct",
+        name: "GPU utilization",
+        unit: Some("%"),
+        device_class: None,
+        state_class: Some("measurement"),
+    },
+    HaSensorMetric {
+        key: "util_mem_controller_pct",
+        name: "Memory controller utilization",
+        unit: Some("%"),
+        device_class: None,
+        state_class: Some("measurement"),
+    },
+    HaSensorMetric {
+        key: "vram_used_mib",
+        name: "VRAM used",
+        unit: Some("MiB"),
+        device_class: None,
+        state_class: Some("measurement"),
+    },
+    HaSensorMetric {
+        key: "vram_total_mib",
+        name: "VRAM total",
+        unit: Some("MiB"),
+        device_class: None,
+        state_class: Some("measurement"),
+    },
+    HaSensorMetric {
+        key: "power_w",
+        name: "Power",
+        unit: Some("W"),
+        device_class: Some("power"),
+        state_class: Some("measurement"),
+    },
+    HaSensorMetric {
+        key: "power_limit_w",
+        name: "Power limit",
+        unit: Some("W"),
+        device_class: Some("power"),
+        state_class: Some("measurement"),
+    },
+    HaSensorMetric {
+        key: "temp_c",
+        name: "Temperature",
+        unit: Some("\u{00b0}C"),
+        device_class: Some("temperature"),
+        state_class: Some("measurement"),
+    },
+    HaSensorMetric {
+        key: "driver_version",
+        name: "Driver version",
+        unit: None,
+        device_class: None,
+        state_class: None,
+    },
+    HaSensorMetric {
+        key: "cuda_driver_version",
+        name: "CUDA driver version",
+        unit: None,
+        device_class: None,
+        state_class: None,
+    },
+    HaSensorMetric {
+        key: "compute_mode",
+        name: "Compute mode",
+        unit: None,
+        device_class: None,
+        state_class: None,
+    },
+    HaSensorMetric {
+        key: "perf_state",
+        name: "Performance state",
+        unit: None,
+        device_class: None,
+        state_class: None,
+    },
+    HaSensorMetric {
+        key: "pci_bus_id",
+        name: "PCI bus ID",
+        unit: None,
+        device_class: None,
+        state_class: None,
+    },
+    HaSensorMetric {
+        key: "wtg_version",
+        name: "WTG version",
+        unit: None,
+        device_class: None,
+        state_class: None,
+    },
+];
+
+fn format_ha_discovery_payload(
+    node_id: &str,
+    snapshot: &GpuSnapshot,
+    metric: &HaSensorMetric,
+    state_topic: &str,
+    availability_topic: &str,
+) -> String {
+    let unique_id = format!("wtg_{node_id}_gpu{}_{}", snapshot.index, metric.key);
+    let device_id = format!("wtg_{node_id}_gpu{}", snapshot.index);
+    let device_name = format!("WTG {node_id} GPU {}", snapshot.index);
+
+    let mut payload = format!(
+        concat!(
+            "{{",
+            "\"name\":{},",
+            "\"unique_id\":{},",
+            "\"state_topic\":{},",
+            "\"value_template\":{},",
+            "\"availability_topic\":{},",
+            "\"payload_available\":\"online\",",
+            "\"device\":{{",
+            "\"identifiers\":[{}],",
+            "\"name\":{},",
+            "\"manufacturer\":\"WTG\",",
+            "\"model\":{},",
+            "\"sw_version\":{}",
+            "}}"
+        ),
+        json_string(&format!("GPU {} {}", snapshot.index, metric.name)),
+        json_string(&unique_id),
+        json_string(state_topic),
+        json_string(&format!("{{{{ value_json.{} }}}}", metric.key)),
+        json_string(availability_topic),
+        json_string(&device_id),
+        json_string(&device_name),
+        json_string(&snapshot.name),
+        json_string(env!("CARGO_PKG_VERSION"))
+    );
+
+    if let Some(unit) = metric.unit {
+        payload.push_str(",\"unit_of_measurement\":");
+        payload.push_str(&json_string(unit));
+    }
+    if let Some(device_class) = metric.device_class {
+        payload.push_str(",\"device_class\":");
+        payload.push_str(&json_string(device_class));
+    }
+    if let Some(state_class) = metric.state_class {
+        payload.push_str(",\"state_class\":");
+        payload.push_str(&json_string(state_class));
+    }
+
+    payload.push('}');
+    payload
 }
 
 fn format_state_payload(
@@ -393,6 +637,7 @@ mod tests {
             DEFAULT_MQTT_PORT,
             "/wtg/".to_string(),
             "node-a".to_string(),
+            None,
         )
         .unwrap();
 
@@ -400,6 +645,17 @@ mod tests {
         assert_eq!(options.port, 1883);
         assert_eq!(options.topic_prefix, "wtg");
         assert_eq!(options.node_id, "node-a");
+        assert!(options.ha_discovery.is_none());
+    }
+
+    #[test]
+    fn ha_discovery_options_apply_defaults_and_normalization() {
+        assert_eq!(DEFAULT_HA_DISCOVERY_PREFIX, "homeassistant");
+
+        let discovery = MqttHaDiscoveryOptions::new("/homeassistant/".to_string(), true).unwrap();
+
+        assert_eq!(discovery.prefix, "homeassistant");
+        assert!(discovery.retain);
     }
 
     #[test]
@@ -419,6 +675,24 @@ mod tests {
             format_state_topic("wtg", "node-a", 2),
             "wtg/node-a/gpu2/state"
         );
+        assert_eq!(
+            format_availability_topic("wtg", "node-a"),
+            "wtg/node-a/status"
+        );
+    }
+
+    #[test]
+    fn ha_discovery_topic_uses_predictable_shape() {
+        assert_eq!(
+            format_ha_discovery_topic("homeassistant", "node-a", 2, "power_w"),
+            "homeassistant/sensor/wtg_node-a_gpu2_power_w/config"
+        );
+    }
+
+    #[test]
+    fn publish_packet_type_sets_retain_only_when_requested() {
+        assert_eq!(publish_packet_type(false), 0x30);
+        assert_eq!(publish_packet_type(true), 0x31);
     }
 
     #[test]
@@ -470,5 +744,83 @@ mod tests {
         assert!(payload.contains("\"vram_total_mib\":1024"));
         assert!(payload.contains("\"power_w\":12.3"));
         assert!(payload.contains("\"power_limit_w\":45.6"));
+    }
+
+    #[test]
+    fn ha_discovery_payload_has_expected_numeric_sensor_fields() {
+        let snapshot = GpuSnapshot {
+            index: 0,
+            name: "GPU \"A\"".to_string(),
+            uuid: "uuid".to_string(),
+            mem_used_bytes: 512 * 1024 * 1024,
+            mem_total_bytes: 1024 * 1024 * 1024,
+            gpu_util_pct: 42,
+            mem_util_pct: 7,
+            temp_c: Some(55),
+            power_mw: Some(12_300),
+            power_limit_mw: Some(45_600),
+        };
+        let metric = HA_SENSOR_METRICS
+            .iter()
+            .find(|metric| metric.key == "power_w")
+            .unwrap();
+
+        let payload = format_ha_discovery_payload(
+            "node-a",
+            &snapshot,
+            metric,
+            "wtg/node-a/gpu0/state",
+            "wtg/node-a/status",
+        );
+
+        assert!(payload.contains("\"name\":\"GPU 0 Power\""));
+        assert!(payload.contains("\"unique_id\":\"wtg_node-a_gpu0_power_w\""));
+        assert!(payload.contains("\"state_topic\":\"wtg/node-a/gpu0/state\""));
+        assert!(payload.contains("\"value_template\":\"{{ value_json.power_w }}\""));
+        assert!(payload.contains("\"availability_topic\":\"wtg/node-a/status\""));
+        assert!(payload.contains("\"payload_available\":\"online\""));
+        assert!(payload.contains(
+            "\"device\":{\"identifiers\":[\"wtg_node-a_gpu0\"],\"name\":\"WTG node-a GPU 0\""
+        ));
+        assert!(payload.contains("\"manufacturer\":\"WTG\""));
+        assert!(payload.contains("\"model\":\"GPU \\\"A\\\"\""));
+        assert!(payload.contains(&format!("\"sw_version\":\"{}\"", env!("CARGO_PKG_VERSION"))));
+        assert!(payload.contains("\"unit_of_measurement\":\"W\""));
+        assert!(payload.contains("\"device_class\":\"power\""));
+        assert!(payload.contains("\"state_class\":\"measurement\""));
+    }
+
+    #[test]
+    fn ha_discovery_payload_omits_numeric_metadata_for_string_sensor() {
+        let snapshot = GpuSnapshot {
+            index: 1,
+            name: "GPU B".to_string(),
+            uuid: "uuid".to_string(),
+            mem_used_bytes: 512 * 1024 * 1024,
+            mem_total_bytes: 1024 * 1024 * 1024,
+            gpu_util_pct: 42,
+            mem_util_pct: 7,
+            temp_c: Some(55),
+            power_mw: Some(12_300),
+            power_limit_mw: Some(45_600),
+        };
+        let metric = HA_SENSOR_METRICS
+            .iter()
+            .find(|metric| metric.key == "perf_state")
+            .unwrap();
+
+        let payload = format_ha_discovery_payload(
+            "node-a",
+            &snapshot,
+            metric,
+            "wtg/node-a/gpu1/state",
+            "wtg/node-a/status",
+        );
+
+        assert!(payload.contains("\"unique_id\":\"wtg_node-a_gpu1_perf_state\""));
+        assert!(payload.contains("\"value_template\":\"{{ value_json.perf_state }}\""));
+        assert!(!payload.contains("unit_of_measurement"));
+        assert!(!payload.contains("device_class"));
+        assert!(!payload.contains("state_class"));
     }
 }

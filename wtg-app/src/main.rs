@@ -35,7 +35,10 @@ mod probe;
 mod probe_fields;
 mod sink;
 
-use mqtt::{MqttOptions, MqttSink, DEFAULT_MQTT_PORT, DEFAULT_TOPIC_PREFIX};
+use mqtt::{
+    MqttHaDiscoveryOptions, MqttOptions, MqttSink, DEFAULT_HA_DISCOVERY_PREFIX, DEFAULT_MQTT_PORT,
+    DEFAULT_TOPIC_PREFIX,
+};
 use probe::{format_probe_csv_header, format_probe_csv_row, format_probe_record, ProbeRecord};
 use probe_fields::{
     format_field_value, format_probe_fields_csv_header, format_probe_fields_csv_row,
@@ -65,6 +68,9 @@ struct CliArgs {
     mqtt_port: Option<String>,
     mqtt_topic_prefix: Option<String>,
     mqtt_node_id: Option<String>,
+    mqtt_ha_discovery: bool,
+    mqtt_ha_prefix: Option<String>,
+    mqtt_retain_discovery: bool,
     field_ids: Vec<u32>,
 }
 
@@ -225,6 +231,9 @@ fn print_help() {
         "  --mqtt-port <port>      MQTT broker port. Default: 1883.\n",
         "  --mqtt-topic-prefix <p> MQTT topic prefix. Default: wtg.\n",
         "  --mqtt-node-id <id>     MQTT node ID. Required with --sink mqtt.\n",
+        "  --mqtt-ha-discovery     Publish Home Assistant MQTT discovery configs with --sink mqtt.\n",
+        "  --mqtt-ha-prefix <p>    Home Assistant discovery prefix. Default: homeassistant.\n",
+        "  --mqtt-retain-discovery Retain Home Assistant discovery configs. State messages remain non-retained.\n",
         "  --help / -h             Print this help text.\n",
         "  --version / -V          Print version and exit.\n"
     ));
@@ -256,6 +265,9 @@ fn parse_args() -> CliArgs {
         mqtt_port: None,
         mqtt_topic_prefix: None,
         mqtt_node_id: None,
+        mqtt_ha_discovery: false,
+        mqtt_ha_prefix: None,
+        mqtt_retain_discovery: false,
         field_ids: Vec::new(),
     };
 
@@ -369,6 +381,22 @@ fn parse_args() -> CliArgs {
                 parsed.mqtt_node_id = Some(args[i + 1].clone());
                 i += 2;
             }
+            "--mqtt-ha-discovery" => {
+                parsed.mqtt_ha_discovery = true;
+                i += 1;
+            }
+            "--mqtt-ha-prefix" => {
+                if i + 1 >= args.len() {
+                    usage_error("--mqtt-ha-prefix requires a discovery prefix value.");
+                }
+
+                parsed.mqtt_ha_prefix = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--mqtt-retain-discovery" => {
+                parsed.mqtt_retain_discovery = true;
+                i += 1;
+            }
             other if other.starts_with('-') => {
                 usage_error(&format!("unknown flag: {other}"));
             }
@@ -440,6 +468,18 @@ fn parse_args() -> CliArgs {
         }
     }
 
+    if parsed.mqtt_ha_discovery && parsed.sink != Some(SinkKind::Mqtt) {
+        usage_error("--mqtt-ha-discovery is valid only with --sink mqtt.");
+    }
+
+    if parsed.mqtt_ha_prefix.is_some() && !parsed.mqtt_ha_discovery {
+        usage_error("--mqtt-ha-prefix requires --mqtt-ha-discovery.");
+    }
+
+    if parsed.mqtt_retain_discovery && !parsed.mqtt_ha_discovery {
+        usage_error("--mqtt-retain-discovery requires --mqtt-ha-discovery.");
+    }
+
     parsed
 }
 
@@ -461,6 +501,18 @@ fn mqtt_options_from_args(args: &CliArgs) -> Option<MqttOptions> {
         .mqtt_topic_prefix
         .clone()
         .unwrap_or_else(|| DEFAULT_TOPIC_PREFIX.to_string());
+    let ha_discovery = if args.mqtt_ha_discovery {
+        let prefix = args
+            .mqtt_ha_prefix
+            .clone()
+            .unwrap_or_else(|| DEFAULT_HA_DISCOVERY_PREFIX.to_string());
+        Some(
+            MqttHaDiscoveryOptions::new(prefix, args.mqtt_retain_discovery)
+                .unwrap_or_else(|e| usage_error(&e)),
+        )
+    } else {
+        None
+    };
 
     Some(
         MqttOptions::new(
@@ -468,6 +520,7 @@ fn mqtt_options_from_args(args: &CliArgs) -> Option<MqttOptions> {
             port,
             topic_prefix,
             args.mqtt_node_id.clone().unwrap_or_default(),
+            ha_discovery,
         )
         .unwrap_or_else(|e| usage_error(&e)),
     )
@@ -507,7 +560,11 @@ fn main() {
 
     let mut mqtt_sink = match mqtt_options_from_args(&args) {
         Some(options) => match MqttSink::connect(options) {
-            Ok(sink) => {
+            Ok(mut sink) => {
+                if let Err(e) = sink.publish_ha_availability_online() {
+                    eprintln!("WTG MQTT error: {e}");
+                    process::exit(2);
+                }
                 eprintln!("WTG note: MQTT sink enabled.");
                 Some(sink)
             }
@@ -716,6 +773,7 @@ fn main() {
             };
 
             let mut tick_seq: u64 = 0;
+            let mut mqtt_ha_discovery_published = false;
             loop {
                 match wtg_core::nvml::snapshot_all_with_ctx(&ctx) {
                     Ok(snapshots) => {
@@ -734,6 +792,15 @@ fn main() {
                             }
                         }
                         if let Some(mqtt_sink) = mqtt_sink.as_mut() {
+                            if !mqtt_ha_discovery_published {
+                                if let Err(e) =
+                                    mqtt_sink.publish_ha_discovery_for_snapshots(&snapshots)
+                                {
+                                    eprintln!("WTG MQTT error: {e}");
+                                    process::exit(2);
+                                }
+                                mqtt_ha_discovery_published = true;
+                            }
                             if let Err(e) =
                                 mqtt_sink.publish_snapshots(&ctx, &snapshots, tick_seq, &tick_ts)
                             {
@@ -772,6 +839,7 @@ fn main() {
             };
 
             let mut tick_seq: u64 = 0;
+            let mut mqtt_ha_discovery_published = false;
             loop {
                 let snapshot_result = match mqtt_ctx.as_ref() {
                     Some(ctx) => wtg_core::nvml::snapshot_all_with_ctx(ctx),
@@ -801,6 +869,15 @@ fn main() {
                         if let (Some(mqtt_sink), Some(ctx)) =
                             (mqtt_sink.as_mut(), mqtt_ctx.as_ref())
                         {
+                            if !mqtt_ha_discovery_published {
+                                if let Err(e) =
+                                    mqtt_sink.publish_ha_discovery_for_snapshots(&snapshots)
+                                {
+                                    eprintln!("WTG MQTT error: {e}");
+                                    process::exit(2);
+                                }
+                                mqtt_ha_discovery_published = true;
+                            }
                             if let Err(e) =
                                 mqtt_sink.publish_snapshots(ctx, &snapshots, tick_seq, &tick_ts)
                             {
