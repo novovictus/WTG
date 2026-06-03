@@ -173,7 +173,29 @@ wtg/testnode/gpu0/state
 Example payload:
 
 ```json
-{"host":"LAPTOP-8CC8RC3A","gpu_index":0,"gpu_name":"NVIDIA GeForce RTX 3080 Laptop GPU","util_gpu_pct":0,"util_mem_controller_pct":100,"vram_used_mib":844,"vram_total_mib":16384,"power_w":13.2,"power_limit_w":130.0,"temp_c":50}
+{
+  "wtg_version": "0.2.0-beta6",
+  "payload_schema": 1,
+  "tick_seq": 123,
+  "tick_ts": "1780420000.123",
+  "host": "LAPTOP-8CC8RC3A",
+  "node_id": "testnode",
+  "gpu_index": 0,
+  "gpu_name": "NVIDIA GeForce RTX 3080 Laptop GPU",
+  "gpu_uuid": "GPU-...",
+  "driver_version": "580.88",
+  "cuda_driver_version": "13000",
+  "compute_mode": "Default",
+  "perf_state": "P8",
+  "pci_bus_id": "00000000:01:00.0",
+  "temp_c": 50,
+  "util_gpu_pct": 0,
+  "util_mem_controller_pct": 100,
+  "vram_used_mib": 844,
+  "vram_total_mib": 16384,
+  "power_w": 13.2,
+  "power_limit_w": 130.0
+}
 ```
 
 Current beta behavior:
@@ -182,7 +204,7 @@ Current beta behavior:
 * WTG opens an outbound connection to the configured broker
 * WTG does not expose a listening network service
 * one JSON state payload is published per GPU per watch tick
-* payloads use the same `GpuSnapshot` sample used by normal watch output
+* payloads include watch tick metadata, `GpuSnapshot` values, and the same probe context fields exposed by probe surfaces
 * topic prefix defaults to `wtg`
 * payloads are live QoS 0 messages
 * payloads are not retained

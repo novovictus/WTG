@@ -7,7 +7,10 @@ use std::net::TcpStream;
 use std::process;
 use std::time::Duration;
 
-use wtg_core::nvml::GpuSnapshot;
+use wtg_core::nvml::{
+    probe_context::{query_probe_context_for_gpu_with_ctx, GpuProbeContext},
+    GpuSnapshot, NvmlContext,
+};
 
 pub(crate) const DEFAULT_MQTT_PORT: u16 = 1883;
 pub(crate) const DEFAULT_TOPIC_PREFIX: &str = "wtg";
@@ -84,10 +87,24 @@ impl MqttSink {
         })
     }
 
-    pub(crate) fn publish_snapshots(&mut self, snapshots: &[GpuSnapshot]) -> Result<(), String> {
+    pub(crate) fn publish_snapshots(
+        &mut self,
+        ctx: &NvmlContext,
+        snapshots: &[GpuSnapshot],
+        tick_seq: u64,
+        tick_ts: &str,
+    ) -> Result<(), String> {
         for snapshot in snapshots {
             let topic = self.topic_for_gpu(snapshot.index);
-            let payload = format_state_payload(&self.host_name, snapshot);
+            let context = query_probe_context_for_gpu_with_ctx(ctx, snapshot.index);
+            let payload = format_state_payload(
+                &self.host_name,
+                &self.options.node_id,
+                snapshot,
+                &context,
+                tick_seq,
+                tick_ts,
+            );
             self.publish(&topic, payload.as_bytes())?;
         }
 
@@ -274,32 +291,60 @@ fn local_hostname() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn format_state_payload(host_name: &str, snapshot: &GpuSnapshot) -> String {
+fn format_state_payload(
+    host_name: &str,
+    node_id: &str,
+    snapshot: &GpuSnapshot,
+    context: &GpuProbeContext,
+    tick_seq: u64,
+    tick_ts: &str,
+) -> String {
     format!(
         concat!(
             "{{",
+            "\"wtg_version\":{},",
+            "\"payload_schema\":1,",
+            "\"tick_seq\":{},",
+            "\"tick_ts\":{},",
             "\"host\":{},",
+            "\"node_id\":{},",
             "\"gpu_index\":{},",
             "\"gpu_name\":{},",
+            "\"gpu_uuid\":{},",
+            "\"driver_version\":{},",
+            "\"cuda_driver_version\":{},",
+            "\"compute_mode\":{},",
+            "\"perf_state\":{},",
+            "\"pci_bus_id\":{},",
+            "\"temp_c\":{},",
             "\"util_gpu_pct\":{},",
             "\"util_mem_controller_pct\":{},",
             "\"vram_used_mib\":{},",
             "\"vram_total_mib\":{},",
             "\"power_w\":{},",
-            "\"power_limit_w\":{},",
-            "\"temp_c\":{}",
+            "\"power_limit_w\":{}",
             "}}"
         ),
+        json_string(env!("CARGO_PKG_VERSION")),
+        tick_seq,
+        json_string(tick_ts),
         json_string(host_name),
+        json_string(node_id),
         snapshot.index,
         json_string(&snapshot.name),
+        json_string(&snapshot.uuid),
+        json_string(&context.driver_version),
+        json_string(&context.cuda_driver_version),
+        json_string(&context.compute_mode),
+        json_string(&context.perf_state),
+        json_string(&context.pci_bus_id),
+        optional_u32_json(snapshot.temp_c),
         snapshot.gpu_util_pct,
         snapshot.mem_util_pct,
         crate::bytes_to_mib(snapshot.mem_used_bytes),
         crate::bytes_to_mib(snapshot.mem_total_bytes),
         optional_w_json(crate::mw_to_w(snapshot.power_mw)),
-        optional_w_json(crate::mw_to_w(snapshot.power_limit_mw)),
-        optional_u32_json(snapshot.temp_c)
+        optional_w_json(crate::mw_to_w(snapshot.power_limit_mw))
     )
 }
 
@@ -390,19 +435,40 @@ mod tests {
             power_mw: Some(12_300),
             power_limit_mw: Some(45_600),
         };
+        let context = GpuProbeContext {
+            driver_version: "580.88".to_string(),
+            cuda_driver_version: "13000".to_string(),
+            compute_mode: "Default".to_string(),
+            perf_state: "P8".to_string(),
+            pci_bus_id: "00000000:01:00.0".to_string(),
+        };
 
-        let payload = format_state_payload("host", &snapshot);
+        let payload =
+            format_state_payload("host", "node-a", &snapshot, &context, 123, "1780420000.123");
 
+        assert!(payload.contains(&format!(
+            "\"wtg_version\":\"{}\"",
+            env!("CARGO_PKG_VERSION")
+        )));
+        assert!(payload.contains("\"payload_schema\":1"));
+        assert!(payload.contains("\"tick_seq\":123"));
+        assert!(payload.contains("\"tick_ts\":\"1780420000.123\""));
         assert!(payload.contains("\"host\":\"host\""));
+        assert!(payload.contains("\"node_id\":\"node-a\""));
         assert!(payload.contains("\"gpu_index\":0"));
         assert!(payload.contains("\"gpu_name\":\"GPU \\\"A\\\"\""));
+        assert!(payload.contains("\"gpu_uuid\":\"uuid\""));
+        assert!(payload.contains("\"driver_version\":\"580.88\""));
+        assert!(payload.contains("\"cuda_driver_version\":\"13000\""));
+        assert!(payload.contains("\"compute_mode\":\"Default\""));
+        assert!(payload.contains("\"perf_state\":\"P8\""));
+        assert!(payload.contains("\"pci_bus_id\":\"00000000:01:00.0\""));
+        assert!(payload.contains("\"temp_c\":55"));
         assert!(payload.contains("\"util_gpu_pct\":42"));
         assert!(payload.contains("\"util_mem_controller_pct\":7"));
         assert!(payload.contains("\"vram_used_mib\":512"));
+        assert!(payload.contains("\"vram_total_mib\":1024"));
         assert!(payload.contains("\"power_w\":12.3"));
         assert!(payload.contains("\"power_limit_w\":45.6"));
-        assert!(payload.contains("\"temp_c\":55"));
-        assert!(!payload.contains("driver_version"));
-        assert!(!payload.contains("perf_state"));
     }
 }

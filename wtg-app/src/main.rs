@@ -734,7 +734,9 @@ fn main() {
                             }
                         }
                         if let Some(mqtt_sink) = mqtt_sink.as_mut() {
-                            if let Err(e) = mqtt_sink.publish_snapshots(&snapshots) {
+                            if let Err(e) =
+                                mqtt_sink.publish_snapshots(&ctx, &snapshots, tick_seq, &tick_ts)
+                            {
                                 eprintln!("WTG MQTT error: {e}");
                                 process::exit(2);
                             }
@@ -757,9 +759,26 @@ fn main() {
                 thread::sleep(sleep_dur);
             }
         } else {
+            let mqtt_ctx = if mqtt_sink.is_some() {
+                Some(match wtg_core::nvml::init_context() {
+                    Ok(ctx) => ctx,
+                    Err(e) => {
+                        eprintln!("WTG --watch init failed: {e}");
+                        process::exit(2);
+                    }
+                })
+            } else {
+                None
+            };
+
             let mut tick_seq: u64 = 0;
             loop {
-                match wtg_core::nvml::snapshot_all() {
+                let snapshot_result = match mqtt_ctx.as_ref() {
+                    Some(ctx) => wtg_core::nvml::snapshot_all_with_ctx(ctx),
+                    None => wtg_core::nvml::snapshot_all(),
+                };
+
+                match snapshot_result {
                     Ok(snapshots) => {
                         let tick_ts = now_ts();
                         let tick_line = format!("--- tick {tick_ts} ---");
@@ -779,8 +798,12 @@ fn main() {
                                 }
                             }
                         }
-                        if let Some(mqtt_sink) = mqtt_sink.as_mut() {
-                            if let Err(e) = mqtt_sink.publish_snapshots(&snapshots) {
+                        if let (Some(mqtt_sink), Some(ctx)) =
+                            (mqtt_sink.as_mut(), mqtt_ctx.as_ref())
+                        {
+                            if let Err(e) =
+                                mqtt_sink.publish_snapshots(ctx, &snapshots, tick_seq, &tick_ts)
+                            {
                                 eprintln!("WTG MQTT error: {e}");
                                 process::exit(2);
                             }
