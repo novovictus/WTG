@@ -5,7 +5,7 @@ Copyright (C) 2026 Adam Hooper
 
 **Tagline:** Honest GPU compute stats for Windows
 
-## Current Status (v0.2.0-beta5 - Experimental UI Surface)
+## Current Status (v0.2.0-beta6 - Experimental MQTT Watch Sink)
 
 WTG is currently focused on empirical NVML telemetry validation under Windows WDDM.  
 Recent testing has identified a driver-branch regression affecting memory-utilization reporting on specific consumer mobile Ampere GPUs (580.88+), not reproduced on tested desktop or professional SKUs.
@@ -13,6 +13,8 @@ Findings reflect publicly accessible NVML telemetry behavior under Windows WDDM.
 See `artifacts/test-matrix/matrix.md` for empirical results.
 
 WTG v0.2.0-beta5 adds an experimental dual-surface build: the existing CLI validation surface (`wtg.exe`) plus a separate egui desktop frontend (`wtg-ui.exe`). The CLI remains the reference surface for validation evidence; the UI is a visual inspection and demo surface.
+
+WTG v0.2.0-beta6 adds an experimental MQTT watch sink. WTG can publish live `--watch` telemetry to a user-specified MQTT broker using predictable topics. WTG is an MQTT publisher, not a broker: it does not expose a listening network service, configure the broker, open firewall rules, or manage subscriber access.
 
 ---
 
@@ -65,7 +67,7 @@ WTG is currently a command-line proof-of-concept focused on validating NVML-base
 
 ### Probe, sink, and field-values behavior
 
-WTG includes additional CLI paths for probe, field-value, and sink validation. These diagnostic paths were introduced during beta 4 probe/probe-fields work and remain available in beta 5; they are not broad release-contract guarantees.
+WTG includes additional CLI paths for probe, field-value, and sink validation. These diagnostic paths were introduced during beta 4 probe/probe-fields work and remain available in beta 6; they are not broad release-contract guarantees.
 
 The diagnostic CLI scope is intentionally narrow:
 
@@ -73,6 +75,7 @@ The diagnostic CLI scope is intentionally narrow:
 - add probe-oriented diagnostic output
 - add structured CSV output for snapshot, stats, probe, and probe-fields paths
 - add line-oriented JSONL sink output for snapshot, stats, probe, and probe-fields paths
+- add experimental MQTT publishing for live `--watch` snapshots
 - add experimental raw NVML field-value probing through explicit field IDs
 - avoid interpreting raw field IDs as proof of driver causality in code or documentation
 
@@ -107,6 +110,21 @@ The diagnostic CLI scope is intentionally narrow:
 - `--sink csv`  
   Create a timestamped `wtg_sink_*.csv` file. CSV sinks write structured headers and rows for snapshot, stats, probe, and probe-fields output.
 
+- `--sink mqtt`
+  Publish live `--watch` snapshot payloads to a user-specified MQTT broker. This sink is experimental, watch-only, QoS 0, and non-retained. It does not create a sink file.
+
+- `--mqtt-host <host>`
+  MQTT broker host. Required with `--sink mqtt`.
+
+- `--mqtt-port <port>`
+  MQTT broker port. Default: `1883`.
+
+- `--mqtt-topic-prefix <prefix>`
+  MQTT topic prefix. Default: `wtg`.
+
+- `--mqtt-node-id <id>`
+  Stable WTG node identifier used in MQTT topics. Required with `--sink mqtt`.
+
 - `--help`, `-h`
   Print CLI usage information and exit.
 
@@ -115,18 +133,96 @@ The diagnostic CLI scope is intentionally narrow:
 
 ### Sink support matrix
 
-| Mode | `--sink jsonl` | `--sink csv` | Notes |
-| --- | --- | --- | --- |
-| `--probe` | Supported | Supported | CSV emits structured probe records. |
-| `--probe-fields` | Supported | Supported | CSV emits one self-contained row per GPU field result. |
-| `--once` | Supported | Supported | CSV emits snapshot rows. |
-| `--watch` | Supported | Supported | CSV emits snapshot rows per tick. `--interval` applies here. |
-| `--once --stats` | Supported | Supported | CSV emits stats rows. |
-| `--watch --stats` | Supported | Supported | CSV emits stats rows per tick. |
+| Mode | `--sink jsonl` | `--sink csv` | `--sink mqtt` | Notes |
+| --- | --- | --- | --- | --- |
+| `--probe` | Supported | Supported | Not supported | CSV emits structured probe records. MQTT does not publish probe output. |
+| `--probe-fields` | Supported | Supported | Not supported | CSV emits one self-contained row per GPU field result. MQTT does not publish field-value probe output. |
+| `--once` | Supported | Supported | Not supported | CSV emits snapshot rows. MQTT is watch-only in this spike. |
+| `--watch` | Supported | Supported | Supported | CSV emits snapshot rows per tick. MQTT publishes live state payloads per tick. `--interval` applies here. |
+| `--once --stats` | Supported | Supported | Not supported | CSV emits stats rows. MQTT is watch-only in this spike. |
+| `--watch --stats` | Supported | Supported | Supported | CSV emits stats rows per tick. MQTT publishes snapshot payloads, not stats-formatted text. |
 
 Note: plain `--watch` and `--watch --stats` currently have different recovery behavior. `--watch --stats` uses a persistent NVML context and attempts to reinitialize after snapshot failures. Plain `--watch` is stricter and exits on snapshot failure. This behavior may be unified later.
 
 CSV sinks emit exactly one header row per sink file. Unsupported optional values are written as `N/A`.
+
+MQTT publishes live snapshot payloads only while WTG is running and connected to the broker. Messages are QoS 0 and not retained, so subscribers receive samples only while connected. WTG is an MQTT publisher, not a broker. Broker setup, firewall policy, retention, and subscriber access are outside WTG's scope.
+
+### Experimental MQTT watch sink
+
+The MQTT sink publishes live telemetry from `--watch` to a user-specified broker.
+
+Example:
+
+```powershell
+.\wtg.exe --watch --sink mqtt --mqtt-host 127.0.0.1 --mqtt-port 1884 --mqtt-node-id testnode
+```
+
+Topic shape:
+
+```text
+wtg/<node_id>/gpu<index>/state
+```
+
+Example topic:
+
+```text
+wtg/testnode/gpu0/state
+```
+
+Example payload:
+
+```json
+{
+  "wtg_version": "0.2.0-beta6",
+  "payload_schema": 1,
+  "tick_seq": 123,
+  "tick_ts": "1780420000.123",
+  "host": "LAPTOP-8CC8RC3A",
+  "node_id": "testnode",
+  "gpu_index": 0,
+  "gpu_name": "NVIDIA GeForce RTX 3080 Laptop GPU",
+  "gpu_uuid": "GPU-...",
+  "driver_version": "580.88",
+  "cuda_driver_version": "13000",
+  "compute_mode": "Default",
+  "perf_state": "P8",
+  "pci_bus_id": "00000000:01:00.0",
+  "temp_c": 50,
+  "util_gpu_pct": 0,
+  "util_mem_controller_pct": 100,
+  "vram_used_mib": 844,
+  "vram_total_mib": 16384,
+  "power_w": 13.2,
+  "power_limit_w": 130.0
+}
+```
+
+Current beta behavior:
+
+* `--sink mqtt` is supported only with `--watch`
+* WTG opens an outbound connection to the configured broker
+* WTG does not expose a listening network service
+* one JSON state payload is published per GPU per watch tick
+* payloads include watch tick metadata, `GpuSnapshot` values, and the same probe context fields exposed by probe surfaces
+* topic prefix defaults to `wtg`
+* payloads are live QoS 0 messages
+* payloads are not retained
+* no Home Assistant discovery is emitted
+* no config file support is included
+* WTG does not install, run, or configure the broker
+
+Local broker test shape:
+
+```text
+WTG -> local MQTT broker -> local subscriber
+```
+
+Observability-stack shape:
+
+```text
+WTG host -> existing MQTT broker -> subscribers such as Home Assistant, MQTT Explorer, dashboards, or scripts
+```
 
 ### Probe context fields
 
@@ -220,6 +316,13 @@ cargo build -p wtg-app --release
 .\target\release\wtg.exe --probe --sink csv
 .\target\release\wtg.exe --probe-fields --field-id 74
 .\target\release\wtg.exe --probe-fields --field-id 74 --field-id 78 --field-id 83
+.\target\release\wtg.exe --watch --sink mqtt --mqtt-host 127.0.0.1 --mqtt-port 1884 --mqtt-node-id testnode
+```
+
+For MQTT validation, run a broker and subscribe to:
+
+```text
+wtg/testnode/#
 ```
 
 ### Packaging checkpoint helper
@@ -294,6 +397,12 @@ Probe JSONL sink:
 
 ```powershell
 .\wtg.exe --probe --sink jsonl
+```
+
+Experimental MQTT watch sink:
+
+```powershell
+.\wtg.exe --watch --sink mqtt --mqtt-host 127.0.0.1 --mqtt-port 1884 --mqtt-node-id testnode
 ```
 
 Probe field-values comparison:
@@ -407,12 +516,13 @@ WTG relies on NVIDIA NVML on Windows. Empirical testing shows:
 
    * NVML bindings, polling, aggregation, process attribution, snapshot emission
    * Immutable snapshots, append-only, versioned
-   * No UI logic in backend
+   * No UI, MQTT, or output-sink logic in backend
 3. **Surfaces = Consumers**:
 
    * `wtg.exe` is the CLI validation, capture, probe, and sink surface.
    * `wtg-ui.exe` is an experimental egui visual surface.
-   * Both surfaces consume the same `wtg-core` telemetry path; no backend duplication.
+   * MQTT is an experimental watch-mode delivery surface for publishing live telemetry to an existing broker.
+   * App-layer surfaces consume the same `wtg-core` telemetry path; no backend duplication.
 4. **Extensible Metric Model**: trait-based, allows future integration of other vendors (ROCm, DX12)
 5. **Phased Approach**:
 
@@ -434,6 +544,7 @@ wtg-core/                         # Backend / truth layer
 wtg-app/
   src/main.rs                     # Builds wtg.exe, the CLI validation/capture surface
   src/bin/wtg-ui.rs               # Builds wtg-ui.exe, the experimental UI entrypoint
+  src/mqtt.rs                     # Experimental MQTT watch sink implementation
   src/ui.rs                       # Current egui UI implementation
 
 wtg-view/                         # Shared view helpers where applicable
@@ -472,6 +583,7 @@ struct Snapshot {
 * CLI `--watch` uses a fixed interval, defaulting to 1000 ms unless `--interval <ms>` is supplied
 * Probe and once modes capture point-in-time snapshots
 * The experimental egui UI has its own refresh control in the window
+* The experimental MQTT sink publishes one payload per GPU per watch tick
 * No smoothing; snapshots reflect raw, instantaneous utilization
 
 ---
@@ -481,6 +593,7 @@ struct Snapshot {
 * Compare WTG CLI output vs `nvidia-smi` and WSL NVML metrics
 * Compare NVML telemetry against Windows-reported metrics to characterize abstraction differences
 * Use CLI, probe, field-values, and sink artifacts for validation evidence
+* Use MQTT broker/subscriber captures to validate transport only; do not treat MQTT as the telemetry source of truth
 * Use the experimental UI for visual corroboration and demos only
 
 ---
@@ -495,12 +608,14 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 
 1. **CLI validation surface**: truth validation, probe output, field-values comparison, and structured sinks
 2. **Experimental egui surface**: live desktop view over the same `wtg-core` telemetry path
-3. **UI refinement**: module split, display polish, and optional charting only after validation workflows remain stable
-4. **Native window control**: chrome, always-on-top, keyboard shortcuts
-5. **Tray integration**: background polling, popup on demand
-6. **Plugin expansion**: ROCm, DX12, vendor-specific metrics
-7. **Distribution hardening**: signed binary, single-file EXE, crash-resilient NVML paths
-8. **Reference surfaces retained**: CLI remains the validation surface; egui remains a visual/debug/operator surface unless explicitly promoted later
+3. **Experimental MQTT delivery**: app-layer watch sink for publishing live telemetry to an existing broker
+4. **Home Assistant discovery**: optional, explicit discovery config generation after MQTT transport remains stable
+5. **UI refinement**: module split, display polish, and optional charting only after validation workflows remain stable
+6. **Native window control**: chrome, always-on-top, keyboard shortcuts
+7. **Tray integration**: background polling, popup on demand
+8. **Plugin expansion**: ROCm, DX12, vendor-specific metrics
+9. **Distribution hardening**: signed binary, single-file EXE, crash-resilient NVML paths
+10. **Reference surfaces retained**: CLI remains the validation surface; egui remains a visual/debug/operator surface unless explicitly promoted later
 
 **Key Principle:** Surfaces are interchangeable lenses; backend is the immutable source of truth. This prevents logic drift and double-work while allowing phased expansion.
 
@@ -513,6 +628,7 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 | v0.1.x | Truth-layer validation: one GPU, CLI output, correct NVML metrics vs Windows telemetry |
 | v0.2.0-beta4 | Probe, sink, field-values, and driver-behavior validation |
 | v0.2.0-beta5 | Experimental dual-surface build: CLI validation surface plus `wtg-ui.exe` visual frontend |
+| v0.2.0-beta6 | Experimental MQTT watch sink for publishing live telemetry to a user-specified broker |
 | v0.3+ | Optional native UI, tray integration, cross-vendor extensibility |
 
 ---
@@ -520,6 +636,7 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 ## Next Immediate Step
 
 * Preserve CLI/probe/sink outputs as the formal validation path.
+* Validate the experimental MQTT sink against a local broker and subscriber before adding Home Assistant discovery.
 * Use `wtg-ui.exe` for visual corroboration, demos, and operator-facing inspection.
 * Validate packaging helper behavior on release builds that include both executable surfaces.
 * Continue empirical driver-behavior documentation using captured CLI and structured artifacts.
