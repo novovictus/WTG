@@ -72,6 +72,7 @@ struct CliArgs {
     mqtt_password_env: Option<String>,
     mqtt_ha_discovery: bool,
     mqtt_ha_prefix: Option<String>,
+    mqtt_ha_remove_discovery: bool,
     mqtt_retain_discovery: bool,
     field_ids: Vec<u32>,
 }
@@ -219,6 +220,7 @@ fn print_help() {
         "  wtg.exe --watch [--interval <ms>] [--stats] [--sink jsonl|csv|mqtt]\n",
         "  wtg.exe --probe [--sink jsonl|csv]\n",
         "  wtg.exe --probe-fields --field-id <u32> [--field-id <u32> ...] [--sink jsonl|csv]\n",
+        "  wtg.exe --sink mqtt --mqtt-ha-remove-discovery --mqtt-host <host> --mqtt-node-id <id>\n",
         "\n",
         "Options:\n",
         "  --once                  Capture a single GPU snapshot and exit.\n",
@@ -237,6 +239,7 @@ fn print_help() {
         "  --mqtt-password-env <v> Read MQTT password from environment variable. Requires --mqtt-username.\n",
         "  --mqtt-ha-discovery     Publish Home Assistant MQTT discovery configs with --sink mqtt.\n",
         "  --mqtt-ha-prefix <p>    Home Assistant discovery prefix. Default: homeassistant.\n",
+        "  --mqtt-ha-remove-discovery Remove retained Home Assistant discovery configs and availability.\n",
         "  --mqtt-retain-discovery Retain Home Assistant discovery configs. State messages remain non-retained.\n",
         "  --help / -h             Print this help text.\n",
         "  --version / -V          Print version and exit.\n"
@@ -273,6 +276,7 @@ fn parse_args() -> CliArgs {
         mqtt_password_env: None,
         mqtt_ha_discovery: false,
         mqtt_ha_prefix: None,
+        mqtt_ha_remove_discovery: false,
         mqtt_retain_discovery: false,
         field_ids: Vec::new(),
     };
@@ -415,6 +419,10 @@ fn parse_args() -> CliArgs {
                 parsed.mqtt_ha_prefix = Some(args[i + 1].clone());
                 i += 2;
             }
+            "--mqtt-ha-remove-discovery" => {
+                parsed.mqtt_ha_remove_discovery = true;
+                i += 1;
+            }
             "--mqtt-retain-discovery" => {
                 parsed.mqtt_retain_discovery = true;
                 i += 1;
@@ -450,6 +458,12 @@ fn parse_args() -> CliArgs {
         usage_error("--stats requires --once or --watch.");
     }
 
+    if parsed.mqtt_ha_remove_discovery && (once || watch || probe || probe_fields || stats) {
+        usage_error(
+            "--mqtt-ha-remove-discovery cannot be combined with --once, --watch, --stats, --probe, or --probe-fields.",
+        );
+    }
+
     if parsed.interval_ms.is_some() && !watch {
         usage_error("--interval is valid only with --watch.");
     }
@@ -462,13 +476,21 @@ fn parse_args() -> CliArgs {
         usage_error("--probe-fields requires at least one --field-id <u32>.");
     }
 
-    if parsed.sink.is_some() && !once && !watch && !probe && !probe_fields {
+    if parsed.sink.is_some()
+        && !once
+        && !watch
+        && !probe
+        && !probe_fields
+        && !parsed.mqtt_ha_remove_discovery
+    {
         usage_error("--sink requires --once, --watch, --probe, or --probe-fields.");
     }
 
     if parsed.sink == Some(SinkKind::Mqtt) {
-        if !watch {
-            usage_error("--sink mqtt is valid only with --watch for this experimental spike.");
+        if !watch && !parsed.mqtt_ha_remove_discovery {
+            usage_error(
+                "--sink mqtt is valid only with --watch, except for --mqtt-ha-remove-discovery.",
+            );
         }
         if parsed
             .mqtt_host
@@ -494,6 +516,14 @@ fn parse_args() -> CliArgs {
         usage_error("--mqtt-ha-discovery is valid only with --sink mqtt.");
     }
 
+    if parsed.mqtt_ha_remove_discovery && parsed.sink != Some(SinkKind::Mqtt) {
+        usage_error("--mqtt-ha-remove-discovery is valid only with --sink mqtt.");
+    }
+
+    if parsed.mqtt_ha_remove_discovery && parsed.mqtt_ha_discovery {
+        usage_error("--mqtt-ha-remove-discovery cannot be combined with --mqtt-ha-discovery.");
+    }
+
     if let Err(e) = validate_mqtt_auth_flags(
         parsed.sink,
         parsed.mqtt_username.as_deref(),
@@ -502,8 +532,11 @@ fn parse_args() -> CliArgs {
         usage_error(&e);
     }
 
-    if parsed.mqtt_ha_prefix.is_some() && !parsed.mqtt_ha_discovery {
-        usage_error("--mqtt-ha-prefix requires --mqtt-ha-discovery.");
+    if parsed.mqtt_ha_prefix.is_some()
+        && !parsed.mqtt_ha_discovery
+        && !parsed.mqtt_ha_remove_discovery
+    {
+        usage_error("--mqtt-ha-prefix requires --mqtt-ha-discovery or --mqtt-ha-remove-discovery.");
     }
 
     if parsed.mqtt_retain_discovery && !parsed.mqtt_ha_discovery {
@@ -552,7 +585,7 @@ fn mqtt_options_from_args(args: &CliArgs) -> Option<MqttOptions> {
         .clone()
         .unwrap_or_else(|| DEFAULT_TOPIC_PREFIX.to_string());
     let auth = mqtt_auth_from_args(args);
-    let ha_discovery = if args.mqtt_ha_discovery {
+    let ha_discovery = if args.mqtt_ha_discovery || args.mqtt_ha_remove_discovery {
         let prefix = args
             .mqtt_ha_prefix
             .clone()
@@ -572,6 +605,7 @@ fn mqtt_options_from_args(args: &CliArgs) -> Option<MqttOptions> {
             topic_prefix,
             args.mqtt_node_id.clone().unwrap_or_default(),
             auth,
+            args.mqtt_ha_discovery,
             ha_discovery,
         )
         .unwrap_or_else(|e| usage_error(&e)),
@@ -661,6 +695,34 @@ fn main() {
         },
         None => None,
     };
+
+    if args.mqtt_ha_remove_discovery {
+        let ctx = match wtg_core::nvml::init_context() {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                eprintln!("WTG MQTT cleanup init failed: {e}");
+                process::exit(2);
+            }
+        };
+        let snapshots = match wtg_core::nvml::snapshot_all_with_ctx(&ctx) {
+            Ok(snapshots) => snapshots,
+            Err(e) => {
+                eprintln!("WTG MQTT cleanup snapshot failed: {e}");
+                process::exit(2);
+            }
+        };
+        let Some(mqtt_sink) = mqtt_sink.as_mut() else {
+            eprintln!("WTG MQTT cleanup error: --mqtt-ha-remove-discovery requires --sink mqtt.");
+            process::exit(2);
+        };
+        if let Err(e) = mqtt_sink.publish_ha_discovery_cleanup_for_snapshots(&snapshots) {
+            eprintln!("WTG MQTT cleanup error: {e}");
+            process::exit(2);
+        }
+
+        eprintln!("WTG note: MQTT Home Assistant discovery cleanup published.");
+        return;
+    }
 
     // Mode: `--probe-fields`
     if args.probe_fields {

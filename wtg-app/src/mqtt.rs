@@ -68,6 +68,7 @@ pub(crate) struct MqttOptions {
     topic_prefix: String,
     node_id: String,
     auth: Option<MqttAuthOptions>,
+    ha_availability: bool,
     ha_discovery: Option<MqttHaDiscoveryOptions>,
 }
 
@@ -78,6 +79,7 @@ impl MqttOptions {
         topic_prefix: String,
         node_id: String,
         auth: Option<MqttAuthOptions>,
+        ha_availability: bool,
         ha_discovery: Option<MqttHaDiscoveryOptions>,
     ) -> Result<Self, String> {
         if port == 0 {
@@ -98,9 +100,40 @@ impl MqttOptions {
             topic_prefix,
             node_id,
             auth,
+            ha_availability,
             ha_discovery,
         })
     }
+
+    fn availability_topic(&self) -> String {
+        format_availability_topic(&self.topic_prefix, &self.node_id)
+    }
+
+    fn connect_will(&self) -> Option<MqttWill> {
+        if !self.ha_availability {
+            return None;
+        }
+
+        Some(MqttWill {
+            topic: self.availability_topic(),
+            payload: "offline".to_string(),
+            retain: true,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MqttWill {
+    topic: String,
+    payload: String,
+    retain: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MqttPublishSpec {
+    topic: String,
+    payload: Vec<u8>,
+    retain: bool,
 }
 
 pub(crate) struct MqttSink {
@@ -129,7 +162,13 @@ impl MqttSink {
             .map_err(|e| format!("failed to configure MQTT write timeout: {e}"))?;
 
         let client_id = format!("wtg-{}-{}", options.node_id, process::id());
-        send_connect_packet(&mut stream, &client_id, options.auth.as_ref())?;
+        let will = options.connect_will();
+        send_connect_packet(
+            &mut stream,
+            &client_id,
+            options.auth.as_ref(),
+            will.as_ref(),
+        )?;
         read_connack(&mut stream)?;
 
         Ok(Self {
@@ -174,7 +213,7 @@ impl MqttSink {
         let availability_topic = self.availability_topic();
 
         // Home Assistant subscribes to availability after processing discovery.
-        // Publish configs first, then the non-retained online marker.
+        // Publish configs first, then the retained online marker.
         for snapshot in snapshots {
             for metric in HA_SENSOR_METRICS {
                 let topic = format_ha_discovery_topic(
@@ -195,7 +234,32 @@ impl MqttSink {
             }
         }
 
-        self.publish(&availability_topic, b"online", false)
+        let spec = ha_availability_online_spec(&self.options.topic_prefix, &self.options.node_id);
+        self.publish(&spec.topic, &spec.payload, spec.retain)
+    }
+
+    pub(crate) fn publish_ha_discovery_cleanup_for_snapshots(
+        &mut self,
+        snapshots: &[GpuSnapshot],
+    ) -> Result<(), String> {
+        let Some(discovery) = self.options.ha_discovery.clone() else {
+            return Ok(());
+        };
+
+        let gpu_indices = snapshots
+            .iter()
+            .map(|snapshot| snapshot.index)
+            .collect::<Vec<_>>();
+        for spec in ha_discovery_cleanup_specs(
+            &discovery.prefix,
+            &self.options.topic_prefix,
+            &self.options.node_id,
+            &gpu_indices,
+        ) {
+            self.publish(&spec.topic, &spec.payload, spec.retain)?;
+        }
+
+        Ok(())
     }
 
     fn topic_for_gpu(&self, gpu_index: u32) -> String {
@@ -218,18 +282,28 @@ fn send_connect_packet(
     stream: &mut TcpStream,
     client_id: &str,
     auth: Option<&MqttAuthOptions>,
+    will: Option<&MqttWill>,
 ) -> Result<(), String> {
-    let body = build_connect_body(client_id, auth)?;
+    let body = build_connect_body(client_id, auth, will)?;
     write_packet(stream, 0x10, &body)
 }
 
-fn build_connect_body(client_id: &str, auth: Option<&MqttAuthOptions>) -> Result<Vec<u8>, String> {
+fn build_connect_body(
+    client_id: &str,
+    auth: Option<&MqttAuthOptions>,
+    will: Option<&MqttWill>,
+) -> Result<Vec<u8>, String> {
     let mut body = Vec::new();
     push_mqtt_string(&mut body, "MQTT")?;
     body.push(4);
-    body.push(connect_flags(auth));
+    body.push(connect_flags(auth, will));
     body.extend_from_slice(&0u16.to_be_bytes());
     push_mqtt_string(&mut body, client_id)?;
+
+    if let Some(will) = will {
+        push_mqtt_string(&mut body, &will.topic)?;
+        push_mqtt_string(&mut body, &will.payload)?;
+    }
 
     if let Some(auth) = auth {
         push_mqtt_string(&mut body, &auth.username)?;
@@ -239,12 +313,19 @@ fn build_connect_body(client_id: &str, auth: Option<&MqttAuthOptions>) -> Result
     Ok(body)
 }
 
-fn connect_flags(auth: Option<&MqttAuthOptions>) -> u8 {
-    if auth.is_some() {
-        0xc2
-    } else {
-        0x02
+fn connect_flags(auth: Option<&MqttAuthOptions>, will: Option<&MqttWill>) -> u8 {
+    let mut flags = 0x02;
+    if let Some(will) = will {
+        flags |= 0x04;
+        if will.retain {
+            flags |= 0x20;
+        }
     }
+    if auth.is_some() {
+        flags |= 0x80 | 0x40;
+    }
+
+    flags
 }
 
 fn write_packet(stream: &mut TcpStream, packet_type: u8, body: &[u8]) -> Result<(), String> {
@@ -406,6 +487,40 @@ fn format_ha_discovery_topic(
     metric: &str,
 ) -> String {
     format!("{ha_prefix}/sensor/wtg_{node_id}_gpu{gpu_index}_{metric}/config")
+}
+
+fn ha_availability_online_spec(topic_prefix: &str, node_id: &str) -> MqttPublishSpec {
+    MqttPublishSpec {
+        topic: format_availability_topic(topic_prefix, node_id),
+        payload: b"online".to_vec(),
+        retain: true,
+    }
+}
+
+fn ha_discovery_cleanup_specs(
+    ha_prefix: &str,
+    topic_prefix: &str,
+    node_id: &str,
+    gpu_indices: &[u32],
+) -> Vec<MqttPublishSpec> {
+    let mut specs = Vec::with_capacity(gpu_indices.len() * HA_SENSOR_METRICS.len() + 1);
+    for gpu_index in gpu_indices {
+        for metric in HA_SENSOR_METRICS {
+            specs.push(MqttPublishSpec {
+                topic: format_ha_discovery_topic(ha_prefix, node_id, *gpu_index, metric.key),
+                payload: Vec::new(),
+                retain: true,
+            });
+        }
+    }
+
+    specs.push(MqttPublishSpec {
+        topic: format_availability_topic(topic_prefix, node_id),
+        payload: Vec::new(),
+        retain: true,
+    });
+
+    specs
 }
 
 fn publish_packet_type(retain: bool) -> u8 {
@@ -686,6 +801,7 @@ mod tests {
             "/wtg/".to_string(),
             "node-a".to_string(),
             None,
+            false,
             None,
         )
         .unwrap();
@@ -695,6 +811,7 @@ mod tests {
         assert_eq!(options.topic_prefix, "wtg");
         assert_eq!(options.node_id, "node-a");
         assert!(options.auth.is_none());
+        assert!(!options.ha_availability);
         assert!(options.ha_discovery.is_none());
     }
 
@@ -708,6 +825,7 @@ mod tests {
             "wtg".to_string(),
             "node-a".to_string(),
             Some(auth),
+            false,
             None,
         )
         .unwrap();
@@ -733,6 +851,27 @@ mod tests {
     }
 
     #[test]
+    fn options_enable_ha_retained_availability_lwt() {
+        let discovery = MqttHaDiscoveryOptions::new("homeassistant".to_string(), true).unwrap();
+        let options = MqttOptions::new(
+            "broker".to_string(),
+            DEFAULT_MQTT_PORT,
+            "wtg".to_string(),
+            "node-a".to_string(),
+            None,
+            true,
+            Some(discovery),
+        )
+        .unwrap();
+
+        let will = options.connect_will().unwrap();
+
+        assert_eq!(will.topic, "wtg/node-a/status");
+        assert_eq!(will.payload, "offline");
+        assert!(will.retain);
+    }
+
+    #[test]
     fn remaining_length_encoding_matches_mqtt_examples() {
         assert_eq!(encode_remaining_length(0).unwrap(), vec![0x00]);
         assert_eq!(encode_remaining_length(127).unwrap(), vec![0x7f]);
@@ -745,7 +884,7 @@ mod tests {
 
     #[test]
     fn anonymous_connect_uses_clean_session_flags() {
-        let body = build_connect_body("client-a", None).unwrap();
+        let body = build_connect_body("client-a", None, None).unwrap();
 
         assert_eq!(body[7], 0x02);
         let strings = connect_payload_strings(&body);
@@ -758,7 +897,7 @@ mod tests {
         let password = String::from_utf8(vec![115, 101, 99, 114, 101, 116]).unwrap();
         let auth = MqttAuthOptions::new("user".to_string(), password.clone()).unwrap();
 
-        let body = build_connect_body("client-a", Some(&auth)).unwrap();
+        let body = build_connect_body("client-a", Some(&auth), None).unwrap();
 
         assert_eq!(body[7], 0xc2);
         let strings = connect_payload_strings(&body);
@@ -766,6 +905,50 @@ mod tests {
         assert_eq!(strings[0], "client-a");
         assert_eq!(strings[1], "user");
         assert!(strings[2] == password);
+    }
+
+    #[test]
+    fn ha_availability_connect_uses_retained_lwt_flags_and_payload_order() {
+        let will = MqttWill {
+            topic: "wtg/node-a/status".to_string(),
+            payload: "offline".to_string(),
+            retain: true,
+        };
+
+        let body = build_connect_body("client-a", None, Some(&will)).unwrap();
+
+        assert_eq!(body[7], 0x26);
+        let strings = connect_payload_strings(&body);
+        assert_eq!(
+            strings,
+            vec![
+                "client-a".to_string(),
+                "wtg/node-a/status".to_string(),
+                "offline".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn authenticated_ha_availability_connect_keeps_mqtt_payload_order() {
+        let password = String::from_utf8(vec![115, 101, 99, 114, 101, 116]).unwrap();
+        let auth = MqttAuthOptions::new("user".to_string(), password.clone()).unwrap();
+        let will = MqttWill {
+            topic: "wtg/node-a/status".to_string(),
+            payload: "offline".to_string(),
+            retain: true,
+        };
+
+        let body = build_connect_body("client-a", Some(&auth), Some(&will)).unwrap();
+
+        assert_eq!(body[7], 0xe6);
+        let strings = connect_payload_strings(&body);
+        assert_eq!(strings.len(), 5);
+        assert_eq!(strings[0], "client-a");
+        assert_eq!(strings[1], "wtg/node-a/status");
+        assert_eq!(strings[2], "offline");
+        assert_eq!(strings[3], "user");
+        assert!(strings[4] == password);
     }
 
     #[test]
@@ -792,6 +975,33 @@ mod tests {
     fn publish_packet_type_sets_retain_only_when_requested() {
         assert_eq!(publish_packet_type(false), 0x30);
         assert_eq!(publish_packet_type(true), 0x31);
+    }
+
+    #[test]
+    fn ha_availability_online_publish_is_retained() {
+        let spec = ha_availability_online_spec("wtg", "node-a");
+
+        assert_eq!(spec.topic, "wtg/node-a/status");
+        assert_eq!(spec.payload, b"online".to_vec());
+        assert!(spec.retain);
+    }
+
+    #[test]
+    fn ha_discovery_cleanup_specs_clear_discovery_and_availability_retained() {
+        let specs = ha_discovery_cleanup_specs("homeassistant", "wtg", "node-a", &[0]);
+
+        assert_eq!(specs.len(), HA_SENSOR_METRICS.len() + 1);
+        let power = specs
+            .iter()
+            .find(|spec| spec.topic == "homeassistant/sensor/wtg_node-a_gpu0_power_w/config")
+            .unwrap();
+        assert!(power.payload.is_empty());
+        assert!(power.retain);
+
+        let availability = specs.last().unwrap();
+        assert_eq!(availability.topic, "wtg/node-a/status");
+        assert!(availability.payload.is_empty());
+        assert!(availability.retain);
     }
 
     #[test]
