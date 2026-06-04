@@ -144,9 +144,15 @@ pub(crate) fn create_default_config_file() -> Result<PathBuf, String> {
 
 /// Write a SavedMqttConfig to a TOML file at the specified path.
 /// Refuses to overwrite unless force is true.
-pub(crate) fn write_config_file(config: &SavedMqttConfig, path: &Path, force: bool) -> Result<PathBuf, String> {
-    if !force && path.try_exists()
-        .map_err(|e| format!("failed to inspect {}: {e}", path.display()))?
+pub(crate) fn write_config_file(
+    config: &SavedMqttConfig,
+    path: &Path,
+    force: bool,
+) -> Result<PathBuf, String> {
+    if !force
+        && path
+            .try_exists()
+            .map_err(|e| format!("failed to inspect {}: {e}", path.display()))?
     {
         return Err(format!(
             "{} already exists; refusing to overwrite it. Use --force-config to overwrite.",
@@ -198,8 +204,7 @@ retain_discovery = {}
         config.ha_retain_discovery,
     );
 
-    fs::write(path, content)
-        .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    fs::write(path, content).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
     Ok(path.to_path_buf())
 }
 
@@ -436,7 +441,7 @@ node_id = ""
     #[test]
     fn toml_escape_mixed() {
         let result = toml_escape("line1\nline2\t\"quoted\"\\end");
-        assert_eq!(result, "line1\\nline2\\t\\\"quoted\\\"\\end");
+        assert_eq!(result, "line1\\nline2\\t\\\"quoted\\\"\\\\end");
     }
 
     #[test]
@@ -482,7 +487,8 @@ node_id = ""
             ha_retain_discovery: false,
         };
 
-        let temp_path = std::env::temp_dir().join(format!("wtg_test_env_{}.toml", std::process::id()));
+        let temp_path =
+            std::env::temp_dir().join(format!("wtg_test_env_{}.toml", std::process::id()));
         let _ = fs::remove_file(&temp_path);
 
         let result = write_config_file(&config, &temp_path, false);
@@ -510,7 +516,8 @@ node_id = ""
             ha_retain_discovery: false,
         };
 
-        let temp_path = std::env::temp_dir().join(format!("wtg_test_overwrite_{}.toml", std::process::id()));
+        let temp_path =
+            std::env::temp_dir().join(format!("wtg_test_overwrite_{}.toml", std::process::id()));
         let _ = fs::remove_file(&temp_path);
 
         let result1 = write_config_file(&config, &temp_path, false);
@@ -551,7 +558,8 @@ node_id = ""
             ha_retain_discovery: false,
         };
 
-        let temp_path = std::env::temp_dir().join(format!("wtg_test_force_{}.toml", std::process::id()));
+        let temp_path =
+            std::env::temp_dir().join(format!("wtg_test_force_{}.toml", std::process::id()));
         let _ = fs::remove_file(&temp_path);
 
         let result1 = write_config_file(&config1, &temp_path, false);
@@ -581,7 +589,8 @@ node_id = ""
             ha_retain_discovery: false,
         };
 
-        let temp_path = std::env::temp_dir().join(format!("wtg_test_enabled_{}.toml", std::process::id()));
+        let temp_path =
+            std::env::temp_dir().join(format!("wtg_test_enabled_{}.toml", std::process::id()));
         let _ = fs::remove_file(&temp_path);
 
         let result = write_config_file(&config, &temp_path, false);
@@ -608,7 +617,8 @@ node_id = ""
             ha_retain_discovery: true,
         };
 
-        let temp_path = std::env::temp_dir().join(format!("wtg_test_ha_{}.toml", std::process::id()));
+        let temp_path =
+            std::env::temp_dir().join(format!("wtg_test_ha_{}.toml", std::process::id()));
         let _ = fs::remove_file(&temp_path);
 
         let result = write_config_file(&config, &temp_path, false);
