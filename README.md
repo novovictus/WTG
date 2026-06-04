@@ -5,7 +5,7 @@ Copyright (C) 2026 Adam Hooper
 
 **Tagline:** Honest GPU compute stats for Windows
 
-## Current Status (unreleased v0.2.3 - MQTT Authentication and HA Lifecycle)
+## Current Status (unreleased v0.2.4 - Explicit TOML Configuration)
 
 WTG is currently focused on empirical NVML telemetry validation under Windows WDDM.  
 Recent testing has identified a driver-branch regression affecting memory-utilization reporting on specific consumer mobile Ampere GPUs (580.88+), not reproduced on tested desktop or professional SKUs.
@@ -14,7 +14,9 @@ See `artifacts/test-matrix/matrix.md` for empirical results.
 
 WTG v0.2.0-beta5 adds an experimental dual-surface build: the existing CLI validation surface (`wtg.exe`) plus a separate egui desktop frontend (`wtg-ui.exe`). The CLI remains the reference surface for validation evidence; the UI is a visual inspection and demo surface.
 
-WTG v0.2.1 proved the generic experimental MQTT watch sink and expanded payload parity. WTG v0.2.2 added opt-in Home Assistant MQTT discovery on top of that sink. Unreleased WTG v0.2.3 adds MQTT username/password authentication for brokers such as the Home Assistant Mosquitto add-on, retained Home Assistant availability, and an explicit retained discovery cleanup command. WTG remains an MQTT publisher, not a broker: it does not expose a listening network service, configure the broker, open firewall rules, or manage subscriber access.
+WTG v0.2.1 proved the generic experimental MQTT watch sink and expanded payload parity. WTG v0.2.2 added opt-in Home Assistant MQTT discovery on top of that sink. WTG v0.2.3 added MQTT username/password authentication for brokers such as the Home Assistant Mosquitto add-on, retained Home Assistant availability, and an explicit retained discovery cleanup command. Unreleased WTG v0.2.4 adds explicit TOML configuration support for MQTT and Home Assistant settings.
+
+Configuration remains opt-in. WTG does not auto-create `wtg.toml`, does not auto-load `wtg.toml`, and does not change normal `--once`, `--watch`, `--probe`, or sink behavior unless `--config <path>` or `--mqtt-init-config` is explicitly used. WTG remains an MQTT publisher, not a broker: it does not expose a listening network service, configure the broker, open firewall rules, or manage subscriber access.
 
 ---
 
@@ -79,6 +81,7 @@ The diagnostic CLI scope is intentionally narrow:
 - add optional Home Assistant MQTT discovery for the experimental MQTT watch sink
 - add optional MQTT username/password authentication through a password environment variable
 - add retained Home Assistant availability and explicit retained discovery cleanup for MQTT
+- add explicit opt-in TOML configuration for MQTT/Home Assistant CLI workflows
 - add experimental raw NVML field-value probing through explicit field IDs
 - avoid interpreting raw field IDs as proof of driver causality in code or documentation
 
@@ -89,6 +92,9 @@ The diagnostic CLI scope is intentionally narrow:
 
 - `--watch`  
   Continuously poll GPU state at a fixed interval.
+
+- `--config <path>`  
+  Load an explicit WTG TOML configuration file. WTG never auto-loads `wtg.toml`; the file is ignored unless passed with `--config`.
 
 - `--interval <ms>`  
   Polling interval in milliseconds.  
@@ -117,7 +123,7 @@ The diagnostic CLI scope is intentionally narrow:
   Publish live `--watch` snapshot payloads to a user-specified MQTT broker. This sink is experimental, watch-only, QoS 0, and non-retained. It does not create a sink file.
 
 - `--mqtt-host <host>`
-  MQTT broker host. Required with `--sink mqtt`.
+  MQTT broker host. Required with `--sink mqtt`, unless supplied by an explicit config file.
 
 - `--mqtt-port <port>`
   MQTT broker port. Default: `1883`.
@@ -126,7 +132,7 @@ The diagnostic CLI scope is intentionally narrow:
   MQTT topic prefix. Default: `wtg`.
 
 - `--mqtt-node-id <id>`
-  Stable WTG node identifier used in MQTT topics. Required with `--sink mqtt`.
+  Stable WTG node identifier used in MQTT topics. Required with `--sink mqtt`, unless supplied by an explicit config file.
 
 - `--mqtt-username <user>`
   MQTT username. Requires `--mqtt-password-env`.
@@ -135,13 +141,16 @@ The diagnostic CLI scope is intentionally narrow:
   Read the MQTT password from the named environment variable. Requires `--mqtt-username`.
 
 - `--mqtt-ha-discovery`
-  Publish Home Assistant MQTT discovery configs for the MQTT watch sink. Requires `--sink mqtt`.
+  Publish Home Assistant MQTT discovery configs for the MQTT watch sink. Requires active MQTT.
 
 - `--mqtt-ha-prefix <prefix>`
   Home Assistant MQTT discovery prefix. Default: `homeassistant`.
 
 - `--mqtt-ha-remove-discovery`
-  Remove retained WTG Home Assistant discovery configs and retained availability from the broker. Requires `--sink mqtt`, `--mqtt-host`, and `--mqtt-node-id`.
+  Remove retained WTG Home Assistant discovery configs and retained availability from the broker. Requires `--sink mqtt`, `--mqtt-host`, and `--mqtt-node-id`, unless MQTT settings are supplied by an explicit config file.
+
+- `--mqtt-init-config`
+  Create a template `wtg.toml` in the current working directory and exit. If `wtg.toml` already exists, WTG refuses to overwrite it.
 
 - `--mqtt-retain-discovery`
   Retain Home Assistant MQTT discovery configs. State messages remain non-retained.
@@ -163,7 +172,7 @@ The diagnostic CLI scope is intentionally narrow:
 | `--once --stats` | Supported | Supported | Not supported | CSV emits stats rows. MQTT is watch-only in this spike. |
 | `--watch --stats` | Supported | Supported | Supported | CSV emits stats rows per tick. MQTT publishes snapshot payloads, not stats-formatted text. |
 
-Home Assistant discovery is an option on top of `--sink mqtt`, not a separate sink. It is available only for the same MQTT-supported watch modes: `--watch` and `--watch --stats`. `--mqtt-ha-remove-discovery` is a one-shot MQTT broker cleanup command for retained WTG discovery config topics and retained availability; it does not publish state.
+Home Assistant discovery is an option on top of active MQTT, not a separate sink. It is available only for the same MQTT-supported watch modes: `--watch` and `--watch --stats`. `--mqtt-ha-remove-discovery` is a one-shot MQTT broker cleanup command for retained WTG discovery config topics and retained availability; it does not publish state.
 
 Note: plain `--watch` and `--watch --stats` currently have different recovery behavior. `--watch --stats` uses a persistent NVML context and attempts to reinitialize after snapshot failures. Plain `--watch` is stricter and exits on snapshot failure. This behavior may be unified later.
 
@@ -228,7 +237,7 @@ wtg/<node_id>/status
 
 Home Assistant discovery notes:
 
-* `--mqtt-ha-discovery` requires `--sink mqtt`
+* `--mqtt-ha-discovery` requires active MQTT
 * `--mqtt-ha-discovery` still requires an MQTT broker
 * Home Assistant Core is not the broker
 * a typical Home Assistant setup uses the Mosquitto broker add-on plus the Home Assistant MQTT integration
@@ -255,7 +264,7 @@ Example payload:
 
 ```json
 {
-  "wtg_version": "0.2.3",
+  "wtg_version": "0.2.4",
   "payload_schema": 1,
   "tick_seq": 123,
   "tick_ts": "1780420000.123",
@@ -281,7 +290,7 @@ Example payload:
 
 Current unreleased behavior:
 
-* `--sink mqtt` is supported only with `--watch`
+* `--sink mqtt` is supported only with `--watch`, unless using the explicit `--mqtt-ha-remove-discovery` cleanup command
 * WTG opens an outbound connection to the configured broker
 * WTG does not expose a listening network service
 * one JSON state payload is published per GPU per watch tick
@@ -299,7 +308,7 @@ Current unreleased behavior:
 * when Home Assistant discovery is enabled, MQTT CONNECT includes a retained `offline` Last Will and Testament for `wtg/<node_id>/status`
 * `--mqtt-ha-remove-discovery` clears WTG retained discovery config topics and retained availability, but does not delete normal state topics
 * graceful shutdown offline publishing is deferred
-* no config file support is included
+* explicit config file support is included, but WTG does not auto-create or auto-load config files
 * WTG does not install, run, or configure the broker
 
 Local broker test shape:
@@ -313,6 +322,113 @@ Observability-stack shape:
 ```text
 WTG host -> existing MQTT broker -> subscribers such as Home Assistant, MQTT Explorer, dashboards, or scripts
 ```
+
+### Optional TOML configuration
+
+WTG supports an explicit TOML configuration file for MQTT and Home Assistant settings.
+
+This is intentionally conservative:
+
+- WTG does not auto-create a config file.
+- WTG does not auto-load `wtg.toml`.
+- `--config <path>` is required to load configuration.
+- CLI flags override config values.
+- Config values override built-in defaults.
+- Empty strings in the config template are treated as absent values.
+- Normal non-MQTT commands remain unaffected.
+
+Create a template:
+
+```powershell
+.\wtg.exe --mqtt-init-config
+```
+
+This creates:
+
+```text
+.\wtg.toml
+```
+
+WTG refuses to overwrite an existing `wtg.toml`.
+
+Template:
+
+```toml
+# WTG CLI configuration.
+# WTG never auto-loads this file. Use --config <path> explicitly.
+# Leave environment-specific values blank until you are ready to use them.
+
+[mqtt]
+enabled = false
+host = ""
+port = 1883
+username = ""
+password_env = ""
+topic_prefix = "wtg"
+node_id = ""
+
+[mqtt.home_assistant]
+discovery = false
+discovery_prefix = "homeassistant"
+retain_discovery = true
+```
+
+Load config explicitly:
+
+```powershell
+.\wtg.exe --watch --config .\wtg.toml
+```
+
+Override a config value from the CLI:
+
+```powershell
+.\wtg.exe --watch --config .\wtg.toml --mqtt-host "homeassistant-shop"
+```
+
+Use config for MQTT cleanup:
+
+```powershell
+.\wtg.exe --sink mqtt --mqtt-ha-remove-discovery --config .\wtg.toml
+```
+
+Cleanup still requires `--sink mqtt`; config can supply host, node ID, authentication, topic prefix, and Home Assistant discovery prefix.
+
+#### MQTT activation from config
+
+`[mqtt].enabled = true` allows MQTT to activate from config without `--sink mqtt`, but only for `--watch`.
+
+```toml
+[mqtt]
+enabled = true
+```
+
+Then:
+
+```powershell
+.\wtg.exe --watch --config .\wtg.toml
+```
+
+If `[mqtt].enabled = true` is used without `--watch`, WTG returns a usage error.
+
+If `[mqtt].enabled = false` or absent, loading a config file does not activate MQTT by itself. In that case, MQTT still requires explicit `--sink mqtt`.
+
+Configuration precedence:
+
+```text
+CLI flags
+  override explicit config values
+    override built-in defaults
+```
+
+Built-in defaults still include:
+
+```text
+mqtt.port = 1883
+mqtt.topic_prefix = "wtg"
+mqtt.home_assistant.discovery_prefix = "homeassistant"
+```
+
+The eGUI configurator is not part of v0.2.4. The intended eGUI work should edit, validate, and save the same explicit TOML configuration model used by the CLI.
 
 ### Probe context fields
 
@@ -495,6 +611,13 @@ Experimental MQTT watch sink:
 .\wtg.exe --watch --sink mqtt --mqtt-host 127.0.0.1 --mqtt-port 1884 --mqtt-node-id testnode
 ```
 
+Explicit TOML config:
+
+```powershell
+.\wtg.exe --mqtt-init-config
+.\wtg.exe --watch --config .\wtg.toml
+```
+
 Probe field-values comparison:
 
 ```powershell
@@ -606,12 +729,13 @@ WTG relies on NVIDIA NVML on Windows. Empirical testing shows:
 
    * NVML bindings, polling, aggregation, process attribution, snapshot emission
    * Immutable snapshots, append-only, versioned
-   * No UI, MQTT, or output-sink logic in backend
+   * No UI, MQTT, config, or output-sink logic in backend
 3. **Surfaces = Consumers**:
 
    * `wtg.exe` is the CLI validation, capture, probe, and sink surface.
    * `wtg-ui.exe` is an experimental egui visual surface.
    * MQTT is an experimental watch-mode delivery surface for publishing live telemetry to an existing broker.
+   * Explicit TOML config is an app-layer CLI convenience for MQTT/Home Assistant settings.
    * App-layer surfaces consume the same `wtg-core` telemetry path; no backend duplication.
 4. **Extensible Metric Model**: trait-based, allows future integration of other vendors (ROCm, DX12)
 5. **Phased Approach**:
@@ -632,6 +756,7 @@ wtg-core/                         # Backend / truth layer
   src/                            # NVML context, snapshots, probe context, field queries
 
 wtg-app/
+  src/config.rs                   # Explicit TOML config loading and template generation
   src/main.rs                     # Builds wtg.exe, the CLI validation/capture surface
   src/bin/wtg-ui.rs               # Builds wtg-ui.exe, the experimental UI entrypoint
   src/mqtt.rs                     # Experimental MQTT watch sink implementation
@@ -700,12 +825,14 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 2. **Experimental egui surface**: live desktop view over the same `wtg-core` telemetry path
 3. **Experimental MQTT delivery**: app-layer watch sink for publishing live telemetry to an existing broker
 4. **Home Assistant discovery**: optional, explicit discovery config generation, retained availability, and retained discovery cleanup after MQTT transport remains stable
-5. **UI refinement**: module split, display polish, and optional charting only after validation workflows remain stable
-6. **Native window control**: chrome, always-on-top, keyboard shortcuts
-7. **Tray integration**: background polling, popup on demand
-8. **Plugin expansion**: ROCm, DX12, vendor-specific metrics
-9. **Distribution hardening**: signed binary, single-file EXE, crash-resilient NVML paths
-10. **Reference surfaces retained**: CLI remains the validation surface; egui remains a visual/debug/operator surface unless explicitly promoted later
+5. **Explicit TOML config**: CLI-owned config loading and template generation for MQTT/Home Assistant settings
+6. **eGUI configuration**: future panel to edit, validate, and save the same explicit config model
+7. **UI refinement**: module split, display polish, and optional charting only after validation workflows remain stable
+8. **Native window control**: chrome, always-on-top, keyboard shortcuts
+9. **Tray integration**: background polling, popup on demand
+10. **Plugin expansion**: ROCm, DX12, vendor-specific metrics
+11. **Distribution hardening**: signed binary, single-file EXE, crash-resilient NVML paths
+12. **Reference surfaces retained**: CLI remains the validation surface; egui remains a visual/debug/operator surface unless explicitly promoted later
 
 **Key Principle:** Surfaces are interchangeable lenses; backend is the immutable source of truth. This prevents logic drift and double-work while allowing phased expansion.
 
@@ -720,7 +847,9 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 | v0.2.0-beta5 | Experimental dual-surface build: CLI validation surface plus `wtg-ui.exe` visual frontend |
 | dev/0.2.1 | Experimental MQTT watch sink for publishing live telemetry to a user-specified broker |
 | dev/0.2.2 | Optional Home Assistant MQTT discovery for the experimental MQTT watch sink |
-| unreleased v0.2.3 (`dev/0.2.3`) | MQTT username/password authentication, retained Home Assistant availability, and retained discovery cleanup |
+| dev/0.2.3 | MQTT username/password authentication, retained Home Assistant availability, and retained discovery cleanup |
+| unreleased v0.2.4 (`dev/0.2.4`) | Explicit TOML config support for MQTT/Home Assistant CLI workflows |
+| planned v0.2.5 | Planned eGUI MQTT/Home Assistant configurator over the same config model |
 | v0.3+ | Optional native UI, tray integration, cross-vendor extensibility |
 
 ---
@@ -728,9 +857,9 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 ## Next Immediate Step
 
 * Preserve CLI/probe/sink outputs as the formal validation path.
-* Validate authenticated MQTT publishing against a Mosquitto broker.
-* Validate Home Assistant MQTT discovery, retained availability, and retained discovery cleanup against a local broker, subscriber, and Home Assistant instance.
-* Decide whether graceful shutdown offline publishing needs explicit Ctrl-C/signal handling.
+* Validate explicit TOML configuration against the same authenticated MQTT/Home Assistant flows already proven by CLI flags.
+* Keep config opt-in: no auto-create, no auto-load, and no config effects on normal non-MQTT commands.
 * Use `wtg-ui.exe` for visual corroboration, demos, and operator-facing inspection.
+* Plan the future eGUI MQTT/Home Assistant configurator as an editor/tester for the same explicit TOML config model.
 * Validate packaging helper behavior on release builds that include both executable surfaces.
 * Continue empirical driver-behavior documentation using captured CLI and structured artifacts.
