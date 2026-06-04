@@ -72,11 +72,15 @@ struct CliArgs {
     mqtt_topic_prefix: Option<String>,
     mqtt_node_id: Option<String>,
     mqtt_username: Option<String>,
+    mqtt_password: Option<String>,
     mqtt_password_env: Option<String>,
     mqtt_ha_discovery: bool,
+    mqtt_ha_discovery_from_cli: bool,
     mqtt_ha_prefix: Option<String>,
     mqtt_ha_remove_discovery: bool,
     mqtt_init_config: bool,
+    mqtt_save_config: bool,
+    force_config: bool,
     mqtt_enabled_from_config: bool,
     mqtt_retain_discovery: bool,
     field_ids: Vec<u32>,
@@ -100,11 +104,15 @@ impl Default for CliArgs {
             mqtt_topic_prefix: None,
             mqtt_node_id: None,
             mqtt_username: None,
+            mqtt_password: None,
             mqtt_password_env: None,
             mqtt_ha_discovery: false,
+            mqtt_ha_discovery_from_cli: false,
             mqtt_ha_prefix: None,
             mqtt_ha_remove_discovery: false,
             mqtt_init_config: false,
+            mqtt_save_config: false,
+            force_config: false,
             mqtt_enabled_from_config: false,
             mqtt_retain_discovery: false,
             field_ids: Vec::new(),
@@ -271,13 +279,16 @@ fn print_help() {
         "  --mqtt-port <port>      MQTT broker port. Default: 1883.\n",
         "  --mqtt-topic-prefix <p> MQTT topic prefix. Default: wtg.\n",
         "  --mqtt-node-id <id>     MQTT node ID. Required with --sink mqtt.\n",
-        "  --mqtt-username <user>  MQTT username. Requires --mqtt-password-env.\n",
+        "  --mqtt-username <user>  MQTT username. Requires --mqtt-password or --mqtt-password-env.\n",
+        "  --mqtt-password <pwd>   MQTT password. Requires --mqtt-username. Convenient for trusted local use.\n",
         "  --mqtt-password-env <v> Read MQTT password from environment variable. Requires --mqtt-username.\n",
         "  --mqtt-ha-discovery     Publish Home Assistant MQTT discovery configs with --sink mqtt.\n",
         "  --mqtt-ha-prefix <p>    Home Assistant discovery prefix. Default: homeassistant.\n",
         "  --mqtt-ha-remove-discovery Remove retained Home Assistant discovery configs and availability.\n",
         "  --mqtt-init-config      Create a template wtg.toml in the current directory.\n",
-        "  --mqtt-retain-discovery Retain Home Assistant discovery configs. State messages remain non-retained.\n",
+        "  --mqtt-save-config      Write wtg.toml from explicit MQTT CLI flags and exit.\n",
+        "  --force-config          Overwrite existing wtg.toml when used with --mqtt-save-config.\n",
+        "  --mqtt-retain-discovery Retain Home Assistant discovery configs; accepted with cleanup.\n",
         "  --help / -h             Print this help text.\n",
         "  --version / -V          Print version and exit.\n"
     ));
@@ -423,6 +434,14 @@ fn parse_args() -> CliArgs {
                 parsed.mqtt_username = Some(args[i + 1].clone());
                 i += 2;
             }
+            "--mqtt-password" => {
+                if i + 1 >= args.len() {
+                    usage_error("--mqtt-password requires a password value.");
+                }
+
+                parsed.mqtt_password = Some(args[i + 1].clone());
+                i += 2;
+            }
             "--mqtt-password-env" => {
                 if i + 1 >= args.len() {
                     usage_error("--mqtt-password-env requires an environment variable name.");
@@ -433,6 +452,7 @@ fn parse_args() -> CliArgs {
             }
             "--mqtt-ha-discovery" => {
                 parsed.mqtt_ha_discovery = true;
+                parsed.mqtt_ha_discovery_from_cli = true;
                 i += 1;
             }
             "--mqtt-ha-prefix" => {
@@ -451,6 +471,14 @@ fn parse_args() -> CliArgs {
                 parsed.mqtt_init_config = true;
                 i += 1;
             }
+            "--mqtt-save-config" => {
+                parsed.mqtt_save_config = true;
+                i += 1;
+            }
+            "--force-config" => {
+                parsed.force_config = true;
+                i += 1;
+            }
             "--mqtt-retain-discovery" => {
                 parsed.mqtt_retain_discovery = true;
                 i += 1;
@@ -464,7 +492,16 @@ fn parse_args() -> CliArgs {
         }
     }
 
-    if parsed.mqtt_init_config {
+    if parsed.force_config && !parsed.mqtt_save_config {
+        usage_error("--force-config is valid only with --mqtt-save-config.");
+    }
+
+    if parsed.mqtt_init_config || parsed.mqtt_save_config {
+        if parsed.mqtt_save_config {
+            if let Err(e) = validate_save_config_args(&parsed) {
+                usage_error(&e);
+            }
+        }
         return parsed;
     }
 
@@ -512,6 +549,11 @@ fn apply_config(parsed: &mut CliArgs, config: &config::WtgConfig) {
             parsed.mqtt_username = Some(value.to_string());
         }
     }
+    if parsed.mqtt_password.is_none() {
+        if let Some(value) = mqtt.password() {
+            parsed.mqtt_password = Some(value.to_string());
+        }
+    }
     if parsed.mqtt_password_env.is_none() {
         if let Some(value) = mqtt.password_env() {
             parsed.mqtt_password_env = Some(value.to_string());
@@ -530,7 +572,7 @@ fn apply_config(parsed: &mut CliArgs, config: &config::WtgConfig) {
 
     if let Some(ha) = mqtt.home_assistant.as_ref() {
         let config_ha_discovery = ha.discovery.unwrap_or(false);
-        if config_ha_discovery {
+        if config_ha_discovery && !parsed.mqtt_ha_remove_discovery {
             parsed.mqtt_ha_discovery = true;
         }
         if parsed.mqtt_ha_prefix.is_none()
@@ -552,6 +594,12 @@ fn mqtt_is_active(args: &CliArgs) -> bool {
 }
 
 fn validate_args(parsed: &CliArgs) {
+    if let Err(e) = validate_args_result(parsed) {
+        usage_error(&e);
+    }
+}
+
+fn validate_args_result(parsed: &CliArgs) -> Result<(), String> {
     let once = parsed.once;
     let watch = parsed.watch;
     let probe = parsed.probe;
@@ -560,37 +608,37 @@ fn validate_args(parsed: &CliArgs) {
     let mqtt_active = mqtt_is_active(parsed);
 
     if once && watch {
-        usage_error("--once and --watch are mutually exclusive.");
+        return Err("--once and --watch are mutually exclusive.".to_string());
     }
 
     if probe && (once || watch) {
-        usage_error("--probe is mutually exclusive with --once and --watch.");
+        return Err("--probe is mutually exclusive with --once and --watch.".to_string());
     }
 
     if probe_fields && (once || watch || probe) {
-        usage_error("--probe-fields is mutually exclusive with --once, --watch, and --probe.");
-    }
-
-    if stats && !once && !watch {
-        usage_error("--stats requires --once or --watch.");
-    }
-
-    if parsed.mqtt_ha_remove_discovery && (once || watch || probe || probe_fields || stats) {
-        usage_error(
-            "--mqtt-ha-remove-discovery cannot be combined with --once, --watch, --stats, --probe, or --probe-fields.",
+        return Err(
+            "--probe-fields is mutually exclusive with --once, --watch, and --probe.".to_string(),
         );
     }
 
+    if stats && !once && !watch {
+        return Err("--stats requires --once or --watch.".to_string());
+    }
+
+    if parsed.mqtt_ha_remove_discovery && (once || watch || probe || probe_fields || stats) {
+        return Err("--mqtt-ha-remove-discovery cannot be combined with --once, --watch, --stats, --probe, or --probe-fields.".to_string());
+    }
+
     if parsed.interval_ms.is_some() && !watch {
-        usage_error("--interval is valid only with --watch.");
+        return Err("--interval is valid only with --watch.".to_string());
     }
 
     if !probe_fields && !parsed.field_ids.is_empty() {
-        usage_error("--field-id requires --probe-fields.");
+        return Err("--field-id requires --probe-fields.".to_string());
     }
 
     if probe_fields && parsed.field_ids.is_empty() {
-        usage_error("--probe-fields requires at least one --field-id <u32>.");
+        return Err("--probe-fields requires at least one --field-id <u32>.".to_string());
     }
 
     if parsed.sink.is_some()
@@ -600,17 +648,24 @@ fn validate_args(parsed: &CliArgs) {
         && !probe_fields
         && !parsed.mqtt_ha_remove_discovery
     {
-        usage_error("--sink requires --once, --watch, --probe, or --probe-fields.");
+        return Err("--sink requires --once, --watch, --probe, or --probe-fields.".to_string());
     }
 
     if parsed.mqtt_enabled_from_config && !watch {
-        usage_error("[mqtt].enabled = true in --config requires --watch.");
+        return Err("[mqtt].enabled = true in --config requires --watch.".to_string());
+    }
+
+    if parsed.mqtt_ha_remove_discovery && parsed.mqtt_ha_discovery_from_cli {
+        return Err(
+            "--mqtt-ha-remove-discovery cannot be combined with --mqtt-ha-discovery.".to_string(),
+        );
     }
 
     if mqtt_active {
         if !watch && !parsed.mqtt_ha_remove_discovery {
-            usage_error(
-                "--sink mqtt is valid only with --watch, except for --mqtt-ha-remove-discovery.",
+            return Err(
+                "--sink mqtt is valid only with --watch, except for --mqtt-ha-remove-discovery."
+                    .to_string(),
             );
         }
         if parsed
@@ -620,7 +675,7 @@ fn validate_args(parsed: &CliArgs) {
             .unwrap_or_default()
             .is_empty()
         {
-            usage_error("--sink mqtt requires --mqtt-host <host>.");
+            return Err("--sink mqtt requires --mqtt-host <host>.".to_string());
         }
         if parsed
             .mqtt_node_id
@@ -629,60 +684,174 @@ fn validate_args(parsed: &CliArgs) {
             .unwrap_or_default()
             .is_empty()
         {
-            usage_error("--sink mqtt requires --mqtt-node-id <id>.");
+            return Err("--sink mqtt requires --mqtt-node-id <id>.".to_string());
         }
     }
 
     if parsed.mqtt_ha_discovery && !mqtt_active {
-        usage_error("--mqtt-ha-discovery is valid only with active MQTT.");
+        return Err("--mqtt-ha-discovery is valid only with active MQTT.".to_string());
     }
 
     if parsed.mqtt_ha_remove_discovery && parsed.sink != Some(SinkKind::Mqtt) {
-        usage_error("--mqtt-ha-remove-discovery is valid only with --sink mqtt.");
+        return Err("--mqtt-ha-remove-discovery is valid only with --sink mqtt.".to_string());
     }
 
-    if parsed.mqtt_ha_remove_discovery && parsed.mqtt_ha_discovery {
-        usage_error("--mqtt-ha-remove-discovery cannot be combined with --mqtt-ha-discovery.");
-    }
-
-    if let Err(e) = validate_mqtt_auth_flags(
-        mqtt_active,
+    if let Err(e) = validate_mqtt_auth_combination(
         parsed.mqtt_username.as_deref(),
+        parsed.mqtt_password.as_deref(),
         parsed.mqtt_password_env.as_deref(),
     ) {
-        usage_error(&e);
+        return Err(e);
+    }
+
+    let has_auth = parsed.mqtt_username.is_some()
+        || parsed.mqtt_password.is_some()
+        || parsed.mqtt_password_env.is_some();
+    if has_auth && !mqtt_active {
+        return Err("--mqtt-username, --mqtt-password, and --mqtt-password-env are valid only with active MQTT.".to_string());
     }
 
     if parsed.mqtt_ha_prefix.is_some()
         && !parsed.mqtt_ha_discovery
         && !parsed.mqtt_ha_remove_discovery
     {
-        usage_error("--mqtt-ha-prefix requires --mqtt-ha-discovery or --mqtt-ha-remove-discovery.");
-    }
-
-    if parsed.mqtt_retain_discovery && !parsed.mqtt_ha_discovery {
-        usage_error("--mqtt-retain-discovery requires --mqtt-ha-discovery.");
-    }
-}
-
-fn validate_mqtt_auth_flags(
-    mqtt_active: bool,
-    username: Option<&str>,
-    password_env: Option<&str>,
-) -> Result<(), String> {
-    if (username.is_some() || password_env.is_some()) && !mqtt_active {
         return Err(
-            "--mqtt-username and --mqtt-password-env are valid only with --sink mqtt.".to_string(),
+            "--mqtt-ha-prefix requires --mqtt-ha-discovery or --mqtt-ha-remove-discovery."
+                .to_string(),
         );
     }
 
-    if username.is_some() != password_env.is_some() {
+    if parsed.mqtt_retain_discovery && !parsed.mqtt_ha_discovery && !parsed.mqtt_ha_remove_discovery
+    {
         return Err(
-            "--mqtt-username and --mqtt-password-env must be provided together.".to_string(),
+            "--mqtt-retain-discovery requires --mqtt-ha-discovery or --mqtt-ha-remove-discovery."
+                .to_string(),
         );
     }
 
     Ok(())
+}
+
+fn validate_save_config_args(parsed: &CliArgs) -> Result<(), String> {
+    if parsed.force_config && !parsed.mqtt_save_config {
+        return Err("--force-config is valid only with --mqtt-save-config.".to_string());
+    }
+
+    if parsed.mqtt_init_config {
+        return Err("--mqtt-save-config cannot be combined with --mqtt-init-config.".to_string());
+    }
+
+    if parsed.once || parsed.watch || parsed.probe || parsed.probe_fields || parsed.stats {
+        return Err("--mqtt-save-config cannot be combined with runtime modes.".to_string());
+    }
+
+    if parsed.sink.is_some() || parsed.mqtt_ha_remove_discovery {
+        return Err(
+            "--mqtt-save-config cannot be combined with --sink or --mqtt-ha-remove-discovery."
+                .to_string(),
+        );
+    }
+
+    if parsed.config_path.is_some() {
+        return Err("--mqtt-save-config does not load an existing config file.".to_string());
+    }
+
+    if parsed
+        .mqtt_host
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return Err("--mqtt-save-config requires --mqtt-host <host>.".to_string());
+    }
+
+    if parsed
+        .mqtt_node_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return Err("--mqtt-save-config requires --mqtt-node-id <id>.".to_string());
+    }
+
+    validate_mqtt_auth_combination(
+        parsed.mqtt_username.as_deref(),
+        parsed.mqtt_password.as_deref(),
+        parsed.mqtt_password_env.as_deref(),
+    )?;
+
+    if parsed.mqtt_ha_prefix.is_some() && !parsed.mqtt_ha_discovery {
+        return Err("--mqtt-ha-prefix requires --mqtt-ha-discovery.".to_string());
+    }
+
+    if parsed.mqtt_retain_discovery && !parsed.mqtt_ha_discovery {
+        return Err("--mqtt-retain-discovery requires --mqtt-ha-discovery.".to_string());
+    }
+
+    Ok(())
+}
+
+fn saved_mqtt_config_from_args(args: &CliArgs) -> config::SavedMqttConfig {
+    let port = match args.mqtt_port.as_deref() {
+        Some(value) => value.parse::<u16>().unwrap_or_else(|_| {
+            usage_error(&format!(
+                "--mqtt-port must be a TCP port number. Got: {value}"
+            ));
+        }),
+        None => DEFAULT_MQTT_PORT,
+    };
+
+    config::SavedMqttConfig {
+        host: args.mqtt_host.clone().unwrap_or_default(),
+        port,
+        username: args.mqtt_username.clone().unwrap_or_default(),
+        password: args.mqtt_password.clone(),
+        password_env: args.mqtt_password_env.clone(),
+        topic_prefix: args
+            .mqtt_topic_prefix
+            .clone()
+            .unwrap_or_else(|| DEFAULT_TOPIC_PREFIX.to_string()),
+        node_id: args.mqtt_node_id.clone().unwrap_or_default(),
+        ha_discovery: args.mqtt_ha_discovery,
+        ha_discovery_prefix: args
+            .mqtt_ha_prefix
+            .clone()
+            .unwrap_or_else(|| DEFAULT_HA_DISCOVERY_PREFIX.to_string()),
+        ha_retain_discovery: args.mqtt_retain_discovery,
+    }
+}
+
+fn validate_mqtt_auth_combination(
+    username: Option<&str>,
+    password: Option<&str>,
+    password_env: Option<&str>,
+) -> Result<(), String> {
+    let has_username = non_empty(username);
+    let has_password = non_empty(password);
+    let has_password_env = non_empty(password_env);
+
+    match (has_username, has_password, has_password_env) {
+        (false, false, false) => Ok(()),
+        (true, true, false) => Ok(()),
+        (true, false, true) => Ok(()),
+        (true, false, false) => {
+            Err("--mqtt-username requires --mqtt-password or --mqtt-password-env.".to_string())
+        }
+        (false, true, false) => Err("--mqtt-password requires --mqtt-username.".to_string()),
+        (false, false, true) => Err("--mqtt-password-env requires --mqtt-username.".to_string()),
+        (true, true, true) => {
+            Err("--mqtt-password and --mqtt-password-env cannot be used together.".to_string())
+        }
+        (false, true, true) => {
+            Err("--mqtt-password and --mqtt-password-env cannot be used together.".to_string())
+        }
+    }
+}
+
+fn non_empty(value: Option<&str>) -> bool {
+    value.map(str::trim).unwrap_or_default().len() > 0
 }
 
 fn mqtt_options_from_args(args: &CliArgs) -> Option<MqttOptions> {
@@ -734,9 +903,14 @@ fn mqtt_options_from_args(args: &CliArgs) -> Option<MqttOptions> {
 fn mqtt_auth_from_args(args: &CliArgs) -> Option<MqttAuthOptions> {
     match (
         args.mqtt_username.as_deref(),
+        args.mqtt_password.as_deref(),
         args.mqtt_password_env.as_deref(),
     ) {
-        (Some(username), Some(password_env)) => Some(
+        (Some(username), Some(password), None) => Some(
+            MqttAuthOptions::new(username.to_string(), password.to_string())
+                .unwrap_or_else(|e| usage_error(&e)),
+        ),
+        (Some(username), None, Some(password_env)) => Some(
             resolve_mqtt_auth(username, password_env, |name| env::var(name).ok())
                 .unwrap_or_else(|e| usage_error(&e)),
         ),
@@ -786,6 +960,24 @@ fn main() {
         match config::create_default_config_file() {
             Ok(path) => {
                 eprintln!("WTG note: created {}", path.display());
+            }
+            Err(e) => {
+                eprintln!("WTG config error: {e}");
+                process::exit(2);
+            }
+        }
+        return;
+    }
+
+    if args.mqtt_save_config {
+        let saved = saved_mqtt_config_from_args(&args);
+        match config::write_config_file(
+            &saved,
+            Path::new(config::DEFAULT_CONFIG_FILE_NAME),
+            args.force_config,
+        ) {
+            Ok(path) => {
+                eprintln!("WTG note: saved {}", path.display());
             }
             Err(e) => {
                 eprintln!("WTG config error: {e}");
@@ -1187,27 +1379,242 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
-    fn mqtt_auth_flags_require_mqtt_sink() {
+    fn mqtt_auth_combination_accepts_no_auth() {
+        assert!(validate_mqtt_auth_combination(None, None, None).is_ok());
+    }
+
+    #[test]
+    fn mqtt_auth_combination_accepts_username_and_password() {
+        assert!(validate_mqtt_auth_combination(Some("user"), Some("secret"), None).is_ok());
+    }
+
+    #[test]
+    fn mqtt_auth_combination_accepts_username_and_password_env() {
+        assert!(
+            validate_mqtt_auth_combination(Some("user"), None, Some("WTG_MQTT_PASSWORD")).is_ok()
+        );
+    }
+
+    #[test]
+    fn mqtt_auth_combination_rejects_username_alone() {
+        let err = validate_mqtt_auth_combination(Some("user"), None, None).unwrap_err();
+
+        assert!(err.contains("--mqtt-username requires"));
+    }
+
+    #[test]
+    fn mqtt_auth_combination_rejects_password_alone() {
+        let err = validate_mqtt_auth_combination(None, Some("secret"), None).unwrap_err();
+
+        assert!(err.contains("--mqtt-password requires"));
+    }
+
+    #[test]
+    fn mqtt_auth_combination_rejects_password_env_alone() {
         let err =
-            validate_mqtt_auth_flags(false, Some("user"), Some("WTG_MQTT_PASSWORD")).unwrap_err();
+            validate_mqtt_auth_combination(None, None, Some("WTG_MQTT_PASSWORD")).unwrap_err();
 
-        assert!(err.contains("valid only with --sink mqtt"));
+        assert!(err.contains("--mqtt-password-env requires"));
     }
 
     #[test]
-    fn mqtt_auth_flags_reject_password_without_username() {
-        let err = validate_mqtt_auth_flags(true, None, Some("WTG_MQTT_PASSWORD")).unwrap_err();
+    fn mqtt_auth_combination_rejects_password_and_password_env_together() {
+        let err =
+            validate_mqtt_auth_combination(Some("user"), Some("secret"), Some("WTG_MQTT_PASSWORD"))
+                .unwrap_err();
 
-        assert!(err.contains("must be provided together"));
+        assert!(err.contains("cannot be used together"));
     }
 
     #[test]
-    fn mqtt_auth_flags_reject_username_without_password_env() {
-        let err = validate_mqtt_auth_flags(true, Some("user"), None).unwrap_err();
+    fn save_config_rejects_missing_host() {
+        let args = CliArgs {
+            mqtt_save_config: true,
+            mqtt_node_id: Some("bench".to_string()),
+            ..CliArgs::default()
+        };
 
-        assert!(err.contains("must be provided together"));
+        let err = validate_save_config_args(&args).unwrap_err();
+        assert!(err.contains("requires --mqtt-host"));
+    }
+
+    #[test]
+    fn save_config_rejects_missing_node_id() {
+        let args = CliArgs {
+            mqtt_save_config: true,
+            mqtt_host: Some("broker.local".to_string()),
+            ..CliArgs::default()
+        };
+
+        let err = validate_save_config_args(&args).unwrap_err();
+        assert!(err.contains("requires --mqtt-node-id"));
+    }
+
+    #[test]
+    fn save_config_rejects_runtime_modes() {
+        let args = CliArgs {
+            mqtt_save_config: true,
+            mqtt_host: Some("broker.local".to_string()),
+            mqtt_node_id: Some("bench".to_string()),
+            watch: true,
+            ..CliArgs::default()
+        };
+
+        let err = validate_save_config_args(&args).unwrap_err();
+        assert!(err.contains("runtime modes"));
+    }
+
+    #[test]
+    fn force_config_requires_save_config() {
+        let args = CliArgs {
+            force_config: true,
+            ..CliArgs::default()
+        };
+
+        let err = validate_save_config_args(&args).unwrap_err();
+        assert!(err.contains("--force-config is valid only"));
+    }
+
+    #[test]
+    fn save_config_writes_valid_toml_without_auth() {
+        let args = CliArgs {
+            mqtt_save_config: true,
+            mqtt_host: Some("broker.local".to_string()),
+            mqtt_node_id: Some("bench".to_string()),
+            ..CliArgs::default()
+        };
+        validate_save_config_args(&args).unwrap();
+
+        let saved = saved_mqtt_config_from_args(&args);
+        let temp_path =
+            std::env::temp_dir().join(format!("wtg_save_test_{}.toml", std::process::id()));
+        let _ = fs::remove_file(&temp_path);
+
+        let result = config::write_config_file(&saved, &temp_path, false);
+        assert!(result.is_ok());
+
+        let parsed = config::parse_config_toml(&fs::read_to_string(&temp_path).unwrap()).unwrap();
+        let mqtt = parsed.mqtt.unwrap();
+        assert!(mqtt.enabled());
+        assert_eq!(mqtt.host(), Some("broker.local"));
+        assert_eq!(mqtt.node_id(), Some("bench"));
+
+        let _ = fs::remove_file(&temp_path);
+    }
+
+    #[test]
+    fn save_config_writes_direct_password() {
+        let args = CliArgs {
+            mqtt_save_config: true,
+            mqtt_host: Some("broker.local".to_string()),
+            mqtt_node_id: Some("bench".to_string()),
+            mqtt_username: Some("wtg".to_string()),
+            mqtt_password: Some("test123".to_string()),
+            ..CliArgs::default()
+        };
+        validate_save_config_args(&args).unwrap();
+
+        let saved = saved_mqtt_config_from_args(&args);
+        let temp_path =
+            std::env::temp_dir().join(format!("wtg_save_pwd_test_{}.toml", std::process::id()));
+        let _ = fs::remove_file(&temp_path);
+
+        config::write_config_file(&saved, &temp_path, false).unwrap();
+        let content = fs::read_to_string(&temp_path).unwrap();
+        assert!(content.contains("password = \"test123\""));
+        assert!(content.contains("password_env = \"\""));
+
+        let _ = fs::remove_file(&temp_path);
+    }
+
+    #[test]
+    fn save_config_writes_password_env() {
+        let args = CliArgs {
+            mqtt_save_config: true,
+            mqtt_host: Some("broker.local".to_string()),
+            mqtt_node_id: Some("bench".to_string()),
+            mqtt_username: Some("wtg".to_string()),
+            mqtt_password_env: Some("WTG_MQTT_PASSWORD".to_string()),
+            ..CliArgs::default()
+        };
+        validate_save_config_args(&args).unwrap();
+
+        let saved = saved_mqtt_config_from_args(&args);
+        let temp_path =
+            std::env::temp_dir().join(format!("wtg_save_env_test_{}.toml", std::process::id()));
+        let _ = fs::remove_file(&temp_path);
+
+        config::write_config_file(&saved, &temp_path, false).unwrap();
+        let content = fs::read_to_string(&temp_path).unwrap();
+        assert!(content.contains("password = \"\""));
+        assert!(content.contains("password_env = \"WTG_MQTT_PASSWORD\""));
+
+        let _ = fs::remove_file(&temp_path);
+    }
+
+    #[test]
+    fn config_merge_rejects_both_password_sources() {
+        let config = config::parse_config_toml(
+            r#"
+[mqtt]
+enabled = true
+host = "broker"
+node_id = "bench1"
+username = "user"
+password = "direct"
+password_env = "ENV_PASSWORD"
+"#,
+        )
+        .unwrap();
+        let mut args = CliArgs::default();
+        args.watch = true;
+
+        apply_config(&mut args, &config);
+
+        let err = validate_mqtt_auth_combination(
+            args.mqtt_username.as_deref(),
+            args.mqtt_password.as_deref(),
+            args.mqtt_password_env.as_deref(),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("cannot be used together"));
+    }
+
+    #[test]
+    fn apply_config_applies_direct_password() {
+        let config = config::parse_config_toml(
+            r#"
+[mqtt]
+enabled = true
+host = "broker"
+node_id = "bench1"
+username = "user"
+password = "direct"
+"#,
+        )
+        .unwrap();
+        let mut args = CliArgs::default();
+        args.watch = true;
+
+        apply_config(&mut args, &config);
+
+        assert_eq!(args.mqtt_password.as_deref(), Some("direct"));
+        assert!(args.mqtt_password_env.is_none());
+    }
+
+    #[test]
+    fn mqtt_auth_from_args_accepts_direct_password() {
+        let args = CliArgs {
+            mqtt_username: Some("user".to_string()),
+            mqtt_password: Some("secret".to_string()),
+            ..CliArgs::default()
+        };
+
+        assert!(mqtt_auth_from_args(&args).is_some());
     }
 
     #[test]
@@ -1316,6 +1723,118 @@ retain_discovery = true
         assert_eq!(args.mqtt_topic_prefix.as_deref(), Some("config-prefix"));
         assert!(args.mqtt_ha_discovery);
         assert!(args.mqtt_retain_discovery);
+    }
+
+    #[test]
+    fn cleanup_ignores_config_discovery_conflict() {
+        let config = config::parse_config_toml(
+            r#"
+[mqtt]
+enabled = true
+host = "broker"
+node_id = "bench1"
+
+[mqtt.home_assistant]
+discovery = true
+discovery_prefix = "config-ha"
+retain_discovery = true
+"#,
+        )
+        .unwrap();
+        let mut args = CliArgs {
+            sink: Some(SinkKind::Mqtt),
+            mqtt_ha_remove_discovery: true,
+            ..CliArgs::default()
+        };
+
+        apply_config(&mut args, &config);
+
+        assert!(!args.mqtt_ha_discovery);
+        assert!(!args.mqtt_ha_discovery_from_cli);
+        assert_eq!(args.mqtt_ha_prefix.as_deref(), Some("config-ha"));
+        assert!(args.mqtt_retain_discovery);
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn cleanup_config_loads_mqtt_settings_when_disabled() {
+        let config = config::parse_config_toml(
+            r#"
+[mqtt]
+enabled = false
+host = "broker"
+port = 1884
+username = "user"
+password = "direct"
+topic_prefix = "wtg-test"
+node_id = "bench1"
+
+[mqtt.home_assistant]
+discovery = false
+discovery_prefix = "config-ha"
+"#,
+        )
+        .unwrap();
+        let mut args = CliArgs {
+            sink: Some(SinkKind::Mqtt),
+            mqtt_ha_remove_discovery: true,
+            ..CliArgs::default()
+        };
+
+        apply_config(&mut args, &config);
+
+        assert_eq!(args.mqtt_host.as_deref(), Some("broker"));
+        assert_eq!(args.mqtt_port.as_deref(), Some("1884"));
+        assert_eq!(args.mqtt_username.as_deref(), Some("user"));
+        assert_eq!(args.mqtt_password.as_deref(), Some("direct"));
+        assert_eq!(args.mqtt_topic_prefix.as_deref(), Some("wtg-test"));
+        assert_eq!(args.mqtt_node_id.as_deref(), Some("bench1"));
+        assert_eq!(args.mqtt_ha_prefix.as_deref(), Some("config-ha"));
+        validate_args_result(&args).unwrap();
+        assert!(mqtt_options_from_args(&args).is_some());
+    }
+
+    #[test]
+    fn cleanup_retain_discovery_is_accepted() {
+        let args = CliArgs {
+            sink: Some(SinkKind::Mqtt),
+            mqtt_host: Some("broker".to_string()),
+            mqtt_node_id: Some("bench1".to_string()),
+            mqtt_ha_remove_discovery: true,
+            mqtt_retain_discovery: true,
+            ..CliArgs::default()
+        };
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn cleanup_does_not_require_ha_discovery() {
+        let args = CliArgs {
+            sink: Some(SinkKind::Mqtt),
+            mqtt_host: Some("broker".to_string()),
+            mqtt_node_id: Some("bench1".to_string()),
+            mqtt_ha_remove_discovery: true,
+            ..CliArgs::default()
+        };
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn explicit_cli_discovery_and_cleanup_still_conflict() {
+        let args = CliArgs {
+            sink: Some(SinkKind::Mqtt),
+            mqtt_host: Some("broker".to_string()),
+            mqtt_node_id: Some("bench1".to_string()),
+            mqtt_ha_discovery: true,
+            mqtt_ha_discovery_from_cli: true,
+            mqtt_ha_remove_discovery: true,
+            ..CliArgs::default()
+        };
+
+        let err = validate_args_result(&args).unwrap_err();
+        assert!(err.contains("cannot be combined with --mqtt-ha-discovery"));
     }
 
     #[test]

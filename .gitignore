@@ -34,3 +34,4 @@ artifacts/packages/*
 
 # Local checkpoint package refresh helper
 artifacts/packages/wtg_refresh_checkpoint_package.ps1
+.aider*

@@ -135,10 +135,13 @@ The diagnostic CLI scope is intentionally narrow:
   Stable WTG node identifier used in MQTT topics. Required with `--sink mqtt`, unless supplied by an explicit config file.
 
 - `--mqtt-username <user>`
-  MQTT username. Requires `--mqtt-password-env`.
+  MQTT username. Requires `--mqtt-password` or `--mqtt-password-env`.
+
+- `--mqtt-password <password>`
+  MQTT password. Requires `--mqtt-username`. Convenient for trusted local or home-lab use; see security notes below.
 
 - `--mqtt-password-env <var>`
-  Read the MQTT password from the named environment variable. Requires `--mqtt-username`.
+  Read the MQTT password from the named environment variable. Requires `--mqtt-username`. Safer alternative that keeps the password out of the WTG command line and saved `wtg.toml`.
 
 - `--mqtt-ha-discovery`
   Publish Home Assistant MQTT discovery configs for the MQTT watch sink. Requires active MQTT.
@@ -152,8 +155,14 @@ The diagnostic CLI scope is intentionally narrow:
 - `--mqtt-init-config`
   Create a template `wtg.toml` in the current working directory and exit. If `wtg.toml` already exists, WTG refuses to overwrite it.
 
+- `--mqtt-save-config`
+  Write `wtg.toml` from explicit MQTT CLI flags and exit. Requires `--mqtt-host` and `--mqtt-node-id`. Does not connect to MQTT or initialize NVML. Does not load an existing config file.
+
+- `--force-config`
+  Overwrite an existing `wtg.toml` when used with `--mqtt-save-config`.
+
 - `--mqtt-retain-discovery`
-  Retain Home Assistant MQTT discovery configs. State messages remain non-retained.
+  Retain Home Assistant MQTT discovery configs. State messages remain non-retained. Requires `--mqtt-ha-discovery`, or may be present with `--mqtt-ha-remove-discovery` where it is accepted and ignored.
 
 - `--help`, `-h`
   Print CLI usage information and exit.
@@ -178,7 +187,7 @@ Note: plain `--watch` and `--watch --stats` currently have different recovery be
 
 CSV sinks emit exactly one header row per sink file. Unsupported optional values are written as `N/A`.
 
-MQTT publishes live snapshot payloads only while WTG is running and connected to the broker. State messages are QoS 0 and not retained, so subscribers receive samples only while connected. Optional username/password authentication is configured with `--mqtt-username` and `--mqtt-password-env`; WTG reads the password from the named environment variable and never accepts a literal password argument. Optional Home Assistant discovery configs are published once when `--mqtt-ha-discovery` is enabled and may be retained only with `--mqtt-retain-discovery`. When Home Assistant discovery is enabled, WTG uses retained availability on `wtg/<node_id>/status` with an MQTT Last Will and Testament for unexpected disconnects. WTG is an MQTT publisher, not a broker. Broker setup, firewall policy, retention, and subscriber access are outside WTG's scope.
+MQTT publishes live snapshot payloads only while WTG is running and connected to the broker. State messages are QoS 0 and not retained, so subscribers receive samples only while connected. Optional username/password authentication is configured with `--mqtt-username` plus either `--mqtt-password` or `--mqtt-password-env`. WTG accepts a direct password for convenience or reads the password from a named environment variable. Optional Home Assistant discovery configs are published once when `--mqtt-ha-discovery` is enabled and may be retained only with `--mqtt-retain-discovery`. When Home Assistant discovery is enabled, WTG uses retained availability on `wtg/<node_id>/status` with an MQTT Last Will and Testament for unexpected disconnects. WTG is an MQTT publisher, not a broker. Broker setup, firewall policy, retention, and subscriber access are outside WTG's scope.
 
 ### Experimental MQTT watch sink
 
@@ -205,6 +214,19 @@ $env:WTG_MQTT_PASSWORD = "your-password"
   --mqtt-retain-discovery
 ```
 
+Direct-password runtime example:
+
+```powershell
+.\target\release\wtg.exe --watch `
+  --sink mqtt `
+  --mqtt-host homeassistant.local `
+  --mqtt-node-id bench1 `
+  --mqtt-username wtg `
+  --mqtt-password "your-password" `
+  --mqtt-ha-discovery `
+  --mqtt-retain-discovery
+```
+
 Home Assistant discovery cleanup example:
 
 ```powershell
@@ -215,6 +237,12 @@ Home Assistant discovery cleanup example:
   --mqtt-username wtg `
   --mqtt-password-env WTG_MQTT_PASSWORD `
   --mqtt-ha-remove-discovery
+```
+
+If discovery was published from a saved config, cleanup can use the same config file:
+
+```powershell
+.\wtg.exe --sink mqtt --mqtt-ha-remove-discovery --config .\wtg.toml
 ```
 
 Topic shape:
@@ -299,8 +327,8 @@ Current unreleased behavior:
 * payloads are live QoS 0 messages
 * payloads are not retained
 * anonymous MQTT remains supported when no auth flags are provided
-* MQTT username/password auth requires both `--mqtt-username` and `--mqtt-password-env`
-* WTG reads the password from the named environment variable before connecting
+* MQTT username/password auth requires `--mqtt-username` plus either `--mqtt-password` or `--mqtt-password-env`, but not both password sources together
+* WTG accepts a direct password from CLI flags or config, or reads the password from the named environment variable before connecting
 * Home Assistant discovery is emitted only when `--mqtt-ha-discovery` is set
 * discovery configs publish once after MQTT connect and after the first successful snapshot set, before online availability and state publishing
 * discovery configs are retained only when `--mqtt-retain-discovery` is set
@@ -351,6 +379,44 @@ This creates:
 
 WTG refuses to overwrite an existing `wtg.toml`.
 
+Save a ready-to-run config from explicit CLI flags:
+
+```powershell
+.\wtg.exe --mqtt-save-config `
+  --mqtt-host "homeassistant-shop" `
+  --mqtt-node-id "bench" `
+  --mqtt-username "wtg" `
+  --mqtt-password "test" `
+  --mqtt-ha-discovery `
+  --mqtt-retain-discovery `
+  --force-config
+```
+
+Environment-variable auth variant:
+
+```powershell
+$env:WTG_MQTT_PASSWORD = "test"
+
+.\wtg.exe --mqtt-save-config `
+  --mqtt-host "homeassistant-shop" `
+  --mqtt-node-id "bench" `
+  --mqtt-username "wtg" `
+  --mqtt-password-env "WTG_MQTT_PASSWORD" `
+  --mqtt-ha-discovery `
+  --mqtt-retain-discovery `
+  --force-config
+```
+
+No-auth broker variant:
+
+```powershell
+.\wtg.exe --mqtt-save-config `
+  --mqtt-host "broker.local" `
+  --mqtt-node-id "bench"
+```
+
+`--mqtt-save-config` writes from explicit CLI flags only, validates auth combinations, sets `[mqtt].enabled = true`, and exits before MQTT or NVML initialization. Use `--force-config` to overwrite an existing `wtg.toml`.
+
 Template:
 
 ```toml
@@ -363,6 +429,7 @@ enabled = false
 host = ""
 port = 1883
 username = ""
+password = ""
 password_env = ""
 topic_prefix = "wtg"
 node_id = ""
@@ -391,7 +458,7 @@ Use config for MQTT cleanup:
 .\wtg.exe --sink mqtt --mqtt-ha-remove-discovery --config .\wtg.toml
 ```
 
-Cleanup still requires `--sink mqtt`; config can supply host, node ID, authentication, topic prefix, and Home Assistant discovery prefix.
+Cleanup can use the same config file that published retained Home Assistant discovery, including a config where `[mqtt.home_assistant]` has `discovery = true` and `retain_discovery = true`. Cleanup still requires `--sink mqtt`; config can supply host, node ID, authentication, topic prefix, and Home Assistant discovery prefix.
 
 #### MQTT activation from config
 
@@ -427,6 +494,14 @@ mqtt.port = 1883
 mqtt.topic_prefix = "wtg"
 mqtt.home_assistant.discovery_prefix = "homeassistant"
 ```
+
+#### Password security notes
+
+- `--mqtt-password` is convenient for trusted local or home-lab use.
+- `--mqtt-password` can be visible in the command line, shell history, process listings, logs, and terminal scrollback.
+- Saved `wtg.toml` files written with `--mqtt-save-config` and a direct password store the password in plaintext.
+- `--mqtt-password-env` keeps the password out of the WTG command line and `wtg.toml`, but setting the environment variable may still expose it depending on the environment.
+- TLS and client certificates remain deferred.
 
 The eGUI configurator is not part of v0.2.4. The intended eGUI work should edit, validate, and save the same explicit TOML configuration model used by the CLI.
 
