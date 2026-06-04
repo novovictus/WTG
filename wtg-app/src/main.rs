@@ -75,6 +75,7 @@ struct CliArgs {
     mqtt_password: Option<String>,
     mqtt_password_env: Option<String>,
     mqtt_ha_discovery: bool,
+    mqtt_ha_discovery_from_cli: bool,
     mqtt_ha_prefix: Option<String>,
     mqtt_ha_remove_discovery: bool,
     mqtt_init_config: bool,
@@ -106,6 +107,7 @@ impl Default for CliArgs {
             mqtt_password: None,
             mqtt_password_env: None,
             mqtt_ha_discovery: false,
+            mqtt_ha_discovery_from_cli: false,
             mqtt_ha_prefix: None,
             mqtt_ha_remove_discovery: false,
             mqtt_init_config: false,
@@ -286,7 +288,7 @@ fn print_help() {
         "  --mqtt-init-config      Create a template wtg.toml in the current directory.\n",
         "  --mqtt-save-config      Write wtg.toml from explicit MQTT CLI flags and exit.\n",
         "  --force-config          Overwrite existing wtg.toml when used with --mqtt-save-config.\n",
-        "  --mqtt-retain-discovery Retain Home Assistant discovery configs. State messages remain non-retained.\n",
+        "  --mqtt-retain-discovery Retain Home Assistant discovery configs; accepted with cleanup.\n",
         "  --help / -h             Print this help text.\n",
         "  --version / -V          Print version and exit.\n"
     ));
@@ -450,6 +452,7 @@ fn parse_args() -> CliArgs {
             }
             "--mqtt-ha-discovery" => {
                 parsed.mqtt_ha_discovery = true;
+                parsed.mqtt_ha_discovery_from_cli = true;
                 i += 1;
             }
             "--mqtt-ha-prefix" => {
@@ -569,7 +572,7 @@ fn apply_config(parsed: &mut CliArgs, config: &config::WtgConfig) {
 
     if let Some(ha) = mqtt.home_assistant.as_ref() {
         let config_ha_discovery = ha.discovery.unwrap_or(false);
-        if config_ha_discovery {
+        if config_ha_discovery && !parsed.mqtt_ha_remove_discovery {
             parsed.mqtt_ha_discovery = true;
         }
         if parsed.mqtt_ha_prefix.is_none()
@@ -591,6 +594,12 @@ fn mqtt_is_active(args: &CliArgs) -> bool {
 }
 
 fn validate_args(parsed: &CliArgs) {
+    if let Err(e) = validate_args_result(parsed) {
+        usage_error(&e);
+    }
+}
+
+fn validate_args_result(parsed: &CliArgs) -> Result<(), String> {
     let once = parsed.once;
     let watch = parsed.watch;
     let probe = parsed.probe;
@@ -599,37 +608,37 @@ fn validate_args(parsed: &CliArgs) {
     let mqtt_active = mqtt_is_active(parsed);
 
     if once && watch {
-        usage_error("--once and --watch are mutually exclusive.");
+        return Err("--once and --watch are mutually exclusive.".to_string());
     }
 
     if probe && (once || watch) {
-        usage_error("--probe is mutually exclusive with --once and --watch.");
+        return Err("--probe is mutually exclusive with --once and --watch.".to_string());
     }
 
     if probe_fields && (once || watch || probe) {
-        usage_error("--probe-fields is mutually exclusive with --once, --watch, and --probe.");
-    }
-
-    if stats && !once && !watch {
-        usage_error("--stats requires --once or --watch.");
-    }
-
-    if parsed.mqtt_ha_remove_discovery && (once || watch || probe || probe_fields || stats) {
-        usage_error(
-            "--mqtt-ha-remove-discovery cannot be combined with --once, --watch, --stats, --probe, or --probe-fields.",
+        return Err(
+            "--probe-fields is mutually exclusive with --once, --watch, and --probe.".to_string(),
         );
     }
 
+    if stats && !once && !watch {
+        return Err("--stats requires --once or --watch.".to_string());
+    }
+
+    if parsed.mqtt_ha_remove_discovery && (once || watch || probe || probe_fields || stats) {
+        return Err("--mqtt-ha-remove-discovery cannot be combined with --once, --watch, --stats, --probe, or --probe-fields.".to_string());
+    }
+
     if parsed.interval_ms.is_some() && !watch {
-        usage_error("--interval is valid only with --watch.");
+        return Err("--interval is valid only with --watch.".to_string());
     }
 
     if !probe_fields && !parsed.field_ids.is_empty() {
-        usage_error("--field-id requires --probe-fields.");
+        return Err("--field-id requires --probe-fields.".to_string());
     }
 
     if probe_fields && parsed.field_ids.is_empty() {
-        usage_error("--probe-fields requires at least one --field-id <u32>.");
+        return Err("--probe-fields requires at least one --field-id <u32>.".to_string());
     }
 
     if parsed.sink.is_some()
@@ -639,17 +648,24 @@ fn validate_args(parsed: &CliArgs) {
         && !probe_fields
         && !parsed.mqtt_ha_remove_discovery
     {
-        usage_error("--sink requires --once, --watch, --probe, or --probe-fields.");
+        return Err("--sink requires --once, --watch, --probe, or --probe-fields.".to_string());
     }
 
     if parsed.mqtt_enabled_from_config && !watch {
-        usage_error("[mqtt].enabled = true in --config requires --watch.");
+        return Err("[mqtt].enabled = true in --config requires --watch.".to_string());
+    }
+
+    if parsed.mqtt_ha_remove_discovery && parsed.mqtt_ha_discovery_from_cli {
+        return Err(
+            "--mqtt-ha-remove-discovery cannot be combined with --mqtt-ha-discovery.".to_string(),
+        );
     }
 
     if mqtt_active {
         if !watch && !parsed.mqtt_ha_remove_discovery {
-            usage_error(
-                "--sink mqtt is valid only with --watch, except for --mqtt-ha-remove-discovery.",
+            return Err(
+                "--sink mqtt is valid only with --watch, except for --mqtt-ha-remove-discovery."
+                    .to_string(),
             );
         }
         if parsed
@@ -659,7 +675,7 @@ fn validate_args(parsed: &CliArgs) {
             .unwrap_or_default()
             .is_empty()
         {
-            usage_error("--sink mqtt requires --mqtt-host <host>.");
+            return Err("--sink mqtt requires --mqtt-host <host>.".to_string());
         }
         if parsed
             .mqtt_node_id
@@ -668,20 +684,16 @@ fn validate_args(parsed: &CliArgs) {
             .unwrap_or_default()
             .is_empty()
         {
-            usage_error("--sink mqtt requires --mqtt-node-id <id>.");
+            return Err("--sink mqtt requires --mqtt-node-id <id>.".to_string());
         }
     }
 
     if parsed.mqtt_ha_discovery && !mqtt_active {
-        usage_error("--mqtt-ha-discovery is valid only with active MQTT.");
+        return Err("--mqtt-ha-discovery is valid only with active MQTT.".to_string());
     }
 
     if parsed.mqtt_ha_remove_discovery && parsed.sink != Some(SinkKind::Mqtt) {
-        usage_error("--mqtt-ha-remove-discovery is valid only with --sink mqtt.");
-    }
-
-    if parsed.mqtt_ha_remove_discovery && parsed.mqtt_ha_discovery {
-        usage_error("--mqtt-ha-remove-discovery cannot be combined with --mqtt-ha-discovery.");
+        return Err("--mqtt-ha-remove-discovery is valid only with --sink mqtt.".to_string());
     }
 
     if let Err(e) = validate_mqtt_auth_combination(
@@ -689,28 +701,35 @@ fn validate_args(parsed: &CliArgs) {
         parsed.mqtt_password.as_deref(),
         parsed.mqtt_password_env.as_deref(),
     ) {
-        usage_error(&e);
+        return Err(e);
     }
 
     let has_auth = parsed.mqtt_username.is_some()
         || parsed.mqtt_password.is_some()
         || parsed.mqtt_password_env.is_some();
     if has_auth && !mqtt_active {
-        usage_error(
-            "--mqtt-username, --mqtt-password, and --mqtt-password-env are valid only with active MQTT.",
-        );
+        return Err("--mqtt-username, --mqtt-password, and --mqtt-password-env are valid only with active MQTT.".to_string());
     }
 
     if parsed.mqtt_ha_prefix.is_some()
         && !parsed.mqtt_ha_discovery
         && !parsed.mqtt_ha_remove_discovery
     {
-        usage_error("--mqtt-ha-prefix requires --mqtt-ha-discovery or --mqtt-ha-remove-discovery.");
+        return Err(
+            "--mqtt-ha-prefix requires --mqtt-ha-discovery or --mqtt-ha-remove-discovery."
+                .to_string(),
+        );
     }
 
-    if parsed.mqtt_retain_discovery && !parsed.mqtt_ha_discovery {
-        usage_error("--mqtt-retain-discovery requires --mqtt-ha-discovery.");
+    if parsed.mqtt_retain_discovery && !parsed.mqtt_ha_discovery && !parsed.mqtt_ha_remove_discovery
+    {
+        return Err(
+            "--mqtt-retain-discovery requires --mqtt-ha-discovery or --mqtt-ha-remove-discovery."
+                .to_string(),
+        );
     }
+
+    Ok(())
 }
 
 fn validate_save_config_args(parsed: &CliArgs) -> Result<(), String> {
@@ -1704,6 +1723,118 @@ retain_discovery = true
         assert_eq!(args.mqtt_topic_prefix.as_deref(), Some("config-prefix"));
         assert!(args.mqtt_ha_discovery);
         assert!(args.mqtt_retain_discovery);
+    }
+
+    #[test]
+    fn cleanup_ignores_config_discovery_conflict() {
+        let config = config::parse_config_toml(
+            r#"
+[mqtt]
+enabled = true
+host = "broker"
+node_id = "bench1"
+
+[mqtt.home_assistant]
+discovery = true
+discovery_prefix = "config-ha"
+retain_discovery = true
+"#,
+        )
+        .unwrap();
+        let mut args = CliArgs {
+            sink: Some(SinkKind::Mqtt),
+            mqtt_ha_remove_discovery: true,
+            ..CliArgs::default()
+        };
+
+        apply_config(&mut args, &config);
+
+        assert!(!args.mqtt_ha_discovery);
+        assert!(!args.mqtt_ha_discovery_from_cli);
+        assert_eq!(args.mqtt_ha_prefix.as_deref(), Some("config-ha"));
+        assert!(args.mqtt_retain_discovery);
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn cleanup_config_loads_mqtt_settings_when_disabled() {
+        let config = config::parse_config_toml(
+            r#"
+[mqtt]
+enabled = false
+host = "broker"
+port = 1884
+username = "user"
+password = "direct"
+topic_prefix = "wtg-test"
+node_id = "bench1"
+
+[mqtt.home_assistant]
+discovery = false
+discovery_prefix = "config-ha"
+"#,
+        )
+        .unwrap();
+        let mut args = CliArgs {
+            sink: Some(SinkKind::Mqtt),
+            mqtt_ha_remove_discovery: true,
+            ..CliArgs::default()
+        };
+
+        apply_config(&mut args, &config);
+
+        assert_eq!(args.mqtt_host.as_deref(), Some("broker"));
+        assert_eq!(args.mqtt_port.as_deref(), Some("1884"));
+        assert_eq!(args.mqtt_username.as_deref(), Some("user"));
+        assert_eq!(args.mqtt_password.as_deref(), Some("direct"));
+        assert_eq!(args.mqtt_topic_prefix.as_deref(), Some("wtg-test"));
+        assert_eq!(args.mqtt_node_id.as_deref(), Some("bench1"));
+        assert_eq!(args.mqtt_ha_prefix.as_deref(), Some("config-ha"));
+        validate_args_result(&args).unwrap();
+        assert!(mqtt_options_from_args(&args).is_some());
+    }
+
+    #[test]
+    fn cleanup_retain_discovery_is_accepted() {
+        let args = CliArgs {
+            sink: Some(SinkKind::Mqtt),
+            mqtt_host: Some("broker".to_string()),
+            mqtt_node_id: Some("bench1".to_string()),
+            mqtt_ha_remove_discovery: true,
+            mqtt_retain_discovery: true,
+            ..CliArgs::default()
+        };
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn cleanup_does_not_require_ha_discovery() {
+        let args = CliArgs {
+            sink: Some(SinkKind::Mqtt),
+            mqtt_host: Some("broker".to_string()),
+            mqtt_node_id: Some("bench1".to_string()),
+            mqtt_ha_remove_discovery: true,
+            ..CliArgs::default()
+        };
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn explicit_cli_discovery_and_cleanup_still_conflict() {
+        let args = CliArgs {
+            sink: Some(SinkKind::Mqtt),
+            mqtt_host: Some("broker".to_string()),
+            mqtt_node_id: Some("bench1".to_string()),
+            mqtt_ha_discovery: true,
+            mqtt_ha_discovery_from_cli: true,
+            mqtt_ha_remove_discovery: true,
+            ..CliArgs::default()
+        };
+
+        let err = validate_args_result(&args).unwrap_err();
+        assert!(err.contains("cannot be combined with --mqtt-ha-discovery"));
     }
 
     #[test]

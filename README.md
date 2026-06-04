@@ -162,7 +162,7 @@ The diagnostic CLI scope is intentionally narrow:
   Overwrite an existing `wtg.toml` when used with `--mqtt-save-config`.
 
 - `--mqtt-retain-discovery`
-  Retain Home Assistant MQTT discovery configs. State messages remain non-retained.
+  Retain Home Assistant MQTT discovery configs. State messages remain non-retained. Requires `--mqtt-ha-discovery`, or may be present with `--mqtt-ha-remove-discovery` where it is accepted and ignored.
 
 - `--help`, `-h`
   Print CLI usage information and exit.
@@ -237,6 +237,12 @@ Home Assistant discovery cleanup example:
   --mqtt-username wtg `
   --mqtt-password-env WTG_MQTT_PASSWORD `
   --mqtt-ha-remove-discovery
+```
+
+If discovery was published from a saved config, cleanup can use the same config file:
+
+```powershell
+.\wtg.exe --sink mqtt --mqtt-ha-remove-discovery --config .\wtg.toml
 ```
 
 Topic shape:
@@ -452,7 +458,7 @@ Use config for MQTT cleanup:
 .\wtg.exe --sink mqtt --mqtt-ha-remove-discovery --config .\wtg.toml
 ```
 
-Cleanup still requires `--sink mqtt`; config can supply host, node ID, authentication, topic prefix, and Home Assistant discovery prefix.
+Cleanup can use the same config file that published retained Home Assistant discovery, including a config where `[mqtt.home_assistant]` has `discovery = true` and `retain_discovery = true`. Cleanup still requires `--sink mqtt`; config can supply host, node ID, authentication, topic prefix, and Home Assistant discovery prefix.
 
 #### MQTT activation from config
 
