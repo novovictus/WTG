@@ -54,7 +54,8 @@ pub(crate) struct HomeAssistantConfig {
 }
 
 /// Configuration to be written to wtg.toml via --mqtt-save-config.
-#[derive(Debug, Clone)]
+/// Redacts password in Debug output to prevent accidental exposure.
+#[derive(Clone)]
 pub(crate) struct SavedMqttConfig {
     pub host: String,
     pub port: u16,
@@ -66,6 +67,23 @@ pub(crate) struct SavedMqttConfig {
     pub ha_discovery: bool,
     pub ha_discovery_prefix: String,
     pub ha_retain_discovery: bool,
+}
+
+impl std::fmt::Debug for SavedMqttConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SavedMqttConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("password_env", &self.password_env)
+            .field("topic_prefix", &self.topic_prefix)
+            .field("node_id", &self.node_id)
+            .field("ha_discovery", &self.ha_discovery)
+            .field("ha_discovery_prefix", &self.ha_discovery_prefix)
+            .field("ha_retain_discovery", &self.ha_retain_discovery)
+            .finish()
+    }
 }
 
 impl MqttConfig {
@@ -207,10 +225,15 @@ fn non_blank(value: Option<&str>) -> Option<&str> {
     })
 }
 
-/// Escape a string for safe inclusion in TOML values.
-/// Escapes backslashes and double quotes.
+/// Escape a string for safe inclusion in TOML string values.
+/// Escapes backslashes, double quotes, newlines, carriage returns, and tabs
+/// using valid TOML escape sequences.
 fn toml_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
 }
 
 #[cfg(test)]
@@ -338,6 +361,82 @@ node_id = ""
 
         assert!(err.contains("failed to read config file"));
         assert!(err.contains("__wtg_missing_config_for_test__.toml"));
+    }
+
+    #[test]
+    fn saved_mqtt_config_debug_redacts_password() {
+        let config = SavedMqttConfig {
+            host: "broker".to_string(),
+            port: 1883,
+            username: "user".to_string(),
+            password: Some("secret123".to_string()),
+            password_env: None,
+            topic_prefix: "wtg".to_string(),
+            node_id: "test".to_string(),
+            ha_discovery: false,
+            ha_discovery_prefix: "homeassistant".to_string(),
+            ha_retain_discovery: false,
+        };
+
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("[REDACTED]"));
+        assert!(!debug_str.contains("secret123"));
+    }
+
+    #[test]
+    fn saved_mqtt_config_debug_no_password() {
+        let config = SavedMqttConfig {
+            host: "broker".to_string(),
+            port: 1883,
+            username: String::new(),
+            password: None,
+            password_env: Some("VAR".to_string()),
+            topic_prefix: "wtg".to_string(),
+            node_id: "test".to_string(),
+            ha_discovery: false,
+            ha_discovery_prefix: "homeassistant".to_string(),
+            ha_retain_discovery: false,
+        };
+
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("None"));
+        assert!(!debug_str.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn toml_escape_quote() {
+        let result = toml_escape("test\"quote");
+        assert_eq!(result, "test\\\"quote");
+    }
+
+    #[test]
+    fn toml_escape_backslash() {
+        let result = toml_escape("test\\backslash");
+        assert_eq!(result, "test\\\\backslash");
+    }
+
+    #[test]
+    fn toml_escape_newline() {
+        let result = toml_escape("test\nnewline");
+        assert_eq!(result, "test\\nnewline");
+    }
+
+    #[test]
+    fn toml_escape_carriage_return() {
+        let result = toml_escape("test\rcarriage");
+        assert_eq!(result, "test\\rcarriage");
+    }
+
+    #[test]
+    fn toml_escape_tab() {
+        let result = toml_escape("test\ttab");
+        assert_eq!(result, "test\\ttab");
+    }
+
+    #[test]
+    fn toml_escape_mixed() {
+        let result = toml_escape("line1\nline2\t\"quoted\"\\end");
+        assert_eq!(result, "line1\\nline2\\t\\\"quoted\\\"\\end");
     }
 
     #[test]
