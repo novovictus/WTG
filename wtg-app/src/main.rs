@@ -24,12 +24,14 @@
 //! - CLI remains the validation/capture path; wtg-ui.exe is the visual/demo/operator surface.
 
 use std::env;
+use std::path::Path;
 use std::process;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tracing::info;
 
+mod config;
 mod mqtt;
 mod probe;
 mod probe_fields;
@@ -62,6 +64,7 @@ struct CliArgs {
     stats: bool,
     help: bool,
     version: bool,
+    config_path: Option<String>,
     interval_ms: Option<u64>,
     sink: Option<SinkKind>,
     mqtt_host: Option<String>,
@@ -73,8 +76,40 @@ struct CliArgs {
     mqtt_ha_discovery: bool,
     mqtt_ha_prefix: Option<String>,
     mqtt_ha_remove_discovery: bool,
+    mqtt_init_config: bool,
+    mqtt_enabled_from_config: bool,
     mqtt_retain_discovery: bool,
     field_ids: Vec<u32>,
+}
+
+impl Default for CliArgs {
+    fn default() -> Self {
+        Self {
+            once: false,
+            watch: false,
+            probe: false,
+            probe_fields: false,
+            stats: false,
+            help: false,
+            version: false,
+            config_path: None,
+            interval_ms: None,
+            sink: None,
+            mqtt_host: None,
+            mqtt_port: None,
+            mqtt_topic_prefix: None,
+            mqtt_node_id: None,
+            mqtt_username: None,
+            mqtt_password_env: None,
+            mqtt_ha_discovery: false,
+            mqtt_ha_prefix: None,
+            mqtt_ha_remove_discovery: false,
+            mqtt_init_config: false,
+            mqtt_enabled_from_config: false,
+            mqtt_retain_discovery: false,
+            field_ids: Vec::new(),
+        }
+    }
 }
 
 /// Returns a simple timestamp like "1707101234.567" (unix seconds.millis).
@@ -225,6 +260,7 @@ fn print_help() {
         "Options:\n",
         "  --once                  Capture a single GPU snapshot and exit.\n",
         "  --watch                 Continuously poll GPU state.\n",
+        "  --config <path>         Load explicit WTG TOML config.\n",
         "  --interval <ms>         Polling interval in milliseconds for --watch.\n",
         "  --stats                 Print stable key:value stats output for --once or --watch.\n",
         "  --probe                 Capture one context-rich probe block.\n",
@@ -240,6 +276,7 @@ fn print_help() {
         "  --mqtt-ha-discovery     Publish Home Assistant MQTT discovery configs with --sink mqtt.\n",
         "  --mqtt-ha-prefix <p>    Home Assistant discovery prefix. Default: homeassistant.\n",
         "  --mqtt-ha-remove-discovery Remove retained Home Assistant discovery configs and availability.\n",
+        "  --mqtt-init-config      Create a template wtg.toml in the current directory.\n",
         "  --mqtt-retain-discovery Retain Home Assistant discovery configs. State messages remain non-retained.\n",
         "  --help / -h             Print this help text.\n",
         "  --version / -V          Print version and exit.\n"
@@ -258,28 +295,7 @@ fn usage_error(message: &str) -> ! {
 fn parse_args() -> CliArgs {
     let args: Vec<String> = env::args().collect();
 
-    let mut parsed = CliArgs {
-        once: false,
-        watch: false,
-        probe: false,
-        probe_fields: false,
-        stats: false,
-        help: false,
-        version: false,
-        interval_ms: None,
-        sink: None,
-        mqtt_host: None,
-        mqtt_port: None,
-        mqtt_topic_prefix: None,
-        mqtt_node_id: None,
-        mqtt_username: None,
-        mqtt_password_env: None,
-        mqtt_ha_discovery: false,
-        mqtt_ha_prefix: None,
-        mqtt_ha_remove_discovery: false,
-        mqtt_retain_discovery: false,
-        field_ids: Vec::new(),
-    };
+    let mut parsed = CliArgs::default();
 
     let mut i = 1;
     while i < args.len() {
@@ -311,6 +327,14 @@ fn parse_args() -> CliArgs {
             "--version" | "-V" => {
                 parsed.version = true;
                 i += 1;
+            }
+            "--config" => {
+                if i + 1 >= args.len() {
+                    usage_error("--config requires a TOML file path.");
+                }
+
+                parsed.config_path = Some(args[i + 1].clone());
+                i += 2;
             }
             "--interval" => {
                 if i + 1 >= args.len() {
@@ -423,6 +447,10 @@ fn parse_args() -> CliArgs {
                 parsed.mqtt_ha_remove_discovery = true;
                 i += 1;
             }
+            "--mqtt-init-config" => {
+                parsed.mqtt_init_config = true;
+                i += 1;
+            }
             "--mqtt-retain-discovery" => {
                 parsed.mqtt_retain_discovery = true;
                 i += 1;
@@ -436,11 +464,100 @@ fn parse_args() -> CliArgs {
         }
     }
 
+    if parsed.mqtt_init_config {
+        return parsed;
+    }
+
+    if let Some(config_path) = parsed.config_path.clone() {
+        let config = config::load_config_file(Path::new(&config_path)).unwrap_or_else(|e| {
+            usage_error(&e);
+        });
+        apply_config(&mut parsed, &config);
+    }
+
+    validate_args(&parsed);
+
+    parsed
+}
+
+fn apply_config(parsed: &mut CliArgs, config: &config::WtgConfig) {
+    let Some(mqtt) = config.mqtt.as_ref() else {
+        return;
+    };
+
+    let mqtt_config_enabled = mqtt.enabled();
+    if mqtt_config_enabled && parsed.sink.is_none() {
+        parsed.mqtt_enabled_from_config = true;
+    }
+
+    let apply_mqtt_values = mqtt_config_enabled
+        || parsed.sink == Some(SinkKind::Mqtt)
+        || parsed.mqtt_ha_remove_discovery;
+    if !apply_mqtt_values {
+        return;
+    }
+
+    if parsed.mqtt_host.is_none() {
+        if let Some(value) = mqtt.host() {
+            parsed.mqtt_host = Some(value.to_string());
+        }
+    }
+    if parsed.mqtt_port.is_none() {
+        if let Some(value) = mqtt.port {
+            parsed.mqtt_port = Some(value.to_string());
+        }
+    }
+    if parsed.mqtt_username.is_none() {
+        if let Some(value) = mqtt.username() {
+            parsed.mqtt_username = Some(value.to_string());
+        }
+    }
+    if parsed.mqtt_password_env.is_none() {
+        if let Some(value) = mqtt.password_env() {
+            parsed.mqtt_password_env = Some(value.to_string());
+        }
+    }
+    if parsed.mqtt_topic_prefix.is_none() {
+        if let Some(value) = mqtt.topic_prefix() {
+            parsed.mqtt_topic_prefix = Some(value.to_string());
+        }
+    }
+    if parsed.mqtt_node_id.is_none() {
+        if let Some(value) = mqtt.node_id() {
+            parsed.mqtt_node_id = Some(value.to_string());
+        }
+    }
+
+    if let Some(ha) = mqtt.home_assistant.as_ref() {
+        let config_ha_discovery = ha.discovery.unwrap_or(false);
+        if config_ha_discovery {
+            parsed.mqtt_ha_discovery = true;
+        }
+        if parsed.mqtt_ha_prefix.is_none()
+            && (parsed.mqtt_ha_discovery || parsed.mqtt_ha_remove_discovery || config_ha_discovery)
+        {
+            if let Some(value) = ha.discovery_prefix() {
+                parsed.mqtt_ha_prefix = Some(value.to_string());
+            }
+        }
+        if (parsed.mqtt_ha_discovery || config_ha_discovery) && ha.retain_discovery.unwrap_or(false)
+        {
+            parsed.mqtt_retain_discovery = true;
+        }
+    }
+}
+
+fn mqtt_is_active(args: &CliArgs) -> bool {
+    args.sink == Some(SinkKind::Mqtt) || args.mqtt_enabled_from_config
+}
+
+fn validate_args(parsed: &CliArgs) {
     let once = parsed.once;
     let watch = parsed.watch;
     let probe = parsed.probe;
     let probe_fields = parsed.probe_fields;
     let stats = parsed.stats;
+    let mqtt_active = mqtt_is_active(parsed);
 
     if once && watch {
         usage_error("--once and --watch are mutually exclusive.");
@@ -486,7 +603,11 @@ fn parse_args() -> CliArgs {
         usage_error("--sink requires --once, --watch, --probe, or --probe-fields.");
     }
 
-    if parsed.sink == Some(SinkKind::Mqtt) {
+    if parsed.mqtt_enabled_from_config && !watch {
+        usage_error("[mqtt].enabled = true in --config requires --watch.");
+    }
+
+    if mqtt_active {
         if !watch && !parsed.mqtt_ha_remove_discovery {
             usage_error(
                 "--sink mqtt is valid only with --watch, except for --mqtt-ha-remove-discovery.",
@@ -512,8 +633,8 @@ fn parse_args() -> CliArgs {
         }
     }
 
-    if parsed.mqtt_ha_discovery && parsed.sink != Some(SinkKind::Mqtt) {
-        usage_error("--mqtt-ha-discovery is valid only with --sink mqtt.");
+    if parsed.mqtt_ha_discovery && !mqtt_active {
+        usage_error("--mqtt-ha-discovery is valid only with active MQTT.");
     }
 
     if parsed.mqtt_ha_remove_discovery && parsed.sink != Some(SinkKind::Mqtt) {
@@ -525,7 +646,7 @@ fn parse_args() -> CliArgs {
     }
 
     if let Err(e) = validate_mqtt_auth_flags(
-        parsed.sink,
+        mqtt_active,
         parsed.mqtt_username.as_deref(),
         parsed.mqtt_password_env.as_deref(),
     ) {
@@ -542,16 +663,14 @@ fn parse_args() -> CliArgs {
     if parsed.mqtt_retain_discovery && !parsed.mqtt_ha_discovery {
         usage_error("--mqtt-retain-discovery requires --mqtt-ha-discovery.");
     }
-
-    parsed
 }
 
 fn validate_mqtt_auth_flags(
-    sink: Option<SinkKind>,
+    mqtt_active: bool,
     username: Option<&str>,
     password_env: Option<&str>,
 ) -> Result<(), String> {
-    if (username.is_some() || password_env.is_some()) && sink != Some(SinkKind::Mqtt) {
+    if (username.is_some() || password_env.is_some()) && !mqtt_active {
         return Err(
             "--mqtt-username and --mqtt-password-env are valid only with --sink mqtt.".to_string(),
         );
@@ -567,7 +686,7 @@ fn validate_mqtt_auth_flags(
 }
 
 fn mqtt_options_from_args(args: &CliArgs) -> Option<MqttOptions> {
-    if args.sink != Some(SinkKind::Mqtt) {
+    if !mqtt_is_active(args) {
         return None;
     }
 
@@ -660,6 +779,19 @@ fn main() {
 
     if args.version {
         print_version();
+        return;
+    }
+
+    if args.mqtt_init_config {
+        match config::create_default_config_file() {
+            Ok(path) => {
+                eprintln!("WTG note: created {}", path.display());
+            }
+            Err(e) => {
+                eprintln!("WTG config error: {e}");
+                process::exit(2);
+            }
+        }
         return;
     }
 
@@ -1059,24 +1191,156 @@ mod tests {
     #[test]
     fn mqtt_auth_flags_require_mqtt_sink() {
         let err =
-            validate_mqtt_auth_flags(None, Some("user"), Some("WTG_MQTT_PASSWORD")).unwrap_err();
+            validate_mqtt_auth_flags(false, Some("user"), Some("WTG_MQTT_PASSWORD")).unwrap_err();
 
         assert!(err.contains("valid only with --sink mqtt"));
     }
 
     #[test]
     fn mqtt_auth_flags_reject_password_without_username() {
-        let err = validate_mqtt_auth_flags(Some(SinkKind::Mqtt), None, Some("WTG_MQTT_PASSWORD"))
-            .unwrap_err();
+        let err = validate_mqtt_auth_flags(true, None, Some("WTG_MQTT_PASSWORD")).unwrap_err();
 
         assert!(err.contains("must be provided together"));
     }
 
     #[test]
     fn mqtt_auth_flags_reject_username_without_password_env() {
-        let err = validate_mqtt_auth_flags(Some(SinkKind::Mqtt), Some("user"), None).unwrap_err();
+        let err = validate_mqtt_auth_flags(true, Some("user"), None).unwrap_err();
 
         assert!(err.contains("must be provided together"));
+    }
+
+    #[test]
+    fn config_disabled_mqtt_does_not_activate_mqtt() {
+        let config = config::parse_config_toml(
+            r#"
+[mqtt]
+enabled = false
+host = "broker"
+node_id = "bench1"
+"#,
+        )
+        .unwrap();
+        let mut args = CliArgs::default();
+        args.watch = true;
+
+        apply_config(&mut args, &config);
+
+        assert!(!mqtt_is_active(&args));
+        assert!(args.mqtt_host.is_none());
+        assert!(args.mqtt_node_id.is_none());
+    }
+
+    #[test]
+    fn config_enabled_mqtt_activates_mqtt_for_watch_without_sink_flag() {
+        let config = config::parse_config_toml(
+            r#"
+[mqtt]
+enabled = true
+host = "broker"
+node_id = "bench1"
+"#,
+        )
+        .unwrap();
+        let mut args = CliArgs::default();
+        args.watch = true;
+
+        apply_config(&mut args, &config);
+
+        assert!(mqtt_is_active(&args));
+        assert!(args.mqtt_enabled_from_config);
+        assert!(args.sink.is_none());
+        assert_eq!(args.mqtt_host.as_deref(), Some("broker"));
+        assert_eq!(args.mqtt_node_id.as_deref(), Some("bench1"));
+    }
+
+    #[test]
+    fn sink_mqtt_activates_mqtt_even_when_config_disables_mqtt() {
+        let config = config::parse_config_toml(
+            r#"
+[mqtt]
+enabled = false
+host = "broker"
+node_id = "bench1"
+"#,
+        )
+        .unwrap();
+        let mut args = CliArgs::default();
+        args.watch = true;
+        args.sink = Some(SinkKind::Mqtt);
+
+        apply_config(&mut args, &config);
+
+        assert!(mqtt_is_active(&args));
+        assert!(!args.mqtt_enabled_from_config);
+        assert_eq!(args.mqtt_host.as_deref(), Some("broker"));
+        assert_eq!(args.mqtt_node_id.as_deref(), Some("bench1"));
+    }
+
+    #[test]
+    fn cli_mqtt_values_override_config_values() {
+        let config = config::parse_config_toml(
+            r#"
+[mqtt]
+enabled = true
+host = "config-broker"
+port = 1883
+username = "config-user"
+password_env = "CONFIG_PASSWORD"
+topic_prefix = "config-prefix"
+node_id = "config-node"
+
+[mqtt.home_assistant]
+discovery = true
+discovery_prefix = "config-ha"
+retain_discovery = true
+"#,
+        )
+        .unwrap();
+        let mut args = CliArgs::default();
+        args.watch = true;
+        args.sink = Some(SinkKind::Mqtt);
+        args.mqtt_host = Some("cli-broker".to_string());
+        args.mqtt_port = Some("1884".to_string());
+        args.mqtt_node_id = Some("cli-node".to_string());
+        args.mqtt_ha_prefix = Some("cli-ha".to_string());
+
+        apply_config(&mut args, &config);
+
+        assert_eq!(args.mqtt_host.as_deref(), Some("cli-broker"));
+        assert_eq!(args.mqtt_port.as_deref(), Some("1884"));
+        assert_eq!(args.mqtt_node_id.as_deref(), Some("cli-node"));
+        assert_eq!(args.mqtt_ha_prefix.as_deref(), Some("cli-ha"));
+        assert_eq!(args.mqtt_username.as_deref(), Some("config-user"));
+        assert_eq!(args.mqtt_password_env.as_deref(), Some("CONFIG_PASSWORD"));
+        assert_eq!(args.mqtt_topic_prefix.as_deref(), Some("config-prefix"));
+        assert!(args.mqtt_ha_discovery);
+        assert!(args.mqtt_retain_discovery);
+    }
+
+    #[test]
+    fn empty_config_strings_are_not_applied_to_cli_args() {
+        let config = config::parse_config_toml(
+            r#"
+[mqtt]
+enabled = true
+host = ""
+username = ""
+password_env = ""
+node_id = ""
+"#,
+        )
+        .unwrap();
+        let mut args = CliArgs::default();
+        args.watch = true;
+
+        apply_config(&mut args, &config);
+
+        assert!(mqtt_is_active(&args));
+        assert!(args.mqtt_host.is_none());
+        assert!(args.mqtt_username.is_none());
+        assert!(args.mqtt_password_env.is_none());
+        assert!(args.mqtt_node_id.is_none());
     }
 
     #[test]
