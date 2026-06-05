@@ -358,6 +358,44 @@ impl WtgUiApp {
         }
     }
 
+    fn stop_all_wtg_processes(&mut self) {
+        match Command::new("taskkill")
+            .args(["/IM", "wtg.exe", "/F"])
+            .stdin(Stdio::null())
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                self.set_mqtt_status(
+                    MqttStatusKind::Success,
+                    "Stop all wtg.exe processes command sent.",
+                );
+            }
+            Ok(output) => {
+                let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let err = if err.is_empty() {
+                    String::from_utf8_lossy(&output.stdout).trim().to_string()
+                } else {
+                    err
+                };
+                let err = if err.is_empty() {
+                    format!("taskkill exited with status {}.", output.status)
+                } else {
+                    err
+                };
+                self.set_mqtt_status(
+                    MqttStatusKind::Error,
+                    format!("Stop all wtg.exe processes failed: {err}"),
+                );
+            }
+            Err(err) => {
+                self.set_mqtt_status(
+                    MqttStatusKind::Error,
+                    format!("Stop all wtg.exe processes failed: {err}"),
+                );
+            }
+        }
+    }
+
     fn set_mqtt_status(&mut self, kind: MqttStatusKind, message: impl Into<String>) {
         self.mqtt_status = MqttStatus::new(kind, message);
     }
@@ -830,14 +868,18 @@ fn render_mqtt_panel(ui: &mut egui::Ui, egui_ctx: &egui::Context, app: &mut WtgU
     );
 
     let mut availability_coupled = app.mqtt_form.ha_discovery_enabled;
-    ui.add_enabled(
-        false,
-        egui::Checkbox::new(
-            &mut availability_coupled,
-            "Retained availability / LWT",
-        ),
-    );
-    ui.small("Availability/LWT remains coupled to existing Home Assistant discovery behavior.");
+    ui.horizontal_wrapped(|ui| {
+        ui.add_enabled(
+            false,
+            egui::Checkbox::new(
+                &mut availability_coupled,
+                "Retained availability / LWT",
+            ),
+        );
+        ui.small("?").on_hover_text(
+            "Availability/LWT remains coupled to existing Home Assistant discovery behavior.",
+        );
+    });
 
     ui.add_space(10.0);
     render_mqtt_status_banner(ui, &app.mqtt_status);
@@ -865,10 +907,23 @@ fn render_mqtt_panel(ui: &mut egui::Ui, egui_ctx: &egui::Context, app: &mut WtgU
     });
 
     ui.add_space(8.0);
-    if ui.button("Launch CLI MQTT publisher").clicked() {
-        app.launch_cli_mqtt_publisher();
-    }
-    ui.small("Launch uses the saved config file. Click Save config first after editing fields.");
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Launch CLI MQTT publisher").clicked() {
+            app.launch_cli_mqtt_publisher();
+        }
+        ui.small("?").on_hover_text(
+            "Launch uses the saved config file.\n\
+Click Save config first after editing fields.\n\
+Launched publishers run in the background.",
+        );
+        if ui.button("Stop all wtg.exe processes").clicked() {
+            app.stop_all_wtg_processes();
+        }
+        ui.small("?").on_hover_text(
+            "Terminates any WTG CLI publisher currently running.\n\
+This broadly stops all wtg.exe processes.",
+        );
+    });
 
     ui.add_space(10.0);
     ui.label("Generated CLI preview");
