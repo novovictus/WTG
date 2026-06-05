@@ -14,7 +14,19 @@ See `artifacts/test-matrix/matrix.md` for empirical results.
 
 WTG now ships a dual-surface build: `wtg.exe` as the CLI validation/runtime surface and `wtg-ui.exe` as the experimental egui viewer/configurator/launcher.
 
-WTG v0.2.1 proved the generic experimental MQTT watch sink and expanded payload parity. WTG v0.2.2 added opt-in Home Assistant MQTT discovery on top of that sink. WTG v0.2.3 added MQTT username/password authentication for brokers such as the Home Assistant Mosquitto add-on, retained Home Assistant availability, and an explicit retained discovery cleanup command. WTG v0.2.4 added explicit TOML configuration support for MQTT and Home Assistant settings. Unreleased WTG v0.2.5 adds an experimental egui MQTT / Home Assistant configurator that reuses that existing CLI/config behavior.
+Current development builds include:
+
+- the CLI validation/runtime publisher surface (`wtg.exe`)
+- the experimental egui viewer/configurator/launcher (`wtg-ui.exe`)
+- an optional MQTT watch sink
+- optional Home Assistant MQTT discovery
+- MQTT username/password authentication
+- retained Home Assistant availability / LWT behavior
+- retained discovery cleanup
+- explicit opt-in TOML configuration
+- an experimental eGUI MQTT / Home Assistant configurator layered over the same saved config and CLI runtime
+
+The detailed feature progression is tracked in the Milestones section below.
 
 Configuration remains opt-in. WTG does not auto-create `wtg.toml`, does not auto-load `wtg.toml`, and does not change normal `--once`, `--watch`, `--probe`, or sink behavior unless `--config <path>` or `--mqtt-init-config` is explicitly used. WTG remains an MQTT publisher, not a broker: it does not expose a listening network service, configure the broker, open firewall rules, or manage subscriber access.
 
