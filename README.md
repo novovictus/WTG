@@ -12,7 +12,7 @@ Recent testing has identified a driver-branch regression affecting memory-utiliz
 Findings reflect publicly accessible NVML telemetry behavior under Windows WDDM.
 See `artifacts/test-matrix/matrix.md` for empirical results.
 
-WTG v0.2.0-beta5 adds an experimental dual-surface build: the existing CLI validation surface (`wtg.exe`) plus a separate egui desktop frontend (`wtg-ui.exe`). The CLI remains the reference surface for validation evidence; the UI is a visual inspection, configuration, and launcher surface over the same telemetry/runtime model.
+WTG now ships a dual-surface build: `wtg.exe` as the CLI validation/runtime surface and `wtg-ui.exe` as the experimental egui viewer/configurator/launcher.
 
 WTG v0.2.1 proved the generic experimental MQTT watch sink and expanded payload parity. WTG v0.2.2 added opt-in Home Assistant MQTT discovery on top of that sink. WTG v0.2.3 added MQTT username/password authentication for brokers such as the Home Assistant Mosquitto add-on, retained Home Assistant availability, and an explicit retained discovery cleanup command. WTG v0.2.4 added explicit TOML configuration support for MQTT and Home Assistant settings. Unreleased WTG v0.2.5 adds an experimental egui MQTT / Home Assistant configurator that reuses that existing CLI/config behavior.
 
@@ -59,7 +59,7 @@ See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
   * Power draw, clocks (contextual)
   * Exclude WDDM/Task Manager compute % from "truth" layer
 * **Refresh Rate**: CLI watch defaults to 1000 ms; empirical targets remain in the 250-500 ms range where appropriate
-* **UI**: Current validation is CLI/probe/sink based. The egui UI is an experimental viewer/configurator/launcher, not the validation reference surface.
+* **UI**: Formal validation remains CLI/probe/sink based. The egui UI is an experimental viewer/configurator/launcher, not the validation reference surface.
 
 ---
 
@@ -182,7 +182,7 @@ The diagnostic CLI scope is intentionally narrow:
 | `--once` | Supported | Supported | Not supported | CSV emits snapshot rows. MQTT is watch-only in this spike. |
 | `--watch` | Supported | Supported | Supported | CSV emits snapshot rows per tick. MQTT publishes live state payloads per tick. `--interval` applies here. |
 | `--once --stats` | Supported | Supported | Not supported | CSV emits stats rows. MQTT is watch-only in this spike. |
-| `--watch --stats` | Supported | Supported | Supported | CSV emits stats rows per tick. MQTT publishes snapshot payloads, not stats-formatted text. |
+| `--watch --stats` | Supported | Supported | Supported | CSV emits stats rows per tick. MQTT remains supported here, but it still publishes watch snapshot payloads rather than stats-formatted text. |
 
 Home Assistant discovery is an option on top of active MQTT, not a separate sink. It is available only for the same MQTT-supported watch modes: `--watch` and `--watch --stats`. `--mqtt-ha-remove-discovery` is a one-shot MQTT broker cleanup command for retained WTG discovery config topics and retained availability; it does not publish state.
 
@@ -574,7 +574,7 @@ This means the NVML memory-utilization counter is pegged while allocated VRAM re
 Example:
 
 ```powershell
-cargo run -- --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id 94 --field-id 95
+cargo run -p wtg-app --bin wtg -- --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id 94 --field-id 95
 ```
 
 The utilization path is printed first:
@@ -726,7 +726,7 @@ Explicit TOML config:
 Probe field-values comparison:
 
 ```powershell
-cargo run -- --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id 94 --field-id 95
+cargo run -p wtg-app --bin wtg -- --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id 94 --field-id 95
 ```
 
 Experimental egui UI:
@@ -824,7 +824,7 @@ The UI may visually corroborate CLI output, but screenshots of the UI should not
 WTG relies on NVIDIA NVML on Windows. Empirical testing shows:
 
 - Drivers prior to ~470 may ship `nvidia-smi` without a usable `nvml.dll`
-- Modern drivers (>=580) consistently expose NVML across tested SKUs
+- Modern tested drivers expose NVML across tested SKUs, though individual counters may still show driver/platform-specific behavior
 - WTG fails fast when NVML is unavailable and prints an explicit error when possible
 
 ---
