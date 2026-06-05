@@ -33,13 +33,13 @@ use tracing::info;
 
 mod config;
 mod mqtt;
+mod mqtt_settings;
 mod probe;
 mod probe_fields;
 mod sink;
 
 use mqtt::{
-    MqttAuthOptions, MqttHaDiscoveryOptions, MqttOptions, MqttSink, DEFAULT_HA_DISCOVERY_PREFIX,
-    DEFAULT_MQTT_PORT, DEFAULT_TOPIC_PREFIX,
+    MqttAuthOptions, MqttOptions, MqttSink,
 };
 use probe::{format_probe_csv_header, format_probe_csv_row, format_probe_record, ProbeRecord};
 use probe_fields::{
@@ -794,33 +794,19 @@ fn validate_save_config_args(parsed: &CliArgs) -> Result<(), String> {
 }
 
 fn saved_mqtt_config_from_args(args: &CliArgs) -> config::SavedMqttConfig {
-    let port = match args.mqtt_port.as_deref() {
-        Some(value) => value.parse::<u16>().unwrap_or_else(|_| {
-            usage_error(&format!(
-                "--mqtt-port must be a TCP port number. Got: {value}"
-            ));
-        }),
-        None => DEFAULT_MQTT_PORT,
-    };
-
-    config::SavedMqttConfig {
-        host: args.mqtt_host.clone().unwrap_or_default(),
-        port,
-        username: args.mqtt_username.clone().unwrap_or_default(),
-        password: args.mqtt_password.clone(),
-        password_env: args.mqtt_password_env.clone(),
-        topic_prefix: args
-            .mqtt_topic_prefix
-            .clone()
-            .unwrap_or_else(|| DEFAULT_TOPIC_PREFIX.to_string()),
-        node_id: args.mqtt_node_id.clone().unwrap_or_default(),
-        ha_discovery: args.mqtt_ha_discovery,
-        ha_discovery_prefix: args
-            .mqtt_ha_prefix
-            .clone()
-            .unwrap_or_else(|| DEFAULT_HA_DISCOVERY_PREFIX.to_string()),
-        ha_retain_discovery: args.mqtt_retain_discovery,
-    }
+    mqtt_settings::saved_mqtt_config_from_values(
+        args.mqtt_host.as_deref(),
+        args.mqtt_port.as_deref(),
+        args.mqtt_username.as_deref(),
+        args.mqtt_password.as_deref(),
+        args.mqtt_password_env.as_deref(),
+        args.mqtt_topic_prefix.as_deref(),
+        args.mqtt_node_id.as_deref(),
+        args.mqtt_ha_discovery,
+        args.mqtt_ha_prefix.as_deref(),
+        args.mqtt_retain_discovery,
+    )
+    .unwrap_or_else(|e| usage_error(&e))
 }
 
 fn validate_mqtt_auth_combination(
@@ -828,94 +814,34 @@ fn validate_mqtt_auth_combination(
     password: Option<&str>,
     password_env: Option<&str>,
 ) -> Result<(), String> {
-    let has_username = non_empty(username);
-    let has_password = non_empty(password);
-    let has_password_env = non_empty(password_env);
-
-    match (has_username, has_password, has_password_env) {
-        (false, false, false) => Ok(()),
-        (true, true, false) => Ok(()),
-        (true, false, true) => Ok(()),
-        (true, false, false) => {
-            Err("--mqtt-username requires --mqtt-password or --mqtt-password-env.".to_string())
-        }
-        (false, true, false) => Err("--mqtt-password requires --mqtt-username.".to_string()),
-        (false, false, true) => Err("--mqtt-password-env requires --mqtt-username.".to_string()),
-        (true, true, true) => {
-            Err("--mqtt-password and --mqtt-password-env cannot be used together.".to_string())
-        }
-        (false, true, true) => {
-            Err("--mqtt-password and --mqtt-password-env cannot be used together.".to_string())
-        }
-    }
-}
-
-fn non_empty(value: Option<&str>) -> bool {
-    value.map(str::trim).unwrap_or_default().len() > 0
+    mqtt_settings::validate_mqtt_auth_combination(username, password, password_env)
 }
 
 fn mqtt_options_from_args(args: &CliArgs) -> Option<MqttOptions> {
-    if !mqtt_is_active(args) {
-        return None;
-    }
-
-    let port = match args.mqtt_port.as_deref() {
-        Some(value) => value.parse::<u16>().unwrap_or_else(|_| {
-            usage_error(&format!(
-                "--mqtt-port must be a TCP port number. Got: {value}"
-            ));
-        }),
-        None => DEFAULT_MQTT_PORT,
-    };
-
-    let topic_prefix = args
-        .mqtt_topic_prefix
-        .clone()
-        .unwrap_or_else(|| DEFAULT_TOPIC_PREFIX.to_string());
-    let auth = mqtt_auth_from_args(args);
-    let ha_discovery = if args.mqtt_ha_discovery || args.mqtt_ha_remove_discovery {
-        let prefix = args
-            .mqtt_ha_prefix
-            .clone()
-            .unwrap_or_else(|| DEFAULT_HA_DISCOVERY_PREFIX.to_string());
-        Some(
-            MqttHaDiscoveryOptions::new(prefix, args.mqtt_retain_discovery)
-                .unwrap_or_else(|e| usage_error(&e)),
-        )
-    } else {
-        None
-    };
-
-    Some(
-        MqttOptions::new(
-            args.mqtt_host.clone().unwrap_or_default(),
-            port,
-            topic_prefix,
-            args.mqtt_node_id.clone().unwrap_or_default(),
-            auth,
-            args.mqtt_ha_discovery,
-            ha_discovery,
-        )
-        .unwrap_or_else(|e| usage_error(&e)),
-    )
-}
-
-fn mqtt_auth_from_args(args: &CliArgs) -> Option<MqttAuthOptions> {
-    match (
+    mqtt_settings::mqtt_options_from_values(
+        mqtt_is_active(args),
+        args.mqtt_host.as_deref(),
+        args.mqtt_port.as_deref(),
+        args.mqtt_topic_prefix.as_deref(),
+        args.mqtt_node_id.as_deref(),
         args.mqtt_username.as_deref(),
         args.mqtt_password.as_deref(),
         args.mqtt_password_env.as_deref(),
-    ) {
-        (Some(username), Some(password), None) => Some(
-            MqttAuthOptions::new(username.to_string(), password.to_string())
-                .unwrap_or_else(|e| usage_error(&e)),
-        ),
-        (Some(username), None, Some(password_env)) => Some(
-            resolve_mqtt_auth(username, password_env, |name| env::var(name).ok())
-                .unwrap_or_else(|e| usage_error(&e)),
-        ),
-        _ => None,
-    }
+        args.mqtt_ha_discovery,
+        args.mqtt_ha_remove_discovery,
+        args.mqtt_ha_prefix.as_deref(),
+        args.mqtt_retain_discovery,
+    )
+    .unwrap_or_else(|e| usage_error(&e))
+}
+
+fn mqtt_auth_from_args(args: &CliArgs) -> Option<MqttAuthOptions> {
+    mqtt_settings::mqtt_auth_from_values(
+        args.mqtt_username.as_deref(),
+        args.mqtt_password.as_deref(),
+        args.mqtt_password_env.as_deref(),
+    )
+    .unwrap_or_else(|e| usage_error(&e))
 }
 
 fn resolve_mqtt_auth<F>(
@@ -926,21 +852,7 @@ fn resolve_mqtt_auth<F>(
 where
     F: FnOnce(&str) -> Option<String>,
 {
-    let password_env = password_env.trim();
-    if password_env.is_empty() {
-        return Err("--mqtt-password-env must not be empty.".to_string());
-    }
-
-    let password = get_env(password_env).ok_or_else(|| {
-        format!("--mqtt-password-env variable {password_env} is not set or is not valid Unicode.")
-    })?;
-    if password.is_empty() {
-        return Err(format!(
-            "--mqtt-password-env variable {password_env} must not be empty."
-        ));
-    }
-
-    MqttAuthOptions::new(username.to_string(), password)
+    mqtt_settings::resolve_mqtt_auth(username, password_env, get_env)
 }
 
 fn main() {
