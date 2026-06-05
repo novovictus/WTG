@@ -12,8 +12,6 @@ Recent testing has identified a driver-branch regression affecting memory-utiliz
 Findings reflect publicly accessible NVML telemetry behavior under Windows WDDM.
 See `artifacts/test-matrix/matrix.md` for empirical results.
 
-WTG now ships a dual-surface build: `wtg.exe` as the CLI validation/runtime surface and `wtg-ui.exe` as the experimental egui viewer/configurator/launcher.
-
 Current development builds include:
 
 - the CLI validation/runtime publisher surface (`wtg.exe`)
