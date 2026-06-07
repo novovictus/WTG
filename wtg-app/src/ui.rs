@@ -166,7 +166,7 @@ impl WtgUiApp {
             self.mqtt_form.retain_discovery,
         );
 
-        match saved.and_then(|saved| config::write_config_file(&saved, Path::new(&config_path), false)) {
+        match saved.and_then(|saved| config::write_config_file(&saved, Path::new(&config_path), true)) {
             Ok(path) => {
                 self.mqtt_form.config_path = path.display().to_string();
                 self.set_mqtt_status(
