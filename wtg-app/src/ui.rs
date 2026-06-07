@@ -509,7 +509,6 @@ struct DeviceView {
 enum MqttStatusKind {
     Idle,
     Success,
-    Warning,
     Error,
     Running,
 }
@@ -536,7 +535,6 @@ impl MqttStatus {
         match self.kind {
             MqttStatusKind::Idle => "Idle",
             MqttStatusKind::Success => "Success",
-            MqttStatusKind::Warning => "Warning",
             MqttStatusKind::Error => "Error",
             MqttStatusKind::Running => "Running",
         }
@@ -553,11 +551,6 @@ impl MqttStatus {
                 egui::Color32::from_rgb(29, 82, 51),
                 egui::Color32::from_rgb(78, 181, 117),
                 egui::Color32::from_rgb(231, 248, 237),
-            ),
-            MqttStatusKind::Warning => (
-                egui::Color32::from_rgb(94, 70, 22),
-                egui::Color32::from_rgb(219, 174, 62),
-                egui::Color32::from_rgb(255, 246, 214),
             ),
             MqttStatusKind::Error => (
                 egui::Color32::from_rgb(105, 34, 41),
@@ -776,7 +769,7 @@ impl MqttFormState {
 
     fn cli_preview(&self) -> String {
         let mut parts = vec![
-            "wtg.exe".to_string(),
+            ".\\wtg.exe".to_string(),
             "--watch".to_string(),
             "--sink".to_string(),
             "mqtt".to_string(),
@@ -930,8 +923,10 @@ This broadly stops all wtg.exe processes.",
     let mut preview = app.mqtt_form.cli_preview();
     ui.add(
         egui::TextEdit::multiline(&mut preview)
+            .font(egui::TextStyle::Monospace)
             .desired_rows(4)
-            .interactive(false),
+            .desired_width(f32::INFINITY)
+            .interactive(true),
     );
 }
 
@@ -1043,4 +1038,16 @@ fn resolve_wtg_cli_path() -> Option<std::path::PathBuf> {
     let current_exe = std::env::current_exe().ok()?;
     let sibling = current_exe.with_file_name("wtg.exe");
     sibling.exists().then_some(sibling)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MqttFormState;
+
+    #[test]
+    fn cli_preview_starts_with_windows_relative_exe() {
+        let preview = MqttFormState::default().cli_preview();
+
+        assert!(preview.starts_with(".\\wtg.exe "));
+    }
 }
