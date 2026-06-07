@@ -211,7 +211,9 @@ pub(crate) fn mqtt_auth_from_values(
             Ok(Some(MqttAuthOptions::new(username, password)?))
         }
         (Some(username), None, Some(password_env)) => {
-            Ok(Some(resolve_mqtt_auth(&username, &password_env, |name| env::var(name).ok())?))
+            Ok(Some(resolve_mqtt_auth(&username, &password_env, |name| {
+                env::var(name).ok()
+            })?))
         }
         _ => Ok(None),
     }

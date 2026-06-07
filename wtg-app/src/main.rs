@@ -38,9 +38,7 @@ mod probe;
 mod probe_fields;
 mod sink;
 
-use mqtt::{
-    MqttAuthOptions, MqttOptions, MqttSink,
-};
+use mqtt::{MqttAuthOptions, MqttOptions, MqttSink};
 use probe::{format_probe_csv_header, format_probe_csv_row, format_probe_record, ProbeRecord};
 use probe_fields::{
     format_field_value, format_probe_fields_csv_header, format_probe_fields_csv_row,

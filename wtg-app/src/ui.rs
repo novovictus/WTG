@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Adam Hooper
 
 use std::fs;
-use std::process::{Command, Stdio};
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -133,7 +133,8 @@ impl WtgUiApp {
         self.set_mqtt_status(MqttStatusKind::Running, "Loading MQTT config...");
         match config::load_config_file(Path::new(&config_path)) {
             Ok(config) => {
-                self.mqtt_form.apply_loaded_settings(mqtt_settings::mqtt_settings_from_config(&config));
+                self.mqtt_form
+                    .apply_loaded_settings(mqtt_settings::mqtt_settings_from_config(&config));
                 self.mqtt_form.config_path = config_path.clone();
                 self.set_mqtt_status(
                     MqttStatusKind::Success,
@@ -166,7 +167,9 @@ impl WtgUiApp {
             self.mqtt_form.retain_discovery,
         );
 
-        match saved.and_then(|saved| config::write_config_file(&saved, Path::new(&config_path), true)) {
+        match saved
+            .and_then(|saved| config::write_config_file(&saved, Path::new(&config_path), true))
+        {
             Ok(path) => {
                 self.mqtt_form.config_path = path.display().to_string();
                 self.set_mqtt_status(
@@ -200,7 +203,10 @@ impl WtgUiApp {
                 );
             }
             Err(err) => {
-                self.set_mqtt_status(MqttStatusKind::Error, format!("Default config error: {err}"));
+                self.set_mqtt_status(
+                    MqttStatusKind::Error,
+                    format!("Default config error: {err}"),
+                );
             }
         }
     }
@@ -252,7 +258,10 @@ impl WtgUiApp {
                 }
             },
             Err(err) => {
-                self.set_mqtt_status(MqttStatusKind::Error, format!("MQTT connection error: {err}"));
+                self.set_mqtt_status(
+                    MqttStatusKind::Error,
+                    format!("MQTT connection error: {err}"),
+                );
             }
         }
     }
@@ -346,14 +355,14 @@ impl WtgUiApp {
             Ok(_) => {
                 self.set_mqtt_status(
                     MqttStatusKind::Success,
-                    format!("Launched CLI MQTT publisher with saved config {}.", config_file.display()),
+                    format!(
+                        "Launched CLI MQTT publisher with saved config {}.",
+                        config_file.display()
+                    ),
                 );
             }
             Err(err) => {
-                self.set_mqtt_status(
-                    MqttStatusKind::Error,
-                    format!("CLI launch error: {err}"),
-                );
+                self.set_mqtt_status(MqttStatusKind::Error, format!("CLI launch error: {err}"));
             }
         }
     }
@@ -864,10 +873,7 @@ fn render_mqtt_panel(ui: &mut egui::Ui, egui_ctx: &egui::Context, app: &mut WtgU
     ui.horizontal_wrapped(|ui| {
         ui.add_enabled(
             false,
-            egui::Checkbox::new(
-                &mut availability_coupled,
-                "Retained availability / LWT",
-            ),
+            egui::Checkbox::new(&mut availability_coupled, "Retained availability / LWT"),
         );
         ui.small("?").on_hover_text(
             "Availability/LWT remains coupled to existing Home Assistant discovery behavior.",
