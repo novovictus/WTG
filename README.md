@@ -5,16 +5,26 @@ Copyright (C) 2026 Adam Hooper
 
 **Tagline:** Honest GPU compute stats for Windows
 
-## Current Status (unreleased v0.2.4 - Explicit TOML Configuration)
+## Current Status (unreleased v0.2.5 - eGUI MQTT / Home Assistant Configurator)
 
 WTG is currently focused on empirical NVML telemetry validation under Windows WDDM.  
 Recent testing has identified a driver-branch regression affecting memory-utilization reporting on specific consumer mobile Ampere GPUs (580.88+), not reproduced on tested desktop or professional SKUs.
 Findings reflect publicly accessible NVML telemetry behavior under Windows WDDM.
 See `artifacts/test-matrix/matrix.md` for empirical results.
 
-WTG v0.2.0-beta5 adds an experimental dual-surface build: the existing CLI validation surface (`wtg.exe`) plus a separate egui desktop frontend (`wtg-ui.exe`). The CLI remains the reference surface for validation evidence; the UI is a visual inspection and demo surface.
+Current development builds include:
 
-WTG v0.2.1 proved the generic experimental MQTT watch sink and expanded payload parity. WTG v0.2.2 added opt-in Home Assistant MQTT discovery on top of that sink. WTG v0.2.3 added MQTT username/password authentication for brokers such as the Home Assistant Mosquitto add-on, retained Home Assistant availability, and an explicit retained discovery cleanup command. Unreleased WTG v0.2.4 adds explicit TOML configuration support for MQTT and Home Assistant settings.
+- the CLI validation/runtime publisher surface (`wtg.exe`)
+- the experimental egui viewer/configurator/launcher (`wtg-ui.exe`)
+- an optional MQTT watch sink
+- optional Home Assistant MQTT discovery
+- MQTT username/password authentication
+- retained Home Assistant availability / LWT behavior
+- retained discovery cleanup
+- explicit opt-in TOML configuration
+- an experimental eGUI MQTT / Home Assistant configurator layered over the same saved config and CLI runtime
+
+The detailed feature progression is tracked in the Milestones section below.
 
 Configuration remains opt-in. WTG does not auto-create `wtg.toml`, does not auto-load `wtg.toml`, and does not change normal `--once`, `--watch`, `--probe`, or sink behavior unless `--config <path>` or `--mqtt-init-config` is explicitly used. WTG remains an MQTT publisher, not a broker: it does not expose a listening network service, configure the broker, open firewall rules, or manage subscriber access.
 
@@ -51,7 +61,7 @@ See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
 ## Project Scope (Core Engine)
 
 * **Target**: NVIDIA GPUs, CUDA metrics only
-* **Platform**: Windows-native CLI validation binary (`wtg.exe`) with an experimental separate desktop UI binary (`wtg-ui.exe`)
+* **Platform**: Windows-native CLI/runtime binary (`wtg.exe`) with an experimental separate desktop UI binary (`wtg-ui.exe`)
 * **Metrics**:
 
   * Per-process memory attribution and NVML-reported utilization metrics
@@ -59,13 +69,16 @@ See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
   * Power draw, clocks (contextual)
   * Exclude WDDM/Task Manager compute % from "truth" layer
 * **Refresh Rate**: CLI watch defaults to 1000 ms; empirical targets remain in the 250-500 ms range where appropriate
-* **UI**: Current validation is CLI/probe/sink based. The egui UI is an experimental visual frontend, not the validation reference surface.
+* **UI**: Formal validation remains CLI/probe/sink based. The egui UI is an experimental viewer/configurator/launcher, not the validation reference surface.
 
 ---
 
-## Current Usage (CLI Engine)
+## Current Usage
 
-WTG is currently a command-line proof-of-concept focused on validating NVML-based GPU telemetry on Windows.
+WTG currently ships two Windows binaries:
+
+- `wtg.exe`: the CLI telemetry, validation, capture, and runtime MQTT publisher surface
+- `wtg-ui.exe`: an experimental egui viewer/configurator/launcher over the same `wtg-core` telemetry path and existing CLI/config workflows
 
 ### Probe, sink, and field-values behavior
 
@@ -179,7 +192,7 @@ The diagnostic CLI scope is intentionally narrow:
 | `--once` | Supported | Supported | Not supported | CSV emits snapshot rows. MQTT is watch-only in this spike. |
 | `--watch` | Supported | Supported | Supported | CSV emits snapshot rows per tick. MQTT publishes live state payloads per tick. `--interval` applies here. |
 | `--once --stats` | Supported | Supported | Not supported | CSV emits stats rows. MQTT is watch-only in this spike. |
-| `--watch --stats` | Supported | Supported | Supported | CSV emits stats rows per tick. MQTT publishes snapshot payloads, not stats-formatted text. |
+| `--watch --stats` | Supported | Supported | Supported | CSV emits stats rows per tick. MQTT remains supported here, but it still publishes watch snapshot payloads rather than stats-formatted text. |
 
 Home Assistant discovery is an option on top of active MQTT, not a separate sink. It is available only for the same MQTT-supported watch modes: `--watch` and `--watch --stats`. `--mqtt-ha-remove-discovery` is a one-shot MQTT broker cleanup command for retained WTG discovery config topics and retained availability; it does not publish state.
 
@@ -292,7 +305,7 @@ Example payload:
 
 ```json
 {
-  "wtg_version": "0.2.4",
+  "wtg_version": "0.2.5",
   "payload_schema": 1,
   "tick_seq": 123,
   "tick_ts": "1780420000.123",
@@ -503,7 +516,34 @@ mqtt.home_assistant.discovery_prefix = "homeassistant"
 - `--mqtt-password-env` keeps the password out of the WTG command line and `wtg.toml`, but setting the environment variable may still expose it depending on the environment.
 - TLS and client certificates remain deferred.
 
-The eGUI configurator is not part of v0.2.4. The intended eGUI work should edit, validate, and save the same explicit TOML configuration model used by the CLI.
+### eGUI MQTT / Home Assistant configurator
+
+`wtg-ui.exe` includes an experimental MQTT / Home Assistant configurator in the left-side panel. It turns the existing CLI/config behavior into fields and buttons; it does not replace the CLI runtime.
+
+The configurator can:
+
+- load config
+- save config
+- generate a default config
+- generate/copy the equivalent CLI command
+- test broker connection
+- clear retained Home Assistant discovery
+- launch the CLI MQTT publisher
+- stop all `wtg.exe` processes
+
+Home Assistant discovery, retained discovery cleanup, retained availability / LWT, TOML config support, and MQTT authentication remain the same existing CLI/runtime behaviors. The UI is a wrapper over those behaviors, not a second implementation.
+
+When `Launch CLI MQTT publisher` is clicked, the UI starts `wtg.exe` with the saved config file, equivalent to:
+
+```powershell
+.\wtg.exe --watch --config .\wtg.toml
+```
+
+Launch uses the saved config file on disk. If fields were edited in the UI, click `Save config` before launch or the running publisher will continue using the previously saved file contents.
+
+The launched publisher is detached and independent of `wtg-ui.exe`. It can continue running in the background after the UI exits.
+
+`Stop all wtg.exe processes` is intentionally broad. It terminates all running `wtg.exe` processes rather than trying to identify only a publisher launched by the UI. You can also stop `wtg.exe` from Task Manager or PowerShell.
 
 ### Probe context fields
 
@@ -544,7 +584,7 @@ This means the NVML memory-utilization counter is pegged while allocated VRAM re
 Example:
 
 ```powershell
-cargo run -- --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id 94 --field-id 95
+cargo run -p wtg-app --bin wtg -- --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id 94 --field-id 95
 ```
 
 The utilization path is printed first:
@@ -696,7 +736,7 @@ Explicit TOML config:
 Probe field-values comparison:
 
 ```powershell
-cargo run -- --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id 94 --field-id 95
+cargo run -p wtg-app --bin wtg -- --probe-fields --field-id 74 --field-id 78 --field-id 83 --field-id 94 --field-id 95
 ```
 
 Experimental egui UI:
@@ -705,16 +745,16 @@ Experimental egui UI:
 cargo run -p wtg-app --bin wtg-ui
 ```
 
-The egui UI is a separate experimental binary target. It does not modify the existing `wtg` CLI parser, does not create sink files, and uses the same `wtg-core` NVML snapshot and probe-context paths as the CLI. Unsupported optional values are displayed as `N/A`, and refresh failures are reported in the window without intentionally closing it.
+The egui UI is a separate experimental binary target. It does not modify the existing `wtg` CLI parser, does not create sink files by itself, and uses the same `wtg-core` NVML snapshot and probe-context paths as the CLI. Unsupported optional values are displayed as `N/A`, and refresh failures are reported in the window without intentionally closing it.
 
 ## Experimental UI build notes and blocking behavior
 
-WTG v0.2.0-beta5 includes two executable surfaces:
+WTG currently includes two executable surfaces:
 
-- `wtg.exe`: the primary CLI validation, capture, probe, and sink interface.
-- `wtg-ui.exe`: an experimental egui desktop frontend that displays live telemetry from the same `wtg-core` NVML path.
+- `wtg.exe`: the primary CLI validation, capture, probe, and runtime MQTT publisher interface.
+- `wtg-ui.exe`: an experimental egui desktop frontend that displays live telemetry and configures/launches the existing CLI MQTT publisher.
 
-The UI is experimental. It is intended for live visual inspection, demos, and operator-facing telemetry. It is not the reference surface for regression testing or metric capture. Use the CLI, CSV/JSONL sinks, and probe outputs for validation evidence.
+The UI is experimental. It is intended for live visual inspection, demos, operator-facing telemetry, and convenient MQTT/Home Assistant configuration over the same explicit TOML model. It is not the reference surface for regression testing or metric capture. Use the CLI, CSV/JSONL sinks, and probe outputs for validation evidence.
 
 ### Building
 
@@ -736,6 +776,8 @@ Run the UI directly:
 ```powershell
 .\target\release\wtg-ui.exe
 ```
+
+On Windows, `wtg-ui.exe` is built as a GUI-subsystem binary and should not open a console window when double-clicked.
 
 Run the CLI validation surface directly:
 
@@ -792,7 +834,7 @@ The UI may visually corroborate CLI output, but screenshots of the UI should not
 WTG relies on NVIDIA NVML on Windows. Empirical testing shows:
 
 - Drivers prior to ~470 may ship `nvidia-smi` without a usable `nvml.dll`
-- Modern drivers (>=580) consistently expose NVML across tested SKUs
+- Modern tested drivers expose NVML across tested SKUs, though individual counters may still show driver/platform-specific behavior
 - WTG fails fast when NVML is unavailable and prints an explicit error when possible
 
 ---
@@ -807,10 +849,10 @@ WTG relies on NVIDIA NVML on Windows. Empirical testing shows:
    * No UI, MQTT, config, or output-sink logic in backend
 3. **Surfaces = Consumers**:
 
-   * `wtg.exe` is the CLI validation, capture, probe, and sink surface.
-   * `wtg-ui.exe` is an experimental egui visual surface.
+   * `wtg.exe` is the CLI validation, capture, probe, and runtime publisher surface.
+   * `wtg-ui.exe` is an experimental egui visual/configuration/launcher surface.
    * MQTT is an experimental watch-mode delivery surface for publishing live telemetry to an existing broker.
-   * Explicit TOML config is an app-layer CLI convenience for MQTT/Home Assistant settings.
+   * Explicit TOML config is an app-layer CLI convenience reused by both the CLI and the UI for MQTT/Home Assistant settings.
    * App-layer surfaces consume the same `wtg-core` telemetry path; no backend duplication.
 4. **Extensible Metric Model**: trait-based, allows future integration of other vendors (ROCm, DX12)
 5. **Phased Approach**:
@@ -901,7 +943,7 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 3. **Experimental MQTT delivery**: app-layer watch sink for publishing live telemetry to an existing broker
 4. **Home Assistant discovery**: optional, explicit discovery config generation, retained availability, and retained discovery cleanup after MQTT transport remains stable
 5. **Explicit TOML config**: CLI-owned config loading and template generation for MQTT/Home Assistant settings
-6. **eGUI configuration**: future panel to edit, validate, and save the same explicit config model
+6. **eGUI configuration**: current panel edits, validates, and launches the same explicit config model
 7. **UI refinement**: module split, display polish, and optional charting only after validation workflows remain stable
 8. **Native window control**: chrome, always-on-top, keyboard shortcuts
 9. **Tray integration**: background polling, popup on demand
@@ -923,8 +965,8 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 | dev/0.2.1 | Experimental MQTT watch sink for publishing live telemetry to a user-specified broker |
 | dev/0.2.2 | Optional Home Assistant MQTT discovery for the experimental MQTT watch sink |
 | dev/0.2.3 | MQTT username/password authentication, retained Home Assistant availability, and retained discovery cleanup |
-| unreleased v0.2.4 (`dev/0.2.4`) | Explicit TOML config support for MQTT/Home Assistant CLI workflows |
-| planned v0.2.5 | Planned eGUI MQTT/Home Assistant configurator over the same config model |
+| v0.2.4 (`dev/0.2.4`) | Explicit TOML config support for MQTT/Home Assistant CLI workflows |
+| unreleased v0.2.5 (`dev/0.2.5`) | Experimental eGUI MQTT/Home Assistant configurator over the same config model |
 | v0.3+ | Optional native UI, tray integration, cross-vendor extensibility |
 
 ---
@@ -932,9 +974,9 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 ## Next Immediate Step
 
 * Preserve CLI/probe/sink outputs as the formal validation path.
-* Validate explicit TOML configuration against the same authenticated MQTT/Home Assistant flows already proven by CLI flags.
+* Validate the eGUI configurator against the same authenticated MQTT/Home Assistant flows already proven by CLI flags.
 * Keep config opt-in: no auto-create, no auto-load, and no config effects on normal non-MQTT commands.
-* Use `wtg-ui.exe` for visual corroboration, demos, and operator-facing inspection.
-* Plan the future eGUI MQTT/Home Assistant configurator as an editor/tester for the same explicit TOML config model.
+* Use `wtg-ui.exe` for visual corroboration, demos, and operator-facing inspection/configuration.
+* Keep the UI layered over the same explicit TOML config model and CLI runtime instead of introducing a parallel MQTT implementation.
 * Validate packaging helper behavior on release builds that include both executable surfaces.
 * Continue empirical driver-behavior documentation using captured CLI and structured artifacts.
