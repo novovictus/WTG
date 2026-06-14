@@ -967,6 +967,7 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 | dev/0.2.3 | MQTT username/password authentication, retained Home Assistant availability, and retained discovery cleanup |
 | v0.2.4 (`dev/0.2.4`) | Explicit TOML config support for MQTT/Home Assistant CLI workflows |
 | unreleased v0.2.6 (`dev/0.2.6`) | Experimental AMD ADL provider foundation behind explicit provider selection; further ADL expansion shelved until 0.2.7 NVML provenance |
+| unreleased v0.2.7 (`dev/0.2.7`) | NVML provenance and expanded NVML stats as the canonical provider truth surface |
 | v0.3+ | Optional native UI, tray integration, cross-vendor extensibility |
 
 ---
