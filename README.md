@@ -5,10 +5,10 @@ Copyright (C) 2026 Adam Hooper
 
 **Tagline:** Honest GPU compute stats for Windows
 
-## Current Status (unreleased v0.2.6 - experimental AMD ADL provider foundation)
+## Current Status (unreleased v0.2.7 - NVML provenance and expanded stats)
 
-WTG is currently focused on empirical NVML telemetry validation under Windows WDDM.  
-Recent testing has identified a driver-branch regression affecting memory-utilization reporting on specific consumer mobile Ampere GPUs (580.88+), not reproduced on tested desktop or professional SKUs.
+WTG is pivoting from the 0.2.6 AMD ADL provider foundation into the 0.2.7 NVML provenance cycle.  
+ADL expansion is intentionally shelved. The next implementation target is NVML provenance and expanded NVML stats, because NVML is the primary truth provider and must define WTG's provider-fact model before ADL grows further.
 Findings reflect publicly accessible NVML telemetry behavior under Windows WDDM.
 See `artifacts/test-matrix/matrix.md` for empirical results.
 
@@ -305,7 +305,7 @@ Example payload:
 
 ```json
 {
-  "wtg_version": "0.2.6",
+  "wtg_version": "0.2.7",
   "payload_schema": 1,
   "tick_seq": 123,
   "tick_ts": "1780420000.123",
