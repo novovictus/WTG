@@ -34,6 +34,7 @@ use tracing::info;
 mod config;
 mod mqtt;
 mod mqtt_settings;
+mod nvml_provenance;
 mod probe;
 mod probe_fields;
 mod sink;
@@ -935,8 +936,6 @@ fn main() {
     // Initialize logging early. This is safe in all modes and helps diagnostics on Windows.
     tracing_subscriber::fmt::init();
 
-    info!("WTG v{} initializing...", env!("CARGO_PKG_VERSION"));
-
     let sink = match args.sink {
         Some(kind @ (SinkKind::Csv | SinkKind::Jsonl)) => match Sink::new(kind) {
             Ok(sink) => {
@@ -992,6 +991,60 @@ fn main() {
         eprintln!("WTG note: MQTT Home Assistant discovery cleanup published.");
         return;
     }
+
+    if args.once && args.stats {
+        let probe_context_ctx = match wtg_core::nvml::init_context() {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                eprintln!("WTG --once --stats init failed: {e}");
+                process::exit(2);
+            }
+        };
+        let snaps = match wtg_core::nvml::snapshot_all_with_ctx(&probe_context_ctx) {
+            Ok(snaps) => snaps,
+            Err(e) => {
+                eprintln!("WTG --once --stats failed: {e}");
+                process::exit(2);
+            }
+        };
+        let tick_seq = 0;
+        let tick_ts = now_ts();
+        let contexts = snaps
+            .iter()
+            .map(|snapshot| {
+                wtg_core::nvml::probe_context::query_probe_context_for_gpu_with_ctx(
+                    &probe_context_ctx,
+                    snapshot.index,
+                )
+            })
+            .collect::<Vec<_>>();
+        let provenance_pretty = nvml_provenance::format_nvml_provenance_stats_pretty(
+            &snaps, &contexts, tick_seq, &tick_ts,
+        );
+
+        // 0.2.7: console/jsonl stats use NVML provenance v1; CSV/watch stats remain legacy for now.
+        println!("{provenance_pretty}");
+
+        if let Some(sink) = &sink {
+            match sink.kind() {
+                SinkKind::Jsonl => {
+                    sink.emit_raw_line(&nvml_provenance::format_nvml_provenance_stats_jsonl(
+                        &snaps, &contexts, tick_seq, &tick_ts,
+                    ))
+                }
+                SinkKind::Csv => {
+                    sink.emit_raw_line(format_stats_csv_header());
+                    for s in snaps.iter() {
+                        sink.emit_raw_line(&format_stats_csv_row(s, tick_seq, &tick_ts));
+                    }
+                }
+                SinkKind::Mqtt => {}
+            }
+        }
+        return;
+    }
+
+    info!("WTG v{} initializing...", env!("CARGO_PKG_VERSION"));
 
     // Mode: `--probe-fields`
     if args.probe_fields {
