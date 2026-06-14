@@ -1,18 +1,26 @@
-# WTG Providers Spike
+# WTG Providers
 
-This crate is an isolated experimental provider boundary for vendor-native probes.
+This crate contains experimental provider-boundary work for vendor-native telemetry sources outside the primary NVML path.
 
-- It is not added to the root workspace.
-- It does not modify `wtg-core`.
-- It does not modify `wtg-app`, existing WTG output schemas, MQTT, CSV, JSONL, or Home Assistant behavior.
+WTG provider priority remains:
 
-Build independently:
+1. NVIDIA / NVML as the primary provider.
+2. AMD / ADL as a secondary experimental provider.
+3. Intel later.
+
+The AMD ADL path introduced in 0.2.6 is a foundation, not a complete AMD telemetry implementation. It is included in the workspace for build and version alignment, and it is invoked from `wtg-app` only when explicitly requested with `--provider amd`.
+
+The provider boundary preserves source semantics. ADL adapter records are exposed as ADL adapter records. They are not translated into NVML devices, Task Manager GPU numbers, or cross-provider parity fields.
+
+## Build
+
+Run the provider crate check from the repository root:
 
 ```powershell
-cargo build --manifest-path .\wtg-providers\Cargo.toml
+cargo check --manifest-path .\wtg-providers\Cargo.toml
 ```
 
-Run the AMD ADL proof-of-life probe:
+Run the AMD ADL proof-of-life probe from the repository root:
 
 ```powershell
 cargo run --manifest-path .\wtg-providers\Cargo.toml --bin wtg-provider-probe -- amd-adl --once
@@ -20,17 +28,29 @@ cargo run --manifest-path .\wtg-providers\Cargo.toml --bin wtg-provider-probe --
 
 ## Current validation status
 
-Validated on dev/0.2.6 after rebasing onto v0.2.5/main.
+Validated during the 0.2.6 development cycle.
 
 Local proof-of-life status:
 
-- `cargo build --manifest-path .\wtg-providers\Cargo.toml --bin wtg-provider-probe` passes.
-- `wtg-provider-probe.exe amd-adl --watch --interval-ms 1000` emits structured JSON samples.
-- ADL loads from `C:\WINDOWS\SYSTEM32\atiadlxx.dll`.
+- The provider crate check passes.
+- The AMD ADL proof-of-life probe emits structured JSON samples.
+- ADL loads from the installed Windows AMD driver library.
 - ADL initialization succeeds.
 - ADL enumerates AMD Radeon integrated graphics display records.
-- ADL also returns NVIDIA RTX 3080 Laptop GPU display records on the tested hybrid laptop.
+- ADL may also return non-AMD display records on hybrid systems.
 - Non-AMD records are preserved with provider warnings rather than normalized into WTG/NVML truth fields.
-- The provider remains isolated from `wtg-core`, `wtg-app`, MQTT, CSV, JSONL, and Home Assistant behavior.
 
-This branch is an experimental provider-boundary spike, not a mainline WTG telemetry integration.
+## Scope boundary
+
+The 0.2.6 ADL work establishes a secondary provider foundation only.
+
+It does not change:
+
+- NVML as the primary provider.
+- CSV behavior.
+- JSONL behavior.
+- MQTT behavior.
+- Home Assistant discovery behavior.
+- Redline semantics.
+
+Further ADL telemetry expansion is intentionally shelved until NVML provenance and expanded NVML stats are implemented in the 0.2.7 cycle.
