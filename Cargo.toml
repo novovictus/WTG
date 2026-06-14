@@ -1,5 +1,5 @@
 [workspace]
-members = ["wtg-core", "wtg-app", "wtg-view"]
+members = ["wtg-core", "wtg-app", "wtg-view", "wtg-providers"]
 resolver = "2"
 
 [workspace.package]
