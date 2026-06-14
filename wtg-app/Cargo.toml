@@ -16,6 +16,7 @@ path = "src/bin/wtg-ui.rs"
 
 [dependencies]
 wtg-core = { path = "../wtg-core" }
+wtg-providers = { path = "../wtg-providers" }
 # Experimental egui desktop UI
 eframe = "0.27"
 

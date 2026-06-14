@@ -38,7 +38,7 @@ struct CliArgs {
 }
 
 #[derive(Debug, Serialize)]
-struct ProviderSample {
+pub struct ProviderSample {
     schema: &'static str,
     source: &'static str,
     telemetry_class: &'static str,
@@ -198,14 +198,14 @@ where
 }
 
 fn emit_sample(sample_seq: u64) {
-    let sample = collect_sample(sample_seq);
+    let sample = collect_once(sample_seq);
     println!(
         "{}",
         serde_json::to_string(&sample).expect("provider JSON serialization should succeed")
     );
 }
 
-fn collect_sample(sample_seq: u64) -> ProviderSample {
+pub fn collect_once(sample_seq: u64) -> ProviderSample {
     match AdlLibrary::load() {
         Ok(library) => match AdlSession::create(&library) {
             Ok(_session) => match enumerate_adapters(&library) {
@@ -226,9 +226,7 @@ fn collect_sample(sample_seq: u64) -> ProviderSample {
                         adl_adapter_number_of_adapters_get: Some(
                             enumeration.adapter_number_of_adapters_get,
                         ),
-                        adl_adapter_adapter_info_get: Some(
-                            enumeration.adapter_adapter_info_get,
-                        ),
+                        adl_adapter_adapter_info_get: Some(enumeration.adapter_adapter_info_get),
                     },
                     adapters: enumeration.adapters,
                     errors: vec!["ADL initialized but returned zero adapters.".to_string()],
@@ -250,9 +248,7 @@ fn collect_sample(sample_seq: u64) -> ProviderSample {
                         adl_adapter_number_of_adapters_get: Some(
                             enumeration.adapter_number_of_adapters_get,
                         ),
-                        adl_adapter_adapter_info_get: Some(
-                            enumeration.adapter_adapter_info_get,
-                        ),
+                        adl_adapter_adapter_info_get: Some(enumeration.adapter_adapter_info_get),
                     },
                     adapters: enumeration.adapters,
                     errors: Vec::new(),
@@ -322,6 +318,89 @@ fn collect_sample(sample_seq: u64) -> ProviderSample {
     }
 }
 
+pub fn format_snapshot(sample: &ProviderSample) -> String {
+    let reason = sample
+        .errors
+        .first()
+        .map(String::as_str)
+        .unwrap_or("provider returned no additional details");
+    let amd_adapters = sample
+        .adapters
+        .iter()
+        .filter(|adapter| adapter.adl_raw_identity.adl_vendor_id == 1002)
+        .collect::<Vec<_>>();
+    let active_amd_adapters = amd_adapters
+        .iter()
+        .copied()
+        .filter(|adapter| adapter.adl_metrics.adl_adapter_active.value == Some(true))
+        .collect::<Vec<_>>();
+    match sample.status {
+        "ok" => {
+            let mut lines = Vec::new();
+            lines.push("WTG snapshot (AMD ADL)".to_string());
+            lines.push(String::new());
+
+            let rendered_adapters = if active_amd_adapters.is_empty() {
+                amd_adapters.as_slice()
+            } else {
+                active_amd_adapters.as_slice()
+            };
+            let omitted_inactive_count = amd_adapters.len().saturating_sub(rendered_adapters.len());
+
+            if rendered_adapters.is_empty() {
+                lines.push("No AMD vendor records returned by ADL.".to_string());
+            } else {
+                for adapter in rendered_adapters.iter() {
+                    lines.push(format!(
+                        "ADL adapter {}",
+                        adapter.adl_raw_identity.adl_adapter_index
+                    ));
+                    lines.push(format!(
+                        "  Adapter name: {}",
+                        adapter.adl_raw_identity.adl_adapter_name
+                    ));
+                    lines.push(format!(
+                        "  Display name: {}",
+                        adapter.adl_raw_identity.adl_display_name
+                    ));
+                    lines.push(format!(
+                        "  Active: {}",
+                        yes_no(adapter.adl_metrics.adl_adapter_active.value == Some(true))
+                    ));
+                    lines.push(String::new());
+                }
+            }
+
+            let _ = omitted_inactive_count;
+            if lines.last().is_some_and(String::is_empty) {
+                lines.pop();
+            }
+
+            lines.join("\n")
+        }
+        "unavailable" => format!(
+            "WTG snapshot (AMD ADL)\n\n  Status: unavailable\n  Reason: {}",
+            reason
+        ),
+        "error" => format!(
+            "WTG snapshot (AMD ADL)\n\n  Status: error\n  Reason: {}",
+            reason
+        ),
+        other => format!(
+            "WTG snapshot (AMD ADL)\n\n  Status: {}\n  Reason: {}",
+            other, reason
+        ),
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
 impl AdlLibrary {
     fn load() -> Result<Self, String> {
         for dll_name in ["atiadlxx.dll", "atiadlxy.dll"] {
@@ -346,10 +425,7 @@ fn load_adl_library(dll_name: &str) -> Result<AdlLibrary, String> {
     let main_control_destroy =
         unsafe { load_symbol::<AdlMainControlDestroy>(module, b"ADL_Main_Control_Destroy\0")? };
     let adapter_number_of_adapters_get = unsafe {
-        load_symbol::<AdlAdapterNumberOfAdaptersGet>(
-            module,
-            b"ADL_Adapter_NumberOfAdapters_Get\0",
-        )?
+        load_symbol::<AdlAdapterNumberOfAdaptersGet>(module, b"ADL_Adapter_NumberOfAdapters_Get\0")?
     };
     let adapter_info_get = unsafe {
         load_symbol::<AdlAdapterAdapterInfoGet>(module, b"ADL_Adapter_AdapterInfo_Get\0")?
@@ -399,9 +475,7 @@ fn enumerate_adapters(library: &AdlLibrary) -> Result<EnumerationResult, Enumera
         return Err(EnumerationError {
             adl_adapter_number_of_adapters_get: Some(count_result),
             adl_adapter_adapter_info_get: None,
-            message: format!(
-                "ADL_Adapter_NumberOfAdapters_Get failed with status {count_result}."
-            ),
+            message: format!("ADL_Adapter_NumberOfAdapters_Get failed with status {count_result}."),
         });
     }
 
@@ -420,9 +494,7 @@ fn enumerate_adapters(library: &AdlLibrary) -> Result<EnumerationResult, Enumera
         return Err(EnumerationError {
             adl_adapter_number_of_adapters_get: Some(count_result),
             adl_adapter_adapter_info_get: Some(info_result),
-            message: format!(
-                "ADL_Adapter_AdapterInfo_Get failed with status {info_result}."
-            ),
+            message: format!("ADL_Adapter_AdapterInfo_Get failed with status {info_result}."),
         });
     }
 
@@ -645,7 +717,9 @@ extern "system" {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_args, CliArgs, Mode, DEFAULT_INTERVAL_MS, PROVIDER, SCHEMA, SOURCE, TELEMETRY_CLASS};
+    use super::{
+        parse_args, CliArgs, Mode, DEFAULT_INTERVAL_MS, PROVIDER, SCHEMA, SOURCE, TELEMETRY_CLASS,
+    };
 
     #[test]
     fn parse_once_args() {

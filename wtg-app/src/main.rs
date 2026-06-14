@@ -45,6 +45,7 @@ use probe_fields::{
     format_probe_fields_snapshot,
 };
 use sink::{Sink, SinkKind};
+use wtg_providers::amd_adl;
 
 /// Default sampling interval when `--watch` is enabled.
 /// 1000ms is conservative and matches NVML’s practical update cadence for many metrics.
@@ -54,6 +55,11 @@ const DEFAULT_INTERVAL_MS: u64 = 1000;
 /// This lets us evolve the key set while remaining explicit in artifacts.
 const STATS_SCHEMA: u32 = 0;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderKind {
+    Amd,
+}
+
 struct CliArgs {
     once: bool,
     watch: bool,
@@ -62,6 +68,7 @@ struct CliArgs {
     stats: bool,
     help: bool,
     version: bool,
+    provider: Option<ProviderKind>,
     config_path: Option<String>,
     interval_ms: Option<u64>,
     sink: Option<SinkKind>,
@@ -94,6 +101,7 @@ impl Default for CliArgs {
             stats: false,
             help: false,
             version: false,
+            provider: None,
             config_path: None,
             interval_ms: None,
             sink: None,
@@ -257,8 +265,8 @@ fn print_help() {
         "\n",
         "\n",
         "Usage:\n",
-        "  wtg.exe --once [--stats] [--sink jsonl|csv]\n",
-        "  wtg.exe --watch [--interval <ms>] [--stats] [--sink jsonl|csv|mqtt]\n",
+        "  wtg.exe --once [--stats] [--provider amd] [--sink jsonl|csv]\n",
+        "  wtg.exe --watch [--interval <ms>] [--stats] [--provider amd] [--sink jsonl|csv|mqtt]\n",
         "  wtg.exe --probe [--sink jsonl|csv]\n",
         "  wtg.exe --probe-fields --field-id <u32> [--field-id <u32> ...] [--sink jsonl|csv]\n",
         "  wtg.exe --sink mqtt --mqtt-ha-remove-discovery --mqtt-host <host> --mqtt-node-id <id>\n",
@@ -269,6 +277,7 @@ fn print_help() {
         "  --config <path>         Load explicit WTG TOML config.\n",
         "  --interval <ms>         Polling interval in milliseconds for --watch.\n",
         "  --stats                 Print stable key:value stats output for --once or --watch.\n",
+        "  --provider amd          Print experimental AMD ADL provider summary before NVML output.\n",
         "  --probe                 Capture one context-rich probe block.\n",
         "  --probe-fields          Query explicit NVML field-value IDs.\n",
         "  --field-id <u32>        Repeatable field ID for --probe-fields.\n",
@@ -294,6 +303,17 @@ fn print_help() {
 
 fn print_version() {
     println!("WTG - WhatTheGPU v{}", env!("CARGO_PKG_VERSION"));
+}
+
+fn maybe_print_provider_snapshot(args: &CliArgs) {
+    match args.provider {
+        Some(ProviderKind::Amd) => {
+            let sample = amd_adl::collect_once(0);
+            println!("{}", amd_adl::format_snapshot(&sample));
+            println!();
+        }
+        None => {}
+    }
 }
 
 fn usage_error(message: &str) -> ! {
@@ -336,6 +356,17 @@ fn parse_args() -> CliArgs {
             "--version" | "-V" => {
                 parsed.version = true;
                 i += 1;
+            }
+            "--provider" => {
+                if i + 1 >= args.len() {
+                    usage_error("--provider requires a value. Supported: amd.");
+                }
+
+                parsed.provider = Some(match args[i + 1].as_str() {
+                    "amd" => ProviderKind::Amd,
+                    other => usage_error(&format!("--provider value must be amd. Got: {other}")),
+                });
+                i += 2;
             }
             "--config" => {
                 if i + 1 >= args.len() {
@@ -621,6 +652,10 @@ fn validate_args_result(parsed: &CliArgs) -> Result<(), String> {
 
     if stats && !once && !watch {
         return Err("--stats requires --once or --watch.".to_string());
+    }
+
+    if parsed.provider.is_some() && !once && !watch {
+        return Err("--provider is valid only with --once or --watch.".to_string());
     }
 
     if parsed.mqtt_ha_remove_discovery && (once || watch || probe || probe_fields || stats) {
@@ -1105,6 +1140,10 @@ fn main() {
                             }
                         }
                     }
+                    if args.provider.is_some() {
+                        println!();
+                        maybe_print_provider_snapshot(&args);
+                    }
                 }
             }
             Err(e) => {
@@ -1247,6 +1286,10 @@ fn main() {
                                     SinkKind::Mqtt => {}
                                 }
                             }
+                        }
+                        if args.provider.is_some() {
+                            println!();
+                            maybe_print_provider_snapshot(&args);
                         }
                         if let (Some(mqtt_sink), Some(ctx)) =
                             (mqtt_sink.as_mut(), mqtt_ctx.as_ref())

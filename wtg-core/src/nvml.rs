@@ -30,7 +30,7 @@ impl fmt::Display for GpuSnapshot {
         let used_mib = self.mem_used_bytes / (1024 * 1024);
         let total_mib = self.mem_total_bytes / (1024 * 1024);
 
-        writeln!(f, "GPU {}: {}", self.index, self.name)?;
+        writeln!(f, "NVML device {}: {}", self.index, self.name)?;
         writeln!(f, "  UUID: {}", self.uuid)?;
         match self.temp_c {
             Some(t) => writeln!(f, "  Temp: {} C", t)?,
