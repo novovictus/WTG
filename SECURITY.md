@@ -1,11 +1,12 @@
 # Security Policy
 
-WTG is a Windows-native NVIDIA/NVML telemetry characterization tool.
+WTG is a Windows-native telemetry characterization tool. NVIDIA/NVML remains the primary provider. The current development version also includes an experimental local AMD ADL provider path that runs only when explicitly requested.
 
 The current development version includes:
 
 - `wtg.exe`, the CLI telemetry, validation, capture, and MQTT publisher surface
 - `wtg-ui.exe`, the experimental egui viewer/configurator/launcher
+- optional experimental AMD ADL provider enumeration behind explicit provider selection
 - optional MQTT publishing during `--watch`
 - optional Home Assistant MQTT discovery
 - optional TOML configuration loaded only when explicitly requested
@@ -27,6 +28,8 @@ WTG does not:
 
 MQTT support is an outbound publishing feature. Home Assistant discovery is also outbound and opt-in.
 
+The experimental AMD ADL provider path is local provider enumeration. It does not create a listener, subscribe to command topics, or fetch remote provider configuration.
+
 ## Remote Attack Surface
 
 Based on the current implementation, WTG does not intentionally expose a direct remote attack surface.
@@ -44,11 +47,7 @@ These risks do not imply remote code execution in WTG. They are transport, avail
 
 WTG supports MQTT username/password authentication for trusted local use.
 
-For better hygiene, prefer environment-variable based passwords:
-
-```powershell
-wtg.exe --watch --sink mqtt --mqtt-host <broker> --mqtt-node-id <node> --mqtt-username <user> --mqtt-password-env WTG_MQTT_PASSWORD
-```
+For better hygiene, prefer environment-variable based MQTT passwords.
 
 Avoid placing MQTT passwords directly on the command line or storing them in plaintext config files unless the deployment environment is trusted and local.
 
@@ -58,11 +57,7 @@ WTG configuration is explicit.
 
 WTG does not auto-create or auto-load `wtg.toml`.
 
-A config file is used only when passed explicitly:
-
-```powershell
-wtg.exe --watch --config .\wtg.toml
-```
+A config file is used only when passed explicitly.
 
 The UI configurator is a convenience surface over the same CLI/config behavior.
 
@@ -76,7 +71,7 @@ Useful reports should include:
 - operating system version
 - GPU and NVIDIA driver version
 - command line used
-- whether MQTT, Home Assistant discovery, or config loading was enabled
+- whether MQTT, Home Assistant discovery, config loading, or experimental provider selection was enabled
 - expected behavior
 - observed behavior
 - reproduction steps
