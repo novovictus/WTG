@@ -5,7 +5,7 @@ Copyright (C) 2026 Adam Hooper
 
 **Tagline:** Honest GPU compute stats for Windows
 
-## Current Status (unreleased v0.2.5 - eGUI MQTT / Home Assistant Configurator)
+## Current Status (unreleased v0.2.6 - experimental AMD ADL provider foundation)
 
 WTG is currently focused on empirical NVML telemetry validation under Windows WDDM.  
 Recent testing has identified a driver-branch regression affecting memory-utilization reporting on specific consumer mobile Ampere GPUs (580.88+), not reproduced on tested desktop or professional SKUs.
@@ -305,7 +305,7 @@ Example payload:
 
 ```json
 {
-  "wtg_version": "0.2.5",
+  "wtg_version": "0.2.6",
   "payload_schema": 1,
   "tick_seq": 123,
   "tick_ts": "1780420000.123",
@@ -966,7 +966,7 @@ Empirical GPU / driver test results are summarized in `artifacts/test-matrix/mat
 | dev/0.2.2 | Optional Home Assistant MQTT discovery for the experimental MQTT watch sink |
 | dev/0.2.3 | MQTT username/password authentication, retained Home Assistant availability, and retained discovery cleanup |
 | v0.2.4 (`dev/0.2.4`) | Explicit TOML config support for MQTT/Home Assistant CLI workflows |
-| unreleased v0.2.5 (`dev/0.2.5`) | Experimental eGUI MQTT/Home Assistant configurator over the same config model |
+| unreleased v0.2.6 (`dev/0.2.6`) | Experimental AMD ADL provider foundation behind explicit provider selection; further ADL expansion shelved until 0.2.7 NVML provenance |
 | v0.3+ | Optional native UI, tray integration, cross-vendor extensibility |
 
 ---
