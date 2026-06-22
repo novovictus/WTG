@@ -1019,7 +1019,11 @@ fn main() {
             })
             .collect::<Vec<_>>();
         let provenance_pretty = nvml_provenance::format_nvml_provenance_stats_pretty(
-            &snaps, &contexts, tick_seq, &tick_ts,
+            &snaps,
+            &contexts,
+            &probe_context_ctx,
+            tick_seq,
+            &tick_ts,
         );
 
         // 0.2.7: console/jsonl stats use NVML provenance v1; CSV/watch stats remain legacy for now.
@@ -1029,7 +1033,11 @@ fn main() {
             match sink.kind() {
                 SinkKind::Jsonl => {
                     sink.emit_raw_line(&nvml_provenance::format_nvml_provenance_stats_jsonl(
-                        &snaps, &contexts, tick_seq, &tick_ts,
+                        &snaps,
+                        &contexts,
+                        &probe_context_ctx,
+                        tick_seq,
+                        &tick_ts,
                     ))
                 }
                 SinkKind::Csv => {

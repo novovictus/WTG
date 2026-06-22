@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Adam Hooper
 pub mod field_values;
 pub mod probe_context;
+pub mod provenance;
 
 use nvml_wrapper::{enum_wrappers::device::TemperatureSensor, Nvml};
 use std::fmt;
