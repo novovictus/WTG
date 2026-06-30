@@ -31,6 +31,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tracing::info;
 
+mod cli_mqtt;
 mod config;
 mod mqtt;
 mod mqtt_settings;
@@ -39,7 +40,7 @@ mod probe;
 mod probe_fields;
 mod sink;
 
-use mqtt::{MqttAuthOptions, MqttOptions, MqttSink};
+use mqtt::{MqttOptions, MqttSink};
 use probe::{format_probe_csv_header, format_probe_csv_row, format_probe_record, ProbeRecord};
 use probe_fields::{
     format_field_value, format_probe_fields_csv_header, format_probe_fields_csv_row,
@@ -869,26 +870,6 @@ fn mqtt_options_from_args(args: &CliArgs) -> Option<MqttOptions> {
     .unwrap_or_else(|e| usage_error(&e))
 }
 
-fn mqtt_auth_from_args(args: &CliArgs) -> Option<MqttAuthOptions> {
-    mqtt_settings::mqtt_auth_from_values(
-        args.mqtt_username.as_deref(),
-        args.mqtt_password.as_deref(),
-        args.mqtt_password_env.as_deref(),
-    )
-    .unwrap_or_else(|e| usage_error(&e))
-}
-
-fn resolve_mqtt_auth<F>(
-    username: &str,
-    password_env: &str,
-    get_env: F,
-) -> Result<MqttAuthOptions, String>
-where
-    F: FnOnce(&str) -> Option<String>,
-{
-    mqtt_settings::resolve_mqtt_auth(username, password_env, get_env)
-}
-
 fn main() {
     let args = parse_args();
 
@@ -1275,17 +1256,17 @@ fn main() {
                         }
                         if let Some(mqtt_sink) = mqtt_sink.as_mut() {
                             if !mqtt_ha_discovery_published {
-                                if let Err(e) =
-                                    mqtt_sink.publish_ha_discovery_for_snapshots(&snapshots)
-                                {
+                                if let Err(e) = cli_mqtt::publish_ha_discovery_for_snapshots(
+                                    mqtt_sink, &args, &snapshots,
+                                ) {
                                     eprintln!("WTG MQTT error: {e}");
                                     process::exit(2);
                                 }
                                 mqtt_ha_discovery_published = true;
                             }
-                            if let Err(e) =
-                                mqtt_sink.publish_snapshots(&ctx, &snapshots, tick_seq, &tick_ts)
-                            {
+                            if let Err(e) = cli_mqtt::publish_snapshots(
+                                mqtt_sink, &args, &ctx, &snapshots, tick_seq, &tick_ts,
+                            ) {
                                 eprintln!("WTG MQTT error: {e}");
                                 process::exit(2);
                             }
@@ -1356,17 +1337,17 @@ fn main() {
                             (mqtt_sink.as_mut(), mqtt_ctx.as_ref())
                         {
                             if !mqtt_ha_discovery_published {
-                                if let Err(e) =
-                                    mqtt_sink.publish_ha_discovery_for_snapshots(&snapshots)
-                                {
+                                if let Err(e) = cli_mqtt::publish_ha_discovery_for_snapshots(
+                                    mqtt_sink, &args, &snapshots,
+                                ) {
                                     eprintln!("WTG MQTT error: {e}");
                                     process::exit(2);
                                 }
                                 mqtt_ha_discovery_published = true;
                             }
-                            if let Err(e) =
-                                mqtt_sink.publish_snapshots(ctx, &snapshots, tick_seq, &tick_ts)
-                            {
+                            if let Err(e) = cli_mqtt::publish_snapshots(
+                                mqtt_sink, &args, ctx, &snapshots, tick_seq, &tick_ts,
+                            ) {
                                 eprintln!("WTG MQTT error: {e}");
                                 process::exit(2);
                             }
@@ -1621,17 +1602,6 @@ password = "direct"
     }
 
     #[test]
-    fn mqtt_auth_from_args_accepts_direct_password() {
-        let args = CliArgs {
-            mqtt_username: Some("user".to_string()),
-            mqtt_password: Some("secret".to_string()),
-            ..CliArgs::default()
-        };
-
-        assert!(mqtt_auth_from_args(&args).is_some());
-    }
-
-    #[test]
     fn config_disabled_mqtt_does_not_activate_mqtt() {
         let config = config::parse_config_toml(
             r#"
@@ -1878,7 +1848,8 @@ node_id = ""
 
     #[test]
     fn mqtt_auth_resolution_rejects_missing_password_env_var() {
-        let err = resolve_mqtt_auth("user", "WTG_MQTT_PASSWORD", |_| None).unwrap_err();
+        let err =
+            mqtt_settings::resolve_mqtt_auth("user", "WTG_MQTT_PASSWORD", |_| None).unwrap_err();
 
         assert!(err.contains("WTG_MQTT_PASSWORD"));
         assert!(err.contains("not set"));
@@ -1887,7 +1858,8 @@ node_id = ""
     #[test]
     fn mqtt_auth_resolution_rejects_empty_password_env_var() {
         let err =
-            resolve_mqtt_auth("user", "WTG_MQTT_PASSWORD", |_| Some(String::new())).unwrap_err();
+            mqtt_settings::resolve_mqtt_auth("user", "WTG_MQTT_PASSWORD", |_| Some(String::new()))
+                .unwrap_err();
 
         assert!(err.contains("WTG_MQTT_PASSWORD"));
         assert!(err.contains("must not be empty"));
@@ -1897,6 +1869,9 @@ node_id = ""
     fn mqtt_auth_resolution_accepts_username_and_password_env_var() {
         let password = String::from_utf8(vec![115, 101, 99, 114, 101, 116]).unwrap();
 
-        assert!(resolve_mqtt_auth("user", "WTG_MQTT_PASSWORD", |_| Some(password)).is_ok());
+        assert!(
+            mqtt_settings::resolve_mqtt_auth("user", "WTG_MQTT_PASSWORD", |_| Some(password))
+                .is_ok()
+        );
     }
 }

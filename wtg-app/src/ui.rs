@@ -15,7 +15,8 @@ use wtg_core::nvml::{
 
 use crate::config;
 use crate::mqtt::MqttSink;
-use crate::mqtt_settings::{self, LoadedMqttSettings};
+use crate::mqtt_settings;
+use crate::ui_mqtt_settings::{self, LoadedMqttSettings};
 
 const DEFAULT_REFRESH_MS: u64 = 1000;
 const MIN_REFRESH_MS: u64 = 250;
@@ -134,7 +135,7 @@ impl WtgUiApp {
         match config::load_config_file(Path::new(&config_path)) {
             Ok(config) => {
                 self.mqtt_form
-                    .apply_loaded_settings(mqtt_settings::mqtt_settings_from_config(&config));
+                    .apply_loaded_settings(ui_mqtt_settings::mqtt_settings_from_config(&config));
                 self.mqtt_form.config_path = config_path.clone();
                 self.set_mqtt_status(
                     MqttStatusKind::Success,
@@ -728,6 +729,7 @@ fn unavailable() -> String {
 #[derive(Debug, Clone)]
 struct MqttFormState {
     config_path: String,
+    mqtt_enabled: bool,
     host: String,
     port: String,
     username: String,
@@ -744,15 +746,16 @@ struct MqttFormState {
 impl Default for MqttFormState {
     fn default() -> Self {
         Self {
-            config_path: mqtt_settings::default_config_path(),
+            config_path: ui_mqtt_settings::default_config_path(),
+            mqtt_enabled: false,
             host: String::new(),
-            port: mqtt_settings::default_port(),
+            port: ui_mqtt_settings::default_port(),
             username: String::new(),
             password: String::new(),
             password_env: String::new(),
-            topic_prefix: mqtt_settings::default_topic_prefix(),
+            topic_prefix: ui_mqtt_settings::default_topic_prefix(),
             node_id: String::new(),
-            ha_discovery_prefix: mqtt_settings::default_ha_discovery_prefix(),
+            ha_discovery_prefix: ui_mqtt_settings::default_ha_discovery_prefix(),
             ha_discovery_enabled: false,
             retain_discovery: false,
             use_password_env: false,
@@ -762,6 +765,7 @@ impl Default for MqttFormState {
 
 impl MqttFormState {
     fn apply_loaded_settings(&mut self, settings: LoadedMqttSettings) {
+        self.mqtt_enabled = settings.mqtt_enabled;
         self.host = settings.host;
         self.port = settings.port;
         self.username = settings.username;
@@ -777,18 +781,20 @@ impl MqttFormState {
     }
 
     fn cli_preview(&self) -> String {
-        let mut parts = vec![
-            ".\\wtg.exe".to_string(),
-            "--watch".to_string(),
-            "--sink".to_string(),
-            "mqtt".to_string(),
-        ];
+        let mut parts = vec![".\\wtg.exe".to_string(), "--watch".to_string()];
+
+        if self.mqtt_enabled {
+            push_cli_flag_value(&mut parts, "--config", &self.config_path);
+        } else {
+            parts.push("--sink".to_string());
+            parts.push("mqtt".to_string());
+        }
 
         push_cli_flag_value(&mut parts, "--mqtt-host", &self.host);
-        if self.port.trim() != mqtt_settings::default_port() {
+        if self.port.trim() != ui_mqtt_settings::default_port() {
             push_cli_flag_value(&mut parts, "--mqtt-port", &self.port);
         }
-        if self.topic_prefix.trim() != mqtt_settings::default_topic_prefix() {
+        if self.topic_prefix.trim() != ui_mqtt_settings::default_topic_prefix() {
             push_cli_flag_value(&mut parts, "--mqtt-topic-prefix", &self.topic_prefix);
         }
         push_cli_flag_value(&mut parts, "--mqtt-node-id", &self.node_id);
@@ -804,7 +810,7 @@ impl MqttFormState {
 
         if self.ha_discovery_enabled {
             parts.push("--mqtt-ha-discovery".to_string());
-            if self.ha_discovery_prefix.trim() != mqtt_settings::default_ha_discovery_prefix() {
+            if self.ha_discovery_prefix.trim() != ui_mqtt_settings::default_ha_discovery_prefix() {
                 push_cli_flag_value(&mut parts, "--mqtt-ha-prefix", &self.ha_discovery_prefix);
             }
             if self.retain_discovery {
@@ -965,7 +971,7 @@ fn render_mqtt_status_banner(ui: &mut egui::Ui, status: &MqttStatus) {
 fn normalized_config_path(config_path: &str) -> String {
     let trimmed = config_path.trim();
     if trimmed.is_empty() {
-        mqtt_settings::default_config_path()
+        ui_mqtt_settings::default_config_path()
     } else {
         trimmed.to_string()
     }
@@ -1055,5 +1061,67 @@ mod tests {
         let preview = MqttFormState::default().cli_preview();
 
         assert!(preview.starts_with(".\\wtg.exe "));
+    }
+
+    #[test]
+    fn cli_preview_uses_config_activation_when_mqtt_enabled() {
+        let preview = MqttFormState {
+            config_path: ".\\wtg.toml".to_string(),
+            mqtt_enabled: true,
+            host: "broker".to_string(),
+            port: "1884".to_string(),
+            username: "user".to_string(),
+            password_env: "WTG_MQTT_PASSWORD".to_string(),
+            topic_prefix: "lab".to_string(),
+            node_id: "bench".to_string(),
+            ha_discovery_prefix: "ha".to_string(),
+            ha_discovery_enabled: true,
+            retain_discovery: true,
+            use_password_env: true,
+            ..MqttFormState::default()
+        }
+        .cli_preview();
+
+        assert!(preview.contains("--config .\\wtg.toml"));
+        assert!(!preview.contains("--sink mqtt"));
+        assert!(preview.contains("--mqtt-host broker"));
+        assert!(preview.contains("--mqtt-port 1884"));
+        assert!(preview.contains("--mqtt-username user"));
+        assert!(preview.contains("--mqtt-password-env WTG_MQTT_PASSWORD"));
+        assert!(preview.contains("--mqtt-topic-prefix lab"));
+        assert!(preview.contains("--mqtt-node-id bench"));
+        assert!(preview.contains("--mqtt-ha-discovery"));
+        assert!(preview.contains("--mqtt-ha-prefix ha"));
+        assert!(preview.contains("--mqtt-retain-discovery"));
+    }
+
+    #[test]
+    fn cli_preview_uses_sink_activation_when_mqtt_disabled() {
+        let preview = MqttFormState {
+            mqtt_enabled: false,
+            host: "broker".to_string(),
+            port: "1884".to_string(),
+            username: "user".to_string(),
+            password: "secret".to_string(),
+            topic_prefix: "lab".to_string(),
+            node_id: "bench".to_string(),
+            ha_discovery_prefix: "ha".to_string(),
+            ha_discovery_enabled: true,
+            retain_discovery: true,
+            ..MqttFormState::default()
+        }
+        .cli_preview();
+
+        assert!(preview.contains("--sink mqtt"));
+        assert!(!preview.contains("--config"));
+        assert!(preview.contains("--mqtt-host broker"));
+        assert!(preview.contains("--mqtt-port 1884"));
+        assert!(preview.contains("--mqtt-username user"));
+        assert!(preview.contains("--mqtt-password secret"));
+        assert!(preview.contains("--mqtt-topic-prefix lab"));
+        assert!(preview.contains("--mqtt-node-id bench"));
+        assert!(preview.contains("--mqtt-ha-discovery"));
+        assert!(preview.contains("--mqtt-ha-prefix ha"));
+        assert!(preview.contains("--mqtt-retain-discovery"));
     }
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Adam Hooper
 
-use super::{init_context, NvmlContext};
+use super::NvmlContext;
 use nvml_wrapper::enum_wrappers::device::PerformanceState;
 
 #[derive(Debug, Clone)]
@@ -22,18 +22,6 @@ impl GpuProbeContext {
             perf_state: unavailable(),
             pci_bus_id: unavailable(),
         }
-    }
-}
-
-/// Convenience helper for callers that do not already own an NVML context.
-///
-/// Active probe paths should prefer `query_probe_context_for_gpu_with_ctx`
-/// so the caller can reuse an existing NVML context.
-#[allow(dead_code)]
-pub fn query_probe_context_for_gpu(gpu_index: u32) -> GpuProbeContext {
-    match init_context() {
-        Ok(ctx) => query_probe_context_for_gpu_with_ctx(&ctx, gpu_index),
-        Err(_) => GpuProbeContext::unavailable(),
     }
 }
 

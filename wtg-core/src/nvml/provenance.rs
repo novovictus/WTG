@@ -687,13 +687,6 @@ fn build_power_management_group(device: &nvml_wrapper::Device<'_>) -> BTreeMap<S
         }
     }
     group.insert(
-        "algorithm_active".to_string(),
-        NvmlNode::Fact(match device.is_power_management_algo_active() {
-            Ok(value) => ok_bool_fact("nvmlDeviceGetPowerManagementMode", value),
-            Err(error) => error_fact("nvmlDeviceGetPowerManagementMode", None, error),
-        }),
-    );
-    group.insert(
         "power_source".to_string(),
         NvmlNode::Fact(match device.power_source() {
             Ok(value) => ok_string_fact("nvmlDeviceGetPowerSource", format!("{value:?}")),
@@ -845,16 +838,6 @@ fn ok_string_fact(source_api: &'static str, raw: String) -> NvmlFact {
         source_api,
         state: NvmlFactState::Ok,
         raw: Some(NvmlFactValue::String(raw)),
-        unit: None,
-        error_message: None,
-    }
-}
-
-fn ok_bool_fact(source_api: &'static str, raw: bool) -> NvmlFact {
-    NvmlFact {
-        source_api,
-        state: NvmlFactState::Ok,
-        raw: Some(NvmlFactValue::Bool(raw)),
         unit: None,
         error_message: None,
     }
