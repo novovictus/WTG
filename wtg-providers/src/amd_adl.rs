@@ -458,6 +458,14 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
     }
 }
 
+pub fn provider_source() -> &'static str {
+    SOURCE
+}
+
+pub fn telemetry_class() -> &'static str {
+    TELEMETRY_CLASS
+}
+
 pub fn format_snapshot(sample: &ProviderSample) -> String {
     let reason = sample
         .errors
@@ -467,9 +475,6 @@ pub fn format_snapshot(sample: &ProviderSample) -> String {
     match sample.status {
         "ok" => {
             let mut lines = Vec::new();
-            lines.push("WTG snapshot (AMD ADL)".to_string());
-            lines.push(String::new());
-
             lines.push(format!(
                 "ADL adapter records returned: {}",
                 sample.adapters.len()
@@ -548,18 +553,9 @@ pub fn format_snapshot(sample: &ProviderSample) -> String {
 
             lines.join("\n")
         }
-        "unavailable" => format!(
-            "WTG snapshot (AMD ADL)\n\n  Status: unavailable\n  Reason: {}",
-            reason
-        ),
-        "error" => format!(
-            "WTG snapshot (AMD ADL)\n\n  Status: error\n  Reason: {}",
-            reason
-        ),
-        other => format!(
-            "WTG snapshot (AMD ADL)\n\n  Status: {}\n  Reason: {}",
-            other, reason
-        ),
+        "unavailable" => format!("Status: unavailable\nReason: {}", reason),
+        "error" => format!("Status: error\nReason: {}", reason),
+        other => format!("Status: {}\nReason: {}", other, reason),
     }
 }
 
@@ -573,7 +569,6 @@ pub fn format_watch_sample(sample: &ProviderSample) -> String {
     match sample.status {
         "ok" => {
             let mut lines = Vec::new();
-            lines.push("WTG provider watch (AMD ADL)".to_string());
             lines.push(format!("sample_seq: {}", sample.sample_seq));
             lines.push(format!(
                 "ADL records: {} | physical GPUs: {} | AMD: {} | non-AMD: {} | extended AMD probes: {}",
@@ -599,15 +594,15 @@ pub fn format_watch_sample(sample: &ProviderSample) -> String {
             lines.join("\n")
         }
         "unavailable" => format!(
-            "WTG provider watch (AMD ADL)\nsample_seq: {}\nstatus: unavailable\nreason: {}",
+            "sample_seq: {}\nstatus: unavailable\nreason: {}",
             sample.sample_seq, reason
         ),
         "error" => format!(
-            "WTG provider watch (AMD ADL)\nsample_seq: {}\nstatus: error\nreason: {}",
+            "sample_seq: {}\nstatus: error\nreason: {}",
             sample.sample_seq, reason
         ),
         other => format!(
-            "WTG provider watch (AMD ADL)\nsample_seq: {}\nstatus: {}\nreason: {}",
+            "sample_seq: {}\nstatus: {}\nreason: {}",
             sample.sample_seq, other, reason
         ),
     }

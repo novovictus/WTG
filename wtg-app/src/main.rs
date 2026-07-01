@@ -307,9 +307,40 @@ fn print_version() {
     println!("WTG - WhatTheGPU v{}", env!("CARGO_PKG_VERSION"));
 }
 
+fn print_product_header() {
+    println!("WTG - WhatTheGPU v{}", env!("CARGO_PKG_VERSION"));
+    println!("Honest GPU compute stats for Windows");
+    println!();
+}
+
+fn provider_display_name(provider: Option<ProviderKind>) -> &'static str {
+    match provider {
+        Some(ProviderKind::Amd) => "AMD ADL",
+        None => "NVIDIA NVML",
+    }
+}
+
+fn print_mode_header(mode: &str, provider: Option<ProviderKind>, interval_ms: Option<u64>) {
+    match interval_ms {
+        Some(interval_ms) => println!(
+            "WTG {mode} mode (provider: {}) - interval {interval_ms} ms",
+            provider_display_name(provider)
+        ),
+        None => println!(
+            "WTG {mode} mode (provider: {})",
+            provider_display_name(provider)
+        ),
+    }
+}
+
 fn run_amd_provider(args: &CliArgs) -> ! {
+    print_product_header();
     if args.once {
         let sample = amd_adl::collect_once(0);
+        print_mode_header("snapshot", args.provider, None);
+        println!("Provider source: {}", amd_adl::provider_source());
+        println!("Telemetry class: {}", amd_adl::telemetry_class());
+        println!();
         println!("{}", amd_adl::format_snapshot(&sample));
         process::exit(0);
     }
@@ -319,14 +350,16 @@ fn run_amd_provider(args: &CliArgs) -> ! {
         eprintln!("WTG note: very low interval ({interval_ms}ms). ADL metrics may not update this quickly; expect duplicates.");
     }
 
-    println!("WTG provider watch (AMD ADL)");
-    println!("interval_ms: {interval_ms}");
+    print_mode_header("watch", args.provider, Some(interval_ms));
+    println!("Provider source: {}", amd_adl::provider_source());
+    println!("Telemetry class: {}", amd_adl::telemetry_class());
     println!();
 
     let sleep_dur = Duration::from_millis(interval_ms);
     let mut sample_seq = 0u64;
     loop {
         let sample = amd_adl::collect_once(sample_seq);
+        println!("--- tick {} ---", now_ts());
         println!("{}", amd_adl::format_watch_sample(&sample));
         println!();
         sample_seq = sample_seq.saturating_add(1);
@@ -1170,13 +1203,9 @@ fn main() {
         return;
     }
 
-    // Print banner once per run (not on every tick). This is console-only for
-    // snapshot/watch modes; JSONL remains telemetry-oriented on those paths.
-    println!("WTG - WhatTheGPU v{}", env!("CARGO_PKG_VERSION"));
-    println!("Honest GPU compute stats for Windows");
-
     // Mode: `--once`
     if args.once {
+        print_product_header();
         match wtg_core::nvml::snapshot_all() {
             Ok(snaps) => {
                 let tick_seq = 0;
@@ -1199,7 +1228,8 @@ fn main() {
                         }
                     }
                 } else {
-                    println!("\nWTG snapshot (NVML)\n");
+                    print_mode_header("snapshot", args.provider, None);
+                    println!();
                     if let Some(sink) = &sink {
                         if sink.kind() == SinkKind::Csv {
                             sink.emit_raw_line(format_snapshot_csv_header());
@@ -1238,6 +1268,8 @@ fn main() {
             eprintln!("WTG note: very low interval ({interval_ms}ms). NVML metrics may not update this quickly; expect duplicates.");
         }
 
+        print_product_header();
+
         if args.stats {
             let header = format_stats_schema_header();
             print_and_mirror_jsonl(&header, &sink);
@@ -1248,7 +1280,8 @@ fn main() {
                 }
             }
         } else {
-            println!("\nWTG watch mode (NVML) - interval {} ms\n", interval_ms);
+            print_mode_header("watch", args.provider, Some(interval_ms));
+            println!();
             if let Some(sink) = &sink {
                 if sink.kind() == SinkKind::Csv {
                     sink.emit_raw_line(format_snapshot_csv_header());
