@@ -9,21 +9,22 @@ WTG is a Windows-native GPU telemetry and validation tool focused on NVIDIA/NVML
 
 ## Current Status
 
-Current branch: `dev/0.2.7`
+Current branch: `dev/0.2.8-amd-adl-discovery`
 
-WTG 0.2.7 is the NVML provenance and expanded NVIDIA stats cycle.
+WTG 0.2.8 is the AMD ADL discovery sandbox cycle. WTG remains NVIDIA/NVML-centric; NVIDIA/NVML is still the primary truth provider and the only provider with the stable expanded `--once --stats` JSON surface.
 
-WTG remains NVIDIA/NVML-centric. AMD ADL support exists as an explicit provider foundation from 0.2.6, but deeper ADL expansion is deferred until after the NVIDIA/NVML truth layer is stable.
+AMD ADL is an explicit experimental provider selected with `--provider amd`. AMD output is provider-scoped, read-only, and intentionally not translated into NVML field names or cross-vendor equivalence claims. The AMD path currently supports compact snapshot and watch output only.
 
 Current development builds include:
 
-- `wtg.exe`, the CLI validation, capture, probe, sink, and MQTT runtime surface
+- `wtg.exe`, the CLI validation, capture, probe, sink, MQTT runtime, and experimental provider surface
 - `wtg-ui.exe`, an experimental egui viewer/configurator/launcher
-- optional CSV and JSONL sinks
-- optional MQTT watch publishing
-- optional Home Assistant MQTT discovery
+- optional CSV and JSONL sinks for NVIDIA/NVML paths
+- optional MQTT watch publishing for NVIDIA/NVML watch snapshots
+- optional Home Assistant MQTT discovery for NVIDIA/NVML MQTT watch publishing
 - explicit opt-in TOML configuration
 - expanded `--once --stats` NVIDIA/NVML provenance JSON
+- experimental AMD ADL `--provider amd --once` and `--provider amd --watch` output
 
 WTG does not auto-create `wtg.toml`, does not auto-load `wtg.toml`, does not configure an MQTT broker, and does not expose a listening network service.
 
@@ -56,13 +57,14 @@ Current regression research has shown:
 ## Project Scope
 
 - **Primary provider:** NVIDIA/NVML
+- **Experimental side provider:** AMD ADL, selected explicitly with `--provider amd`
 - **Platform:** Windows-native CLI/runtime binary, with an experimental separate desktop UI binary
 - **Reference surface:** `wtg.exe`
 - **Experimental visual surface:** `wtg-ui.exe`
-- **Transport surface:** optional MQTT watch publishing
-- **Validation artifacts:** CLI output, CSV/JSONL sinks, probe output, field-values output, and packaged diagnostic captures
+- **Transport surface:** optional MQTT watch publishing for NVIDIA/NVML snapshots
+- **Validation artifacts:** CLI output, CSV/JSONL sinks, probe output, field-values output, provider output, and packaged diagnostic captures
 
-Formal validation remains CLI/probe/sink based. The egui UI is an experimental viewer/configurator/launcher, not the validation reference surface.
+Formal validation remains CLI/probe/sink/provider based. The egui UI is an experimental viewer/configurator/launcher, not the validation reference surface.
 
 ## Quick Start
 
@@ -72,7 +74,7 @@ Build release binaries:
 cargo build -p wtg-app --release
 ```
 
-Run a concise one-shot snapshot:
+Run a concise NVIDIA/NVML one-shot snapshot:
 
 ```powershell
 .\target\release\wtg.exe --once
@@ -90,13 +92,25 @@ Run expanded NVIDIA/NVML provenance stats:
 .\target\release\wtg.exe --once --stats
 ```
 
-Write expanded provenance stats to JSONL:
+Run experimental AMD ADL snapshot output:
+
+```powershell
+.\target\release\wtg.exe --provider amd --once
+```
+
+Run experimental AMD ADL watch output:
+
+```powershell
+.\target\release\wtg.exe --provider amd --watch --interval 1000
+```
+
+Write expanded NVIDIA/NVML provenance stats to JSONL:
 
 ```powershell
 .\target\release\wtg.exe --once --stats --sink jsonl
 ```
 
-Write legacy flat stats CSV:
+Write legacy flat NVIDIA/NVML stats CSV:
 
 ```powershell
 .\target\release\wtg.exe --once --stats --sink csv
@@ -114,37 +128,62 @@ Run the experimental UI:
   Capture one concise NVIDIA/NVML snapshot and exit.
 
 - `--watch`  
-  Continuously poll GPU state at a fixed interval. Default interval is 1000 ms.
+  Continuously poll NVIDIA/NVML GPU state at a fixed interval. Default interval is 1000 ms.
 
 - `--interval <ms>`  
   Set the watch polling interval in milliseconds.
 
 - `--stats`  
-  With `--once`, emit expanded NVIDIA/NVML provider-truth JSON using schema `wtg.nvml.stats.v1`. With `--watch`, stats remains on the existing legacy path for this release.
+  With NVIDIA/NVML `--once`, emit expanded provider-truth JSON using schema `wtg.nvml.stats.v1`. With NVIDIA/NVML `--watch`, stats remains on the existing legacy path for this release. AMD ADL `--stats` is intentionally rejected.
 
 - `--probe`  
-  Capture one compact probe block for driver and field validation.
+  Capture one compact NVIDIA/NVML probe block for driver and field validation.
 
 - `--probe-fields`  
-  Query explicit NVML field IDs for diagnostic comparison.
+  Query explicit NVIDIA/NVML field IDs for diagnostic comparison.
 
 - `--field-id <u32>`  
   Repeatable field ID argument for `--probe-fields`.
 
 - `--sink jsonl`  
-  Create a timestamped JSONL sink file.
+  Create a timestamped JSONL sink file for supported NVIDIA/NVML modes. AMD ADL sinks are intentionally rejected.
 
 - `--sink csv`  
-  Create a timestamped CSV sink file.
+  Create a timestamped CSV sink file for supported NVIDIA/NVML modes. AMD ADL sinks are intentionally rejected.
 
 - `--sink mqtt`  
-  Publish live `--watch` snapshots to an existing MQTT broker.
+  Publish live NVIDIA/NVML `--watch` snapshots to an existing MQTT broker. AMD ADL MQTT publishing is intentionally not implemented.
 
 - `--config <path>`  
   Load an explicit WTG TOML configuration file.
 
 - `--provider amd`  
-  Include the experimental AMD ADL side-provider output. Deeper AMD work is deferred to a later release.
+  Select the experimental AMD ADL provider for compact `--once` or `--watch` output. AMD output has no stable schema field and uses telemetry class `provider_telemetry`.
+
+## AMD ADL Discovery
+
+`--provider amd` is the experimental AMD ADL provider path for this branch.
+
+Supported commands:
+
+```powershell
+.\target\release\wtg.exe --provider amd --once
+.\target\release\wtg.exe --provider amd --watch --interval 1000
+```
+
+Intentional boundaries:
+
+```text
+AMD --stats: rejected
+AMD sinks: rejected
+AMD MQTT/Home Assistant publishing: not implemented
+AMD output schema: no stable schema field
+AMD telemetry class: provider_telemetry
+```
+
+The AMD provider preserves ADL-native facts beside NVIDIA/NVML behavior. It does not translate ADL facts into NVML-equivalent names, does not synthesize missing values, and does not claim cross-vendor parity.
+
+Detailed notes: [AMD ADL discovery](docs/amd-adl-discovery.md)
 
 ## NVML Provenance Stats
 
@@ -193,18 +232,20 @@ Detailed notes: [NVML provenance stats](docs/nvml-provenance-stats.md)
 
 | Mode | JSONL | CSV | MQTT | Notes |
 | --- | --- | --- | --- | --- |
-| `--once` | yes | yes | no | concise snapshot |
-| `--once --stats` | yes | yes | no | JSONL writes compact provenance JSON; CSV remains legacy flat stats |
-| `--watch` | yes | yes | yes | MQTT publishes live snapshot payloads |
-| `--watch --stats` | yes | yes | yes | legacy stats/watch behavior for this release |
-| `--probe` | yes | yes | no | validation output |
-| `--probe-fields` | yes | yes | no | field-ID diagnostics |
+| `--once` | yes | yes | no | concise NVIDIA/NVML snapshot |
+| `--once --stats` | yes | yes | no | JSONL writes compact NVIDIA/NVML provenance JSON; CSV remains legacy flat stats |
+| `--watch` | yes | yes | yes | MQTT publishes live NVIDIA/NVML snapshot payloads |
+| `--watch --stats` | yes | yes | yes | legacy NVIDIA/NVML stats/watch behavior for this release |
+| `--provider amd --once` | no | no | no | compact AMD ADL provider telemetry |
+| `--provider amd --watch` | no | no | no | compact AMD ADL live provider telemetry |
+| `--probe` | yes | yes | no | NVIDIA/NVML validation output |
+| `--probe-fields` | yes | yes | no | NVIDIA/NVML field-ID diagnostics |
 
 Detailed notes: [Sinks](docs/sinks.md)
 
 ## MQTT and Home Assistant
 
-The MQTT sink publishes live telemetry from `--watch` to a user-specified broker.
+The MQTT sink publishes live NVIDIA/NVML telemetry from `--watch` to a user-specified broker.
 
 Example:
 
@@ -212,7 +253,7 @@ Example:
 .\wtg.exe --watch --sink mqtt --mqtt-host 127.0.0.1 --mqtt-port 1884 --mqtt-node-id testnode
 ```
 
-WTG is an MQTT publisher, not a broker. MQTT validates transport only; it is not the telemetry source of truth.
+WTG is an MQTT publisher, not a broker. MQTT validates transport only; it is not the telemetry source of truth. AMD ADL provider output is not currently published to MQTT or Home Assistant.
 
 Detailed notes: [MQTT and Home Assistant](docs/mqtt-home-assistant.md)
 
@@ -234,7 +275,7 @@ Detailed notes: [Configuration](docs/configuration.md)
 
 `wtg-ui.exe` is an experimental egui desktop frontend.
 
-It displays live telemetry and provides a convenience layer over the same explicit TOML configuration model used by the CLI.
+It displays live NVIDIA/NVML telemetry and provides a convenience layer over the same explicit TOML configuration model used by the CLI.
 
 The UI is not the reference surface for regression testing or metric capture.
 
@@ -245,7 +286,7 @@ Detailed notes:
 
 ## Probe and Field Diagnostics
 
-`--probe` and `--probe-fields` are diagnostic validation surfaces used for same-GPU, cross-driver comparisons.
+`--probe` and `--probe-fields` are diagnostic NVIDIA/NVML validation surfaces used for same-GPU, cross-driver comparisons.
 
 Important distinction:
 
@@ -274,7 +315,7 @@ wtg-core/
   NVIDIA/NVML context, snapshots, probe context, field queries, and provenance stats
 
 wtg-app/
-  CLI, sinks, MQTT, config loading, JSON/CSV/JSONL formatting
+  CLI, sinks, MQTT, config loading, JSON/CSV/JSONL formatting, and explicit provider routing
 
 wtg-app/src/bin/wtg-ui.rs
   experimental egui UI entrypoint
@@ -283,14 +324,14 @@ wtg-view/
   shared view helpers where useful
 
 wtg-providers/
-  experimental provider-side work, including ADL foundation
+  experimental provider-side work, including AMD ADL discovery
 ```
 
-`wtg-app` does not own NVML provider querying. Expanded NVML provenance collection belongs in `wtg-core`.
+`wtg-app` does not own NVML provider querying. Expanded NVML provenance collection belongs in `wtg-core`. Experimental non-NVIDIA provider work remains provider-scoped under `wtg-providers` and is routed through `wtg.exe` only when explicitly selected.
 
 ## Driver Requirements
 
-WTG relies on NVIDIA NVML on Windows.
+WTG relies on NVIDIA NVML on Windows for the default provider path.
 
 Empirical testing shows:
 
@@ -298,6 +339,8 @@ Empirical testing shows:
 - modern tested drivers expose NVML across tested SKUs
 - individual counters may still show driver/platform-specific behavior
 - WTG fails fast when NVML is unavailable and prints an explicit error when possible
+
+AMD ADL discovery relies on `atiadlxx.dll` being available on the test system. Unsupported, unavailable, or failing ADL calls are reported as provider-scoped facts and are not treated as NVIDIA/NVML failures.
 
 ## Validation Boundary
 
@@ -308,24 +351,30 @@ cargo fmt --check
 cargo test
 cargo build -p wtg-app --release
 .\target\release\wtg.exe --once
+.\target\release\wtg.exe --watch --interval 1000
 .\target\release\wtg.exe --once --stats
 .\target\release\wtg.exe --once --stats --sink jsonl
 .\target\release\wtg.exe --once --stats --sink csv
+.\target\release\wtg.exe --provider amd --once
+.\target\release\wtg.exe --provider amd --watch --interval 1000
 .\target\release\wtg.exe --probe
 .\target\release\wtg.exe --probe --sink jsonl
 .\target\release\wtg.exe --probe --sink csv
 .\target\release\wtg.exe --probe-fields --field-id 74
 ```
 
-Use MQTT broker/subscriber captures to validate transport only. Do not treat MQTT, Home Assistant, or the eGUI as the telemetry source of truth.
+Use MQTT broker/subscriber captures to validate transport only. Do not treat MQTT, Home Assistant, AMD ADL, or the eGUI as the NVIDIA/NVML telemetry source of truth.
+
+For automated watch checks, avoid `Select-Object -First ...` as final evidence because it intentionally closes stdout and can produce a broken-pipe panic after the selected lines are captured. Manual `Ctrl+C` watch termination is cleaner for final run notes.
 
 ## Validation Strategy
 
 - Compare WTG CLI output against `nvidia-smi` and WSL NVML metrics where useful.
 - Compare NVML telemetry against Windows-reported metrics to characterize abstraction differences.
-- Use CLI, probe, field-values, and sink artifacts for validation evidence.
+- Use CLI, probe, field-values, provider output, and sink artifacts for validation evidence.
 - Use MQTT broker/subscriber captures to validate transport only.
 - Use the experimental UI for visual corroboration and demos only.
+- Treat laptop power source as a controlled variable when interpreting hybrid GPU telemetry.
 
 ## Milestones
 
@@ -340,11 +389,12 @@ Use MQTT broker/subscriber captures to validate transport only. Do not treat MQT
 | v0.2.4 | Explicit TOML config support |
 | dev/0.2.6 | Experimental AMD ADL provider foundation |
 | dev/0.2.7 | NVML provenance and expanded NVIDIA stats |
-| v0.2.8+ | Deeper AMD provider work |
+| dev/0.2.8 | AMD ADL discovery routed through `wtg.exe --provider amd` |
 | v0.3+ | Optional UI and distribution hardening |
 
 ## Next Immediate Step
 
-- Close 0.2.7 around NVML provenance and expanded NVIDIA stats.
-- Keep AMD/ADL expansion in 0.2.8 or later.
+- Keep 0.2.8 scoped to AMD ADL discovery and provider-boundary evidence.
+- Capture full-power AC versus reduced USB-C behavior as a later validation cycle.
+- Keep NVIDIA/NVML as the primary truth provider while ADL remains provider-scoped experimental telemetry.
 - Keep README as a project entry point and maintain detailed operational docs under `docs/` and `artifacts/dev/`.
