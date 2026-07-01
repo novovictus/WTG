@@ -65,6 +65,7 @@ pub struct ProviderSample {
     dll_path: Option<String>,
     adl_initialized: bool,
     adl_return_codes: SampleReturnCodes,
+    telemetry_exports_matched: usize,
     physical_adapter_group_count: usize,
     amd_physical_adapter_count: usize,
     non_amd_physical_adapter_count: usize,
@@ -343,6 +344,7 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                         ),
                         adl_adapter_adapter_info_get: Some(enumeration.adapter_adapter_info_get),
                     },
+                    telemetry_exports_matched: library.telemetry_exports_matched(),
                     physical_adapter_group_count: enumeration.physical_adapter_group_count,
                     amd_physical_adapter_count: enumeration.amd_physical_adapter_count,
                     non_amd_physical_adapter_count: enumeration.non_amd_physical_adapter_count,
@@ -370,6 +372,7 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                         ),
                         adl_adapter_adapter_info_get: Some(enumeration.adapter_adapter_info_get),
                     },
+                    telemetry_exports_matched: library.telemetry_exports_matched(),
                     physical_adapter_group_count: enumeration.physical_adapter_group_count,
                     amd_physical_adapter_count: enumeration.amd_physical_adapter_count,
                     non_amd_physical_adapter_count: enumeration.non_amd_physical_adapter_count,
@@ -395,6 +398,7 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                         adl_adapter_number_of_adapters_get: err.adl_adapter_number_of_adapters_get,
                         adl_adapter_adapter_info_get: err.adl_adapter_adapter_info_get,
                     },
+                    telemetry_exports_matched: library.telemetry_exports_matched(),
                     physical_adapter_group_count: 0,
                     amd_physical_adapter_count: 0,
                     non_amd_physical_adapter_count: 0,
@@ -421,6 +425,7 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                     adl_adapter_number_of_adapters_get: None,
                     adl_adapter_adapter_info_get: None,
                 },
+                telemetry_exports_matched: library.telemetry_exports_matched(),
                 physical_adapter_group_count: 0,
                 amd_physical_adapter_count: 0,
                 non_amd_physical_adapter_count: 0,
@@ -447,6 +452,7 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                 adl_adapter_number_of_adapters_get: None,
                 adl_adapter_adapter_info_get: None,
             },
+            telemetry_exports_matched: 0,
             physical_adapter_group_count: 0,
             amd_physical_adapter_count: 0,
             non_amd_physical_adapter_count: 0,
@@ -549,6 +555,37 @@ pub fn format_snapshot(sample: &ProviderSample) -> String {
 
             if lines.last().is_some_and(String::is_empty) {
                 lines.pop();
+            }
+
+            let summary = optional_call_summary(sample);
+            lines.push(String::new());
+            lines.push("ADL discovery summary:".to_string());
+            lines.push(format!(
+                "  telemetry exports matched: {}",
+                sample.telemetry_exports_matched
+            ));
+            lines.push(format!("  optional calls attempted: {}", summary.attempted));
+            lines.push(format!(
+                "  ok: {} | unsupported: {} | not_available: {} | error: {}",
+                summary.ok, summary.unsupported, summary.not_available, summary.error
+            ));
+
+            let additional_facts = snapshot_additional_fact_lines(sample);
+            if !additional_facts.is_empty() {
+                lines.push(String::new());
+                lines.push("Additional ADL facts:".to_string());
+                for fact in additional_facts {
+                    lines.push(format!("  {fact}"));
+                }
+            }
+
+            let unavailable = snapshot_unavailable_fact_lines(sample);
+            if !unavailable.is_empty() {
+                lines.push(String::new());
+                lines.push("Unavailable ADL facts:".to_string());
+                for fact in unavailable {
+                    lines.push(format!("  {fact}"));
+                }
             }
 
             lines.join("\n")
@@ -755,7 +792,196 @@ fn metric_state<'a>(adapter: &'a AdlAdapterRecord, metric_key: &str) -> Option<&
         .map(|call| call.state)
 }
 
+#[derive(Default)]
+struct OptionalCallSummary {
+    attempted: usize,
+    ok: usize,
+    unsupported: usize,
+    not_available: usize,
+    error: usize,
+}
+
+fn optional_call_summary(sample: &ProviderSample) -> OptionalCallSummary {
+    let mut summary = OptionalCallSummary::default();
+
+    for call in sample
+        .adapters
+        .iter()
+        .flat_map(|adapter| adapter.adl_calls.iter())
+        .filter(|call| is_optional_telemetry_call(call))
+    {
+        summary.attempted += 1;
+        match call.state {
+            "ok" => summary.ok += 1,
+            "unsupported" => summary.unsupported += 1,
+            "not_available" => summary.not_available += 1,
+            "error" => summary.error += 1,
+            _ => {}
+        }
+    }
+
+    summary
+}
+
+fn is_optional_telemetry_call(call: &AdlApiCall) -> bool {
+    call.metric_key != "adapter_active" && call.metric_key != "extended_discovery"
+}
+
+fn snapshot_additional_fact_lines(sample: &ProviderSample) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    for group in sample
+        .physical_adapter_groups
+        .iter()
+        .filter(|group| group.physical_vendor_id == 1002)
+    {
+        let Some(adapter) = primary_adapter_for_group(sample, group) else {
+            continue;
+        };
+
+        if let Some(raw) = call_raw(adapter, "overdrive5_current_activity") {
+            let mut parts = Vec::new();
+            if let Some(activity_percent) = raw.get("activity_percent").and_then(Value::as_i64) {
+                parts.push(format!("activity {activity_percent}%"));
+            }
+            if let Some(engine_clock_10khz) = raw.get("engine_clock_10khz").and_then(Value::as_i64)
+            {
+                parts.push(format!(
+                    "engine {:.1} MHz",
+                    (engine_clock_10khz as f64) / 100.0
+                ));
+            }
+            if let Some(memory_clock_10khz) = raw.get("memory_clock_10khz").and_then(Value::as_i64)
+            {
+                parts.push(format!(
+                    "memory {:.1} MHz",
+                    (memory_clock_10khz as f64) / 100.0
+                ));
+            }
+            if let Some(perf_level) = raw.get("current_performance_level").and_then(Value::as_i64) {
+                parts.push(format!("perf {perf_level}"));
+            }
+            if let (Some(current_bus_speed), Some(current_bus_lanes), Some(maximum_bus_lanes)) = (
+                raw.get("current_bus_speed").and_then(Value::as_i64),
+                raw.get("current_bus_lanes").and_then(Value::as_i64),
+                raw.get("maximum_bus_lanes").and_then(Value::as_i64),
+            ) {
+                parts.push(format!(
+                    "bus {current_bus_speed} x{current_bus_lanes} / max x{maximum_bus_lanes}"
+                ));
+            }
+            if !parts.is_empty() {
+                lines.push(format!(
+                    "{} [{}]: {}",
+                    adapter.adl_raw_identity.adl_adapter_name,
+                    group.physical_adapter_key,
+                    parts.join(" | ")
+                ));
+            }
+        }
+
+        let mut parts = Vec::new();
+        if let Some(raw) = call_raw(adapter, "adapter_observed_clock_info") {
+            if let Some(core_clock_10khz) = raw.get("core_clock_10khz").and_then(Value::as_i64) {
+                parts.push(format!(
+                    "observed core {:.1} MHz",
+                    (core_clock_10khz as f64) / 100.0
+                ));
+            }
+            if let Some(memory_clock_10khz) = raw.get("memory_clock_10khz").and_then(Value::as_i64)
+            {
+                parts.push(format!(
+                    "observed memory {:.1} MHz",
+                    (memory_clock_10khz as f64) / 100.0
+                ));
+            }
+        }
+        if let Some(raw) = call_raw(adapter, "adapter_video_bios_info") {
+            let version = raw.get("version").and_then(Value::as_str).unwrap_or("");
+            let part_number = raw.get("part_number").and_then(Value::as_str).unwrap_or("");
+            let date = raw.get("date").and_then(Value::as_str).unwrap_or("");
+            if !version.is_empty() || !part_number.is_empty() || !date.is_empty() {
+                parts.push(format!("vbios {version} | {part_number} | {date}"));
+            }
+        }
+        if let Some(raw) = call_raw(adapter, "adapter_asic_family_type") {
+            let asic_family_type = raw
+                .get("asic_family_type")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            let valids = raw
+                .get("valids")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            parts.push(format!("asic family {asic_family_type} valid={valids}"));
+        }
+        if !parts.is_empty() {
+            lines.push(format!(
+                "{} [{}]: {}",
+                adapter.adl_raw_identity.adl_adapter_name,
+                group.physical_adapter_key,
+                parts.join(" | ")
+            ));
+        }
+    }
+
+    lines
+}
+
+fn snapshot_unavailable_fact_lines(sample: &ProviderSample) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    for group in sample
+        .physical_adapter_groups
+        .iter()
+        .filter(|group| group.physical_vendor_id == 1002)
+    {
+        let Some(adapter) = primary_adapter_for_group(sample, group) else {
+            continue;
+        };
+
+        let unavailable = unavailable_metric_labels(adapter);
+        if !unavailable.is_empty() {
+            lines.push(format!(
+                "{} [{}]: {}",
+                adapter.adl_raw_identity.adl_adapter_name,
+                group.physical_adapter_key,
+                unavailable.join(", ")
+            ));
+        }
+    }
+
+    lines
+}
+
+fn primary_adapter_for_group<'a>(
+    sample: &'a ProviderSample,
+    group: &PhysicalAdapterGroup,
+) -> Option<&'a AdlAdapterRecord> {
+    sample.adapters.iter().find(|adapter| {
+        adapter.adl_raw_identity.adl_adapter_index == group.physical_adapter_primary_index
+    })
+}
+
 impl AdlLibrary {
+    fn telemetry_exports_matched(&self) -> usize {
+        [
+            self.overdrive_caps.is_some(),
+            self.overdrive5_current_activity_get.is_some(),
+            self.overdrive5_temperature_get.is_some(),
+            self.overdrive5_fan_speed_info_get.is_some(),
+            self.overdrive5_fan_speed_get.is_some(),
+            self.overdrive5_od_parameters_get.is_some(),
+            self.adapter_memory_info_get.is_some(),
+            self.adapter_video_bios_info_get.is_some(),
+            self.adapter_asic_family_type_get.is_some(),
+            self.adapter_observed_clock_info_get.is_some(),
+        ]
+        .into_iter()
+        .filter(|matched| *matched)
+        .count()
+    }
+
     fn load() -> Result<Self, String> {
         for dll_name in ["atiadlxx.dll", "atiadlxy.dll"] {
             match load_adl_library(dll_name) {
