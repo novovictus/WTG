@@ -65,6 +65,11 @@ pub struct ProviderSample {
     dll_path: Option<String>,
     adl_initialized: bool,
     adl_return_codes: SampleReturnCodes,
+    physical_adapter_group_count: usize,
+    amd_physical_adapter_count: usize,
+    non_amd_physical_adapter_count: usize,
+    extended_amd_discovery_run_count: usize,
+    physical_adapter_groups: Vec<PhysicalAdapterGroup>,
     adapters: Vec<AdlAdapterRecord>,
     errors: Vec<String>,
 }
@@ -72,9 +77,24 @@ pub struct ProviderSample {
 #[derive(Debug, Serialize)]
 struct AdlAdapterRecord {
     adl_raw_identity: AdlRawIdentity,
+    physical_adapter_key: String,
+    physical_adapter_role: &'static str,
+    physical_adapter_primary_index: i32,
+    logical_record_kind: &'static str,
     adl_calls: Vec<AdlApiCall>,
     provider_warnings: Vec<String>,
     provider_errors: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PhysicalAdapterGroup {
+    physical_adapter_key: String,
+    physical_vendor_id: i32,
+    physical_adapter_primary_index: i32,
+    logical_record_kind: &'static str,
+    logical_adapter_indices: Vec<i32>,
+    logical_record_count: usize,
+    extended_amd_discovery_attempted: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -323,6 +343,11 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                         ),
                         adl_adapter_adapter_info_get: Some(enumeration.adapter_adapter_info_get),
                     },
+                    physical_adapter_group_count: enumeration.physical_adapter_group_count,
+                    amd_physical_adapter_count: enumeration.amd_physical_adapter_count,
+                    non_amd_physical_adapter_count: enumeration.non_amd_physical_adapter_count,
+                    extended_amd_discovery_run_count: enumeration.extended_amd_discovery_run_count,
+                    physical_adapter_groups: enumeration.physical_adapter_groups,
                     adapters: enumeration.adapters,
                     errors: vec!["ADL initialized but returned zero adapters.".to_string()],
                 },
@@ -345,6 +370,11 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                         ),
                         adl_adapter_adapter_info_get: Some(enumeration.adapter_adapter_info_get),
                     },
+                    physical_adapter_group_count: enumeration.physical_adapter_group_count,
+                    amd_physical_adapter_count: enumeration.amd_physical_adapter_count,
+                    non_amd_physical_adapter_count: enumeration.non_amd_physical_adapter_count,
+                    extended_amd_discovery_run_count: enumeration.extended_amd_discovery_run_count,
+                    physical_adapter_groups: enumeration.physical_adapter_groups,
                     adapters: enumeration.adapters,
                     errors: Vec::new(),
                 },
@@ -365,6 +395,11 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                         adl_adapter_number_of_adapters_get: err.adl_adapter_number_of_adapters_get,
                         adl_adapter_adapter_info_get: err.adl_adapter_adapter_info_get,
                     },
+                    physical_adapter_group_count: 0,
+                    amd_physical_adapter_count: 0,
+                    non_amd_physical_adapter_count: 0,
+                    extended_amd_discovery_run_count: 0,
+                    physical_adapter_groups: Vec::new(),
                     adapters: Vec::new(),
                     errors: vec![err.message],
                 },
@@ -386,6 +421,11 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                     adl_adapter_number_of_adapters_get: None,
                     adl_adapter_adapter_info_get: None,
                 },
+                physical_adapter_group_count: 0,
+                amd_physical_adapter_count: 0,
+                non_amd_physical_adapter_count: 0,
+                extended_amd_discovery_run_count: 0,
+                physical_adapter_groups: Vec::new(),
                 adapters: Vec::new(),
                 errors: vec![err.message],
             },
@@ -407,6 +447,11 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                 adl_adapter_number_of_adapters_get: None,
                 adl_adapter_adapter_info_get: None,
             },
+            physical_adapter_group_count: 0,
+            amd_physical_adapter_count: 0,
+            non_amd_physical_adapter_count: 0,
+            extended_amd_discovery_run_count: 0,
+            physical_adapter_groups: Vec::new(),
             adapters: Vec::new(),
             errors: vec![err],
         },
@@ -419,54 +464,80 @@ pub fn format_snapshot(sample: &ProviderSample) -> String {
         .first()
         .map(String::as_str)
         .unwrap_or("provider returned no additional details");
-    let amd_adapters = sample
-        .adapters
-        .iter()
-        .filter(|adapter| adapter.adl_raw_identity.adl_vendor_id == 1002)
-        .collect::<Vec<_>>();
-    let active_amd_adapters = amd_adapters
-        .iter()
-        .copied()
-        .filter(|adapter| adapter_active_value(adapter) == Some(true))
-        .collect::<Vec<_>>();
     match sample.status {
         "ok" => {
             let mut lines = Vec::new();
             lines.push("WTG snapshot (AMD ADL)".to_string());
             lines.push(String::new());
 
-            let rendered_adapters = if active_amd_adapters.is_empty() {
-                amd_adapters.as_slice()
-            } else {
-                active_amd_adapters.as_slice()
-            };
+            lines.push(format!(
+                "ADL adapter records returned: {}",
+                sample.adapters.len()
+            ));
+            lines.push(format!(
+                "Physical adapter groups: {}",
+                sample.physical_adapter_group_count
+            ));
+            lines.push(format!(
+                "AMD physical adapters: {}",
+                sample.amd_physical_adapter_count
+            ));
+            lines.push(format!(
+                "Non-AMD physical adapters seen through ADL: {}",
+                sample.non_amd_physical_adapter_count
+            ));
+            lines.push(format!(
+                "Extended AMD discovery ran: {}",
+                sample.extended_amd_discovery_run_count
+            ));
+            lines.push(String::new());
 
-            if rendered_adapters.is_empty() {
-                lines.push("No AMD vendor records returned by ADL.".to_string());
+            if sample.physical_adapter_groups.is_empty() {
+                lines.push("No physical adapter groups returned by ADL.".to_string());
             } else {
-                for adapter in rendered_adapters.iter() {
-                    let ok_call_count = adapter
-                        .adl_calls
-                        .iter()
-                        .filter(|call| call.state == "ok")
-                        .count();
-                    lines.push(format!(
-                        "ADL adapter {}",
+                for group in sample.physical_adapter_groups.iter() {
+                    let primary_adapter = sample.adapters.iter().find(|adapter| {
                         adapter.adl_raw_identity.adl_adapter_index
+                            == group.physical_adapter_primary_index
+                    });
+                    let adapter_name = primary_adapter
+                        .map(|adapter| adapter.adl_raw_identity.adl_adapter_name.as_str())
+                        .unwrap_or("unknown");
+                    let active = primary_adapter
+                        .and_then(adapter_active_value)
+                        .unwrap_or(false);
+
+                    lines.push(format!(
+                        "Physical adapter group {}",
+                        group.physical_adapter_key
+                    ));
+                    lines.push(format!("  Adapter name: {adapter_name}"));
+                    lines.push(format!(
+                        "  Vendor kind: {}",
+                        if group.physical_vendor_id == 1002 {
+                            "AMD"
+                        } else {
+                            "non-AMD"
+                        }
                     ));
                     lines.push(format!(
-                        "  Adapter name: {}",
-                        adapter.adl_raw_identity.adl_adapter_name
+                        "  Primary ADL adapter index: {}",
+                        group.physical_adapter_primary_index
                     ));
                     lines.push(format!(
-                        "  Display name: {}",
-                        adapter.adl_raw_identity.adl_display_name
+                        "  Logical ADL record indexes: {}",
+                        group
+                            .logical_adapter_indices
+                            .iter()
+                            .map(i32::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ));
                     lines.push(format!(
-                        "  Active: {}",
-                        yes_no(adapter_active_value(adapter) == Some(true))
+                        "  Extended AMD discovery attempted: {}",
+                        yes_no(group.extended_amd_discovery_attempted)
                     ));
-                    lines.push(format!("  Successful ADL calls: {ok_call_count}"));
+                    lines.push(format!("  Active: {}", yes_no(active)));
                     lines.push(String::new());
                 }
             }
@@ -633,7 +704,21 @@ impl<'a> AdlSession<'a> {
 struct EnumerationResult {
     adapter_number_of_adapters_get: i32,
     adapter_adapter_info_get: i32,
+    physical_adapter_group_count: usize,
+    amd_physical_adapter_count: usize,
+    non_amd_physical_adapter_count: usize,
+    extended_amd_discovery_run_count: usize,
+    physical_adapter_groups: Vec<PhysicalAdapterGroup>,
     adapters: Vec<AdlAdapterRecord>,
+}
+
+struct PhysicalAdapterGroupState {
+    physical_adapter_key: String,
+    physical_vendor_id: i32,
+    physical_adapter_primary_index: i32,
+    logical_record_kind: &'static str,
+    logical_adapter_indices: Vec<i32>,
+    extended_amd_discovery_attempted: bool,
 }
 
 fn enumerate_adapters(library: &AdlLibrary) -> Result<EnumerationResult, EnumerationError> {
@@ -651,6 +736,11 @@ fn enumerate_adapters(library: &AdlLibrary) -> Result<EnumerationResult, Enumera
         return Ok(EnumerationResult {
             adapter_number_of_adapters_get: count_result,
             adapter_adapter_info_get: ADL_OK,
+            physical_adapter_group_count: 0,
+            amd_physical_adapter_count: 0,
+            non_amd_physical_adapter_count: 0,
+            extended_amd_discovery_run_count: 0,
+            physical_adapter_groups: Vec::new(),
             adapters: Vec::new(),
         });
     }
@@ -666,19 +756,89 @@ fn enumerate_adapters(library: &AdlLibrary) -> Result<EnumerationResult, Enumera
         });
     }
 
-    let adapters = adapter_info
-        .into_iter()
-        .map(|info| build_adapter_record(library, info))
+    let mut physical_adapter_groups_state = Vec::<PhysicalAdapterGroupState>::new();
+    let mut adapters = Vec::with_capacity(adapter_info.len());
+    let mut extended_amd_discovery_run_count = 0usize;
+
+    for info in adapter_info.into_iter() {
+        let physical_adapter_key = physical_adapter_key(&info);
+        let existing_group_index = physical_adapter_groups_state
+            .iter()
+            .position(|group| group.physical_adapter_key == physical_adapter_key);
+
+        let (physical_adapter_role, physical_adapter_primary_index, duplicate_amd_record) =
+            if let Some(group_index) = existing_group_index {
+                let group = &mut physical_adapter_groups_state[group_index];
+                group.logical_adapter_indices.push(info.i_adapter_index);
+                (
+                    "duplicate_logical_record",
+                    group.physical_adapter_primary_index,
+                    info.i_vendor_id == 1002,
+                )
+            } else {
+                physical_adapter_groups_state.push(PhysicalAdapterGroupState {
+                    physical_adapter_key: physical_adapter_key.clone(),
+                    physical_vendor_id: info.i_vendor_id,
+                    physical_adapter_primary_index: info.i_adapter_index,
+                    logical_record_kind: "adl_display_record",
+                    logical_adapter_indices: vec![info.i_adapter_index],
+                    extended_amd_discovery_attempted: info.i_vendor_id == 1002,
+                });
+                if info.i_vendor_id == 1002 {
+                    extended_amd_discovery_run_count += 1;
+                }
+                ("primary_physical_record", info.i_adapter_index, false)
+            };
+
+        adapters.push(build_adapter_record(
+            library,
+            info,
+            physical_adapter_key,
+            physical_adapter_role,
+            physical_adapter_primary_index,
+            duplicate_amd_record,
+        ));
+    }
+
+    let physical_adapter_groups = physical_adapter_groups_state
+        .iter()
+        .map(|group| PhysicalAdapterGroup {
+            physical_adapter_key: group.physical_adapter_key.clone(),
+            physical_vendor_id: group.physical_vendor_id,
+            physical_adapter_primary_index: group.physical_adapter_primary_index,
+            logical_record_kind: group.logical_record_kind,
+            logical_adapter_indices: group.logical_adapter_indices.clone(),
+            logical_record_count: group.logical_adapter_indices.len(),
+            extended_amd_discovery_attempted: group.extended_amd_discovery_attempted,
+        })
         .collect::<Vec<_>>();
+    let amd_physical_adapter_count = physical_adapter_groups_state
+        .iter()
+        .filter(|group| group.physical_vendor_id == 1002)
+        .count();
+    let non_amd_physical_adapter_count =
+        physical_adapter_groups_state.len() - amd_physical_adapter_count;
 
     Ok(EnumerationResult {
         adapter_number_of_adapters_get: count_result,
         adapter_adapter_info_get: info_result,
+        physical_adapter_group_count: physical_adapter_groups_state.len(),
+        amd_physical_adapter_count,
+        non_amd_physical_adapter_count,
+        extended_amd_discovery_run_count,
+        physical_adapter_groups,
         adapters,
     })
 }
 
-fn build_adapter_record(library: &AdlLibrary, info: AdapterInfo) -> AdlAdapterRecord {
+fn build_adapter_record(
+    library: &AdlLibrary,
+    info: AdapterInfo,
+    physical_adapter_key: String,
+    physical_adapter_role: &'static str,
+    physical_adapter_primary_index: i32,
+    duplicate_amd_record: bool,
+) -> AdlAdapterRecord {
     let mut provider_warnings = Vec::new();
     let adl_calls = if info.i_vendor_id != 1002 {
         provider_warnings.push(
@@ -686,6 +846,11 @@ fn build_adapter_record(library: &AdlLibrary, info: AdapterInfo) -> AdlAdapterRe
                 .to_string(),
         );
         vec![query_adapter_active(library, info.i_adapter_index)]
+    } else if duplicate_amd_record {
+        vec![
+            query_adapter_active(library, info.i_adapter_index),
+            duplicate_extended_discovery_call(physical_adapter_primary_index),
+        ]
     } else {
         collect_adapter_calls(library, info.i_adapter_index)
     };
@@ -718,6 +883,10 @@ fn build_adapter_record(library: &AdlLibrary, info: AdapterInfo) -> AdlAdapterRe
             adl_pnp_string: adl_c_string(&info.str_pnp_string),
             adl_os_display_index: info.i_os_display_index,
         },
+        physical_adapter_key,
+        physical_adapter_role,
+        physical_adapter_primary_index,
+        logical_record_kind: "adl_display_record",
         adl_calls,
         provider_warnings,
         provider_errors,
@@ -739,6 +908,31 @@ fn collect_adapter_calls(library: &AdlLibrary, adapter_index: i32) -> Vec<AdlApi
         query_video_bios_info(library, adapter_index),
         query_asic_family_type(library, adapter_index),
     ]
+}
+
+fn physical_adapter_key(info: &AdapterInfo) -> String {
+    format!(
+        "vendor={},bus={},device={},function={}",
+        info.i_vendor_id, info.i_bus_number, info.i_device_number, info.i_function_number
+    )
+}
+
+fn duplicate_extended_discovery_call(primary_adapter_index: i32) -> AdlApiCall {
+    AdlApiCall {
+        metric_key: "extended_discovery",
+        source_api: "WTG_ADL_PROVIDER_DEDUP",
+        state: "not_available",
+        adl_return_code: None,
+        raw: json!({
+            "reason": "duplicate_physical_adapter_record",
+            "primary_adapter_index": primary_adapter_index
+        }),
+        unit: None,
+        error_message: Some(
+            "Extended AMD ADL telemetry discovery skipped because this ADL record duplicates an already-probed physical AMD adapter."
+                .to_string(),
+        ),
+    }
 }
 
 fn zeroed_adapter_info() -> AdapterInfo {
@@ -1408,9 +1602,11 @@ extern "system" {
 #[cfg(test)]
 mod tests {
     use super::{
-        call_from_error, fan_metric_key, fan_unit, parse_args, CliArgs, Mode, DEFAULT_INTERVAL_MS,
+        call_from_error, duplicate_extended_discovery_call, fan_metric_key, fan_unit, parse_args,
+        physical_adapter_key, AdapterInfo, CliArgs, Mode, ADL_MAX_PATH, DEFAULT_INTERVAL_MS,
         PROVIDER, SOURCE, TELEMETRY_CLASS,
     };
+    use serde_json::json;
 
     #[test]
     fn parse_once_args() {
@@ -1471,5 +1667,47 @@ mod tests {
     fn unsupported_return_code_maps_to_unsupported_state() {
         let call = call_from_error("x", "ADL_Test", -8, "boom".to_string());
         assert_eq!(call.state, "unsupported");
+    }
+
+    #[test]
+    fn physical_adapter_key_uses_vendor_bus_device_function() {
+        let info = AdapterInfo {
+            i_size: 0,
+            i_adapter_index: 7,
+            str_udid: [0; ADL_MAX_PATH],
+            i_bus_number: 6,
+            i_device_number: 0,
+            i_function_number: 0,
+            i_vendor_id: 1002,
+            str_adapter_name: [0; ADL_MAX_PATH],
+            str_display_name: [0; ADL_MAX_PATH],
+            i_present: 1,
+            i_exist: 1,
+            str_driver_path: [0; ADL_MAX_PATH],
+            str_driver_path_ext: [0; ADL_MAX_PATH],
+            str_pnp_string: [0; ADL_MAX_PATH],
+            i_os_display_index: 0,
+        };
+
+        assert_eq!(
+            physical_adapter_key(&info),
+            "vendor=1002,bus=6,device=0,function=0"
+        );
+    }
+
+    #[test]
+    fn duplicate_extended_discovery_call_is_explicit() {
+        let call = duplicate_extended_discovery_call(0);
+
+        assert_eq!(call.metric_key, "extended_discovery");
+        assert_eq!(call.source_api, "WTG_ADL_PROVIDER_DEDUP");
+        assert_eq!(call.state, "not_available");
+        assert_eq!(
+            call.raw,
+            json!({
+                "reason": "duplicate_physical_adapter_record",
+                "primary_adapter_index": 0
+            })
+        );
     }
 }
