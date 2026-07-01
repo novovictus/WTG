@@ -9,7 +9,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-const SCHEMA: &str = "wtg.provider.amd.adl.sample.v1";
 const SOURCE: &str = "wtg.provider.amd.adl";
 const TELEMETRY_CLASS: &str = "provider_telemetry";
 const PROVIDER: &str = "amd.adl";
@@ -55,7 +54,6 @@ struct CliArgs {
 #[derive(Debug, Serialize)]
 pub struct ProviderSample {
     wtg_version: &'static str,
-    schema: &'static str,
     source: &'static str,
     telemetry_class: &'static str,
     provider: &'static str,
@@ -308,7 +306,6 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
             Ok(_session) => match enumerate_adapters(&library) {
                 Ok(enumeration) if enumeration.adapters.is_empty() => ProviderSample {
                     wtg_version: env!("CARGO_PKG_VERSION"),
-                    schema: SCHEMA,
                     source: SOURCE,
                     telemetry_class: TELEMETRY_CLASS,
                     provider: PROVIDER,
@@ -331,7 +328,6 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                 },
                 Ok(enumeration) => ProviderSample {
                     wtg_version: env!("CARGO_PKG_VERSION"),
-                    schema: SCHEMA,
                     source: SOURCE,
                     telemetry_class: TELEMETRY_CLASS,
                     provider: PROVIDER,
@@ -354,7 +350,6 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                 },
                 Err(err) => ProviderSample {
                     wtg_version: env!("CARGO_PKG_VERSION"),
-                    schema: SCHEMA,
                     source: SOURCE,
                     telemetry_class: TELEMETRY_CLASS,
                     provider: PROVIDER,
@@ -376,7 +371,6 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
             },
             Err(err) => ProviderSample {
                 wtg_version: env!("CARGO_PKG_VERSION"),
-                schema: SCHEMA,
                 source: SOURCE,
                 telemetry_class: TELEMETRY_CLASS,
                 provider: PROVIDER,
@@ -398,7 +392,6 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
         },
         Err(err) => ProviderSample {
             wtg_version: env!("CARGO_PKG_VERSION"),
-            schema: SCHEMA,
             source: SOURCE,
             telemetry_class: TELEMETRY_CLASS,
             provider: PROVIDER,
@@ -1416,7 +1409,7 @@ extern "system" {
 mod tests {
     use super::{
         call_from_error, fan_metric_key, fan_unit, parse_args, CliArgs, Mode, DEFAULT_INTERVAL_MS,
-        PROVIDER, SCHEMA, SOURCE, TELEMETRY_CLASS,
+        PROVIDER, SOURCE, TELEMETRY_CLASS,
     };
 
     #[test]
@@ -1461,7 +1454,6 @@ mod tests {
 
     #[test]
     fn provider_constants_match_contract() {
-        assert_eq!(SCHEMA, "wtg.provider.amd.adl.sample.v1");
         assert_eq!(SOURCE, "wtg.provider.amd.adl");
         assert_eq!(TELEMETRY_CLASS, "provider_telemetry");
         assert_eq!(PROVIDER, "amd.adl");
