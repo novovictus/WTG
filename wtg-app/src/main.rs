@@ -279,7 +279,7 @@ fn print_help() {
         "  --config <path>         Load explicit WTG TOML config.\n",
         "  --interval <ms>         Polling interval in milliseconds for --watch.\n",
         "  --stats                 Print stable key:value stats output for --once or --watch.\n",
-        "  --provider amd          Print experimental AMD ADL provider summary before NVML output.\n",
+        "  --provider amd          Use the experimental AMD ADL provider for --once or --watch.\n",
         "  --probe                 Capture one context-rich probe block.\n",
         "  --probe-fields          Query explicit NVML field-value IDs.\n",
         "  --field-id <u32>        Repeatable field ID for --probe-fields.\n",
@@ -307,14 +307,30 @@ fn print_version() {
     println!("WTG - WhatTheGPU v{}", env!("CARGO_PKG_VERSION"));
 }
 
-fn maybe_print_provider_snapshot(args: &CliArgs) {
-    match args.provider {
-        Some(ProviderKind::Amd) => {
-            let sample = amd_adl::collect_once(0);
-            println!("{}", amd_adl::format_snapshot(&sample));
-            println!();
-        }
-        None => {}
+fn run_amd_provider(args: &CliArgs) -> ! {
+    if args.once {
+        let sample = amd_adl::collect_once(0);
+        println!("{}", amd_adl::format_snapshot(&sample));
+        process::exit(0);
+    }
+
+    let interval_ms = args.interval_ms.unwrap_or(DEFAULT_INTERVAL_MS);
+    if interval_ms < 100 {
+        eprintln!("WTG note: very low interval ({interval_ms}ms). ADL metrics may not update this quickly; expect duplicates.");
+    }
+
+    println!("WTG provider watch (AMD ADL)");
+    println!("interval_ms: {interval_ms}");
+    println!();
+
+    let sleep_dur = Duration::from_millis(interval_ms);
+    let mut sample_seq = 0u64;
+    loop {
+        let sample = amd_adl::collect_once(sample_seq);
+        println!("{}", amd_adl::format_watch_sample(&sample));
+        println!();
+        sample_seq = sample_seq.saturating_add(1);
+        thread::sleep(sleep_dur);
     }
 }
 
@@ -660,6 +676,24 @@ fn validate_args_result(parsed: &CliArgs) -> Result<(), String> {
         return Err("--provider is valid only with --once or --watch.".to_string());
     }
 
+    if parsed.provider == Some(ProviderKind::Amd) {
+        if stats {
+            return Err("--provider amd does not support --stats.".to_string());
+        }
+        if probe {
+            return Err("--provider amd does not support --probe.".to_string());
+        }
+        if probe_fields {
+            return Err("--provider amd does not support --probe-fields.".to_string());
+        }
+        if parsed.sink.is_some() {
+            return Err("--provider amd does not support --sink.".to_string());
+        }
+        if parsed.mqtt_ha_remove_discovery {
+            return Err("--provider amd does not support --mqtt-ha-remove-discovery.".to_string());
+        }
+    }
+
     if parsed.mqtt_ha_remove_discovery && (once || watch || probe || probe_fields || stats) {
         return Err("--mqtt-ha-remove-discovery cannot be combined with --once, --watch, --stats, --probe, or --probe-fields.".to_string());
     }
@@ -916,6 +950,10 @@ fn main() {
 
     // Initialize logging early. This is safe in all modes and helps diagnostics on Windows.
     tracing_subscriber::fmt::init();
+
+    if args.provider == Some(ProviderKind::Amd) {
+        run_amd_provider(&args);
+    }
 
     let sink = match args.sink {
         Some(kind @ (SinkKind::Csv | SinkKind::Jsonl)) => match Sink::new(kind) {
@@ -1182,10 +1220,6 @@ fn main() {
                             }
                         }
                     }
-                    if args.provider.is_some() {
-                        println!();
-                        maybe_print_provider_snapshot(&args);
-                    }
                 }
             }
             Err(e) => {
@@ -1329,10 +1363,6 @@ fn main() {
                                 }
                             }
                         }
-                        if args.provider.is_some() {
-                            println!();
-                            maybe_print_provider_snapshot(&args);
-                        }
                         if let (Some(mqtt_sink), Some(ctx)) =
                             (mqtt_sink.as_mut(), mqtt_ctx.as_ref())
                         {
@@ -1379,6 +1409,30 @@ mod tests {
     #[test]
     fn mqtt_auth_combination_accepts_no_auth() {
         assert!(validate_mqtt_auth_combination(None, None, None).is_ok());
+    }
+
+    #[test]
+    fn provider_amd_rejects_stats() {
+        let mut args = CliArgs::default();
+        args.once = true;
+        args.stats = true;
+        args.provider = Some(ProviderKind::Amd);
+
+        let err = validate_args_result(&args).unwrap_err();
+
+        assert_eq!(err, "--provider amd does not support --stats.");
+    }
+
+    #[test]
+    fn provider_amd_rejects_sink() {
+        let mut args = CliArgs::default();
+        args.once = true;
+        args.provider = Some(ProviderKind::Amd);
+        args.sink = Some(SinkKind::Jsonl);
+
+        let err = validate_args_result(&args).unwrap_err();
+
+        assert_eq!(err, "--provider amd does not support --sink.");
     }
 
     #[test]

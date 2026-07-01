@@ -563,6 +563,56 @@ pub fn format_snapshot(sample: &ProviderSample) -> String {
     }
 }
 
+pub fn format_watch_sample(sample: &ProviderSample) -> String {
+    let reason = sample
+        .errors
+        .first()
+        .map(String::as_str)
+        .unwrap_or("provider returned no additional details");
+
+    match sample.status {
+        "ok" => {
+            let mut lines = Vec::new();
+            lines.push("WTG provider watch (AMD ADL)".to_string());
+            lines.push(format!("sample_seq: {}", sample.sample_seq));
+            lines.push(format!(
+                "ADL records: {} | physical GPUs: {} | AMD: {} | non-AMD: {} | extended AMD probes: {}",
+                sample.adapters.len(),
+                sample.physical_adapter_group_count,
+                sample.amd_physical_adapter_count,
+                sample.non_amd_physical_adapter_count,
+                sample.extended_amd_discovery_run_count
+            ));
+            lines.push(String::new());
+
+            if sample.physical_adapter_groups.is_empty() {
+                lines.push("No physical adapter groups returned by ADL.".to_string());
+            } else {
+                for (index, group) in sample.physical_adapter_groups.iter().enumerate() {
+                    if index > 0 {
+                        lines.push(String::new());
+                    }
+                    push_watch_group_lines(&mut lines, sample, group);
+                }
+            }
+
+            lines.join("\n")
+        }
+        "unavailable" => format!(
+            "WTG provider watch (AMD ADL)\nsample_seq: {}\nstatus: unavailable\nreason: {}",
+            sample.sample_seq, reason
+        ),
+        "error" => format!(
+            "WTG provider watch (AMD ADL)\nsample_seq: {}\nstatus: error\nreason: {}",
+            sample.sample_seq, reason
+        ),
+        other => format!(
+            "WTG provider watch (AMD ADL)\nsample_seq: {}\nstatus: {}\nreason: {}",
+            sample.sample_seq, other, reason
+        ),
+    }
+}
+
 fn adapter_active_value(adapter: &AdlAdapterRecord) -> Option<bool> {
     adapter
         .adl_calls
@@ -578,6 +628,136 @@ fn yes_no(value: bool) -> &'static str {
     } else {
         "no"
     }
+}
+
+fn push_watch_group_lines(
+    lines: &mut Vec<String>,
+    sample: &ProviderSample,
+    group: &PhysicalAdapterGroup,
+) {
+    let Some(primary_adapter) = sample.adapters.iter().find(|adapter| {
+        adapter.adl_raw_identity.adl_adapter_index == group.physical_adapter_primary_index
+    }) else {
+        lines.push(format!("Unknown adapter [{}]", group.physical_adapter_key));
+        lines.push("  provider formatting error: primary ADL record missing".to_string());
+        return;
+    };
+
+    lines.push(format!(
+        "{} [{}]",
+        primary_adapter.adl_raw_identity.adl_adapter_name, group.physical_adapter_key
+    ));
+
+    if group.physical_vendor_id != 1002 {
+        lines.push("  seen by ADL only; AMD extended discovery skipped".to_string());
+        lines.push(format!(
+            "  ADL logical records: {}",
+            group.logical_record_count
+        ));
+        return;
+    }
+
+    lines.push(format!(
+        "  active: {}",
+        yes_no(adapter_active_value(primary_adapter).unwrap_or(false))
+    ));
+
+    if let Some(raw) = call_raw(primary_adapter, "overdrive5_current_activity") {
+        if let Some(activity_percent) = raw.get("activity_percent").and_then(Value::as_i64) {
+            lines.push(format!("  activity: {activity_percent}%"));
+        }
+        if let Some(engine_clock_10khz) = raw.get("engine_clock_10khz").and_then(Value::as_i64) {
+            lines.push(format!(
+                "  engine clock: {:.1} MHz",
+                (engine_clock_10khz as f64) / 100.0
+            ));
+        }
+        if let Some(memory_clock_10khz) = raw.get("memory_clock_10khz").and_then(Value::as_i64) {
+            lines.push(format!(
+                "  memory clock: {:.1} MHz",
+                (memory_clock_10khz as f64) / 100.0
+            ));
+        }
+        if let Some(perf_level) = raw.get("current_performance_level").and_then(Value::as_i64) {
+            lines.push(format!("  perf level: {perf_level}"));
+        }
+        if let (Some(current_bus_speed), Some(current_bus_lanes), Some(maximum_bus_lanes)) = (
+            raw.get("current_bus_speed").and_then(Value::as_i64),
+            raw.get("current_bus_lanes").and_then(Value::as_i64),
+            raw.get("maximum_bus_lanes").and_then(Value::as_i64),
+        ) {
+            lines.push(format!(
+                "  bus: {current_bus_speed} x{current_bus_lanes} / max x{maximum_bus_lanes}"
+            ));
+        }
+    }
+
+    if let Some(raw) = call_raw(primary_adapter, "adapter_observed_clock_info") {
+        if let Some(core_clock_10khz) = raw.get("core_clock_10khz").and_then(Value::as_i64) {
+            lines.push(format!(
+                "  observed core clock: {:.1} MHz",
+                (core_clock_10khz as f64) / 100.0
+            ));
+        }
+    }
+
+    if let Some(raw) = call_raw(primary_adapter, "adapter_video_bios_info") {
+        let version = raw.get("version").and_then(Value::as_str).unwrap_or("");
+        let part_number = raw.get("part_number").and_then(Value::as_str).unwrap_or("");
+        let date = raw.get("date").and_then(Value::as_str).unwrap_or("");
+        if !version.is_empty() || !part_number.is_empty() || !date.is_empty() {
+            lines.push(format!("  vbios: {version} | {part_number} | {date}"));
+        }
+    }
+
+    if let Some(raw) = call_raw(primary_adapter, "adapter_asic_family_type") {
+        let asic_family_type = raw
+            .get("asic_family_type")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let valids = raw
+            .get("valids")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        lines.push(format!("  asic family: {asic_family_type} valid={valids}"));
+    }
+
+    let unavailable = unavailable_metric_labels(primary_adapter);
+    if !unavailable.is_empty() {
+        lines.push(format!("  unavailable: {}", unavailable.join(", ")));
+    }
+}
+
+fn call_raw<'a>(adapter: &'a AdlAdapterRecord, metric_key: &str) -> Option<&'a Value> {
+    adapter
+        .adl_calls
+        .iter()
+        .find(|call| call.metric_key == metric_key && call.state == "ok")
+        .map(|call| &call.raw)
+}
+
+fn unavailable_metric_labels(adapter: &AdlAdapterRecord) -> Vec<&'static str> {
+    let mut unavailable = Vec::new();
+    for (metric_key, label) in [
+        ("overdrive_caps", "overdrive caps"),
+        ("overdrive5_temperature", "temp"),
+        ("overdrive5_fan_speed_info", "fan"),
+        ("adapter_memory_info", "memory info"),
+    ] {
+        if metric_state(adapter, metric_key).is_some_and(|state| state != "ok") {
+            unavailable.push(label);
+        }
+    }
+
+    unavailable
+}
+
+fn metric_state<'a>(adapter: &'a AdlAdapterRecord, metric_key: &str) -> Option<&'a str> {
+    adapter
+        .adl_calls
+        .iter()
+        .find(|call| call.metric_key == metric_key)
+        .map(|call| call.state)
 }
 
 impl AdlLibrary {
