@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+use serde_json::{json, Value};
 
 const SCHEMA: &str = "wtg.provider.amd.adl.sample.v1";
 const SOURCE: &str = "wtg.provider.amd.adl";
@@ -16,7 +17,10 @@ const PROVIDER_AUTHORITY: &str = "AMD ADL";
 const DEFAULT_INTERVAL_MS: u64 = 1000;
 
 const ADL_OK: i32 = 0;
+const ADL_ERR_NOT_SUPPORTED: i32 = -8;
 const ADL_MAX_PATH: usize = 256;
+const ADL_FANCTRL_SPEED_TYPE_PERCENT: i32 = 1;
+const ADL_FANCTRL_SPEED_TYPE_RPM: i32 = 2;
 
 type AdlMainMemoryAlloc = unsafe extern "C" fn(c_int) -> *mut c_void;
 type AdlMainControlCreate = unsafe extern "C" fn(AdlMainMemoryAlloc, c_int) -> c_int;
@@ -24,6 +28,17 @@ type AdlMainControlDestroy = unsafe extern "C" fn() -> c_int;
 type AdlAdapterNumberOfAdaptersGet = unsafe extern "C" fn(*mut c_int) -> c_int;
 type AdlAdapterAdapterInfoGet = unsafe extern "C" fn(*mut AdapterInfo, c_int) -> c_int;
 type AdlAdapterActiveGet = unsafe extern "C" fn(c_int, *mut c_int) -> c_int;
+type AdlOverdriveCaps = unsafe extern "C" fn(c_int, *mut c_int, *mut c_int, *mut c_int) -> c_int;
+type AdlOverdrive5CurrentActivityGet = unsafe extern "C" fn(c_int, *mut AdlPmActivity) -> c_int;
+type AdlOverdrive5TemperatureGet = unsafe extern "C" fn(c_int, c_int, *mut AdlTemperature) -> c_int;
+type AdlOverdrive5FanSpeedInfoGet =
+    unsafe extern "C" fn(c_int, c_int, *mut AdlFanSpeedInfo) -> c_int;
+type AdlOverdrive5FanSpeedGet = unsafe extern "C" fn(c_int, c_int, *mut AdlFanSpeedValue) -> c_int;
+type AdlOverdrive5OdParametersGet = unsafe extern "C" fn(c_int, *mut AdlOdParameters) -> c_int;
+type AdlAdapterMemoryInfoGet = unsafe extern "C" fn(c_int, *mut AdlMemoryInfo) -> c_int;
+type AdlAdapterVideoBiosInfoGet = unsafe extern "C" fn(c_int, *mut AdlBiosInfo) -> c_int;
+type AdlAdapterAsicFamilyTypeGet = unsafe extern "C" fn(c_int, *mut c_int, *mut c_int) -> c_int;
+type AdlAdapterObservedClockInfoGet = unsafe extern "C" fn(c_int, *mut c_int, *mut c_int) -> c_int;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -39,6 +54,7 @@ struct CliArgs {
 
 #[derive(Debug, Serialize)]
 pub struct ProviderSample {
+    wtg_version: &'static str,
     schema: &'static str,
     source: &'static str,
     telemetry_class: &'static str,
@@ -58,8 +74,7 @@ pub struct ProviderSample {
 #[derive(Debug, Serialize)]
 struct AdlAdapterRecord {
     adl_raw_identity: AdlRawIdentity,
-    adl_metrics: AdlMetrics,
-    adl_return_codes: AdapterReturnCodes,
+    adl_calls: Vec<AdlApiCall>,
     provider_warnings: Vec<String>,
     provider_errors: Vec<String>,
 }
@@ -83,16 +98,14 @@ struct AdlRawIdentity {
 }
 
 #[derive(Debug, Serialize)]
-struct AdlMetrics {
-    adl_adapter_active: AdlMetricBoolCall,
-}
-
-#[derive(Debug, Serialize)]
-struct AdlMetricBoolCall {
-    attempted: bool,
+struct AdlApiCall {
+    metric_key: &'static str,
+    source_api: &'static str,
     state: &'static str,
     adl_return_code: Option<i32>,
-    value: Option<bool>,
+    raw: Value,
+    unit: Option<&'static str>,
+    error_message: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,11 +113,6 @@ struct SampleReturnCodes {
     adl_main_control_create: Option<i32>,
     adl_adapter_number_of_adapters_get: Option<i32>,
     adl_adapter_adapter_info_get: Option<i32>,
-}
-
-#[derive(Debug, Serialize)]
-struct AdapterReturnCodes {
-    adl_adapter_active_get: Option<i32>,
 }
 
 #[repr(C)]
@@ -127,6 +135,85 @@ struct AdapterInfo {
     i_os_display_index: c_int,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AdlPmActivity {
+    i_size: c_int,
+    i_engine_clock: c_int,
+    i_memory_clock: c_int,
+    i_vddc: c_int,
+    i_activity_percent: c_int,
+    i_current_performance_level: c_int,
+    i_current_bus_speed: c_int,
+    i_current_bus_lanes: c_int,
+    i_maximum_bus_lanes: c_int,
+    i_reserved: c_int,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AdlTemperature {
+    i_size: c_int,
+    i_temperature: c_int,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AdlFanSpeedInfo {
+    i_size: c_int,
+    i_flags: c_int,
+    i_min_percent: c_int,
+    i_max_percent: c_int,
+    i_min_rpm: c_int,
+    i_max_rpm: c_int,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AdlFanSpeedValue {
+    i_size: c_int,
+    i_speed_type: c_int,
+    i_fan_speed: c_int,
+    i_flags: c_int,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AdlOdParameterRange {
+    i_min: c_int,
+    i_max: c_int,
+    i_step: c_int,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AdlOdParameters {
+    i_size: c_int,
+    i_number_of_performance_levels: c_int,
+    i_activity_reporting_supported: c_int,
+    i_discrete_performance_levels: c_int,
+    i_reserved: c_int,
+    s_engine_clock: AdlOdParameterRange,
+    s_memory_clock: AdlOdParameterRange,
+    s_vddc: AdlOdParameterRange,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AdlMemoryInfo {
+    str_memory_type: [c_char; ADL_MAX_PATH],
+    i_memory_size: c_int,
+    str_memory_bandwidth: [c_char; ADL_MAX_PATH],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AdlBiosInfo {
+    str_part_number: [c_char; ADL_MAX_PATH],
+    str_version: [c_char; ADL_MAX_PATH],
+    str_date: [c_char; ADL_MAX_PATH],
+}
+
 struct AdlLibrary {
     module: NonNull<c_void>,
     dll_name: String,
@@ -136,6 +223,16 @@ struct AdlLibrary {
     adapter_number_of_adapters_get: AdlAdapterNumberOfAdaptersGet,
     adapter_info_get: AdlAdapterAdapterInfoGet,
     adapter_active_get: Option<AdlAdapterActiveGet>,
+    overdrive_caps: Option<AdlOverdriveCaps>,
+    overdrive5_current_activity_get: Option<AdlOverdrive5CurrentActivityGet>,
+    overdrive5_temperature_get: Option<AdlOverdrive5TemperatureGet>,
+    overdrive5_fan_speed_info_get: Option<AdlOverdrive5FanSpeedInfoGet>,
+    overdrive5_fan_speed_get: Option<AdlOverdrive5FanSpeedGet>,
+    overdrive5_od_parameters_get: Option<AdlOverdrive5OdParametersGet>,
+    adapter_memory_info_get: Option<AdlAdapterMemoryInfoGet>,
+    adapter_video_bios_info_get: Option<AdlAdapterVideoBiosInfoGet>,
+    adapter_asic_family_type_get: Option<AdlAdapterAsicFamilyTypeGet>,
+    adapter_observed_clock_info_get: Option<AdlAdapterObservedClockInfoGet>,
 }
 
 impl Drop for AdlLibrary {
@@ -210,6 +307,7 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
         Ok(library) => match AdlSession::create(&library) {
             Ok(_session) => match enumerate_adapters(&library) {
                 Ok(enumeration) if enumeration.adapters.is_empty() => ProviderSample {
+                    wtg_version: env!("CARGO_PKG_VERSION"),
                     schema: SCHEMA,
                     source: SOURCE,
                     telemetry_class: TELEMETRY_CLASS,
@@ -232,6 +330,7 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                     errors: vec!["ADL initialized but returned zero adapters.".to_string()],
                 },
                 Ok(enumeration) => ProviderSample {
+                    wtg_version: env!("CARGO_PKG_VERSION"),
                     schema: SCHEMA,
                     source: SOURCE,
                     telemetry_class: TELEMETRY_CLASS,
@@ -254,6 +353,7 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                     errors: Vec::new(),
                 },
                 Err(err) => ProviderSample {
+                    wtg_version: env!("CARGO_PKG_VERSION"),
                     schema: SCHEMA,
                     source: SOURCE,
                     telemetry_class: TELEMETRY_CLASS,
@@ -275,6 +375,7 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                 },
             },
             Err(err) => ProviderSample {
+                wtg_version: env!("CARGO_PKG_VERSION"),
                 schema: SCHEMA,
                 source: SOURCE,
                 telemetry_class: TELEMETRY_CLASS,
@@ -296,6 +397,7 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
             },
         },
         Err(err) => ProviderSample {
+            wtg_version: env!("CARGO_PKG_VERSION"),
             schema: SCHEMA,
             source: SOURCE,
             telemetry_class: TELEMETRY_CLASS,
@@ -332,7 +434,7 @@ pub fn format_snapshot(sample: &ProviderSample) -> String {
     let active_amd_adapters = amd_adapters
         .iter()
         .copied()
-        .filter(|adapter| adapter.adl_metrics.adl_adapter_active.value == Some(true))
+        .filter(|adapter| adapter_active_value(adapter) == Some(true))
         .collect::<Vec<_>>();
     match sample.status {
         "ok" => {
@@ -345,12 +447,16 @@ pub fn format_snapshot(sample: &ProviderSample) -> String {
             } else {
                 active_amd_adapters.as_slice()
             };
-            let omitted_inactive_count = amd_adapters.len().saturating_sub(rendered_adapters.len());
 
             if rendered_adapters.is_empty() {
                 lines.push("No AMD vendor records returned by ADL.".to_string());
             } else {
                 for adapter in rendered_adapters.iter() {
+                    let ok_call_count = adapter
+                        .adl_calls
+                        .iter()
+                        .filter(|call| call.state == "ok")
+                        .count();
                     lines.push(format!(
                         "ADL adapter {}",
                         adapter.adl_raw_identity.adl_adapter_index
@@ -365,13 +471,13 @@ pub fn format_snapshot(sample: &ProviderSample) -> String {
                     ));
                     lines.push(format!(
                         "  Active: {}",
-                        yes_no(adapter.adl_metrics.adl_adapter_active.value == Some(true))
+                        yes_no(adapter_active_value(adapter) == Some(true))
                     ));
+                    lines.push(format!("  Successful ADL calls: {ok_call_count}"));
                     lines.push(String::new());
                 }
             }
 
-            let _ = omitted_inactive_count;
             if lines.last().is_some_and(String::is_empty) {
                 lines.pop();
             }
@@ -391,6 +497,15 @@ pub fn format_snapshot(sample: &ProviderSample) -> String {
             other, reason
         ),
     }
+}
+
+fn adapter_active_value(adapter: &AdlAdapterRecord) -> Option<bool> {
+    adapter
+        .adl_calls
+        .iter()
+        .find(|call| call.metric_key == "adapter_active")
+        .and_then(|call| call.raw.get("value"))
+        .and_then(Value::as_bool)
 }
 
 fn yes_no(value: bool) -> &'static str {
@@ -432,6 +547,56 @@ fn load_adl_library(dll_name: &str) -> Result<AdlLibrary, String> {
     };
     let adapter_active_get =
         unsafe { load_optional_symbol::<AdlAdapterActiveGet>(module, b"ADL_Adapter_Active_Get\0") };
+    let overdrive_caps =
+        unsafe { load_optional_symbol::<AdlOverdriveCaps>(module, b"ADL_Overdrive_Caps\0") };
+    let overdrive5_current_activity_get = unsafe {
+        load_optional_symbol::<AdlOverdrive5CurrentActivityGet>(
+            module,
+            b"ADL_Overdrive5_CurrentActivity_Get\0",
+        )
+    };
+    let overdrive5_temperature_get = unsafe {
+        load_optional_symbol::<AdlOverdrive5TemperatureGet>(
+            module,
+            b"ADL_Overdrive5_Temperature_Get\0",
+        )
+    };
+    let overdrive5_fan_speed_info_get = unsafe {
+        load_optional_symbol::<AdlOverdrive5FanSpeedInfoGet>(
+            module,
+            b"ADL_Overdrive5_FanSpeedInfo_Get\0",
+        )
+    };
+    let overdrive5_fan_speed_get = unsafe {
+        load_optional_symbol::<AdlOverdrive5FanSpeedGet>(module, b"ADL_Overdrive5_FanSpeed_Get\0")
+    };
+    let overdrive5_od_parameters_get = unsafe {
+        load_optional_symbol::<AdlOverdrive5OdParametersGet>(
+            module,
+            b"ADL_Overdrive5_ODParameters_Get\0",
+        )
+    };
+    let adapter_memory_info_get = unsafe {
+        load_optional_symbol::<AdlAdapterMemoryInfoGet>(module, b"ADL_Adapter_MemoryInfo_Get\0")
+    };
+    let adapter_video_bios_info_get = unsafe {
+        load_optional_symbol::<AdlAdapterVideoBiosInfoGet>(
+            module,
+            b"ADL_Adapter_VideoBiosInfo_Get\0",
+        )
+    };
+    let adapter_asic_family_type_get = unsafe {
+        load_optional_symbol::<AdlAdapterAsicFamilyTypeGet>(
+            module,
+            b"ADL_Adapter_ASICFamilyType_Get\0",
+        )
+    };
+    let adapter_observed_clock_info_get = unsafe {
+        load_optional_symbol::<AdlAdapterObservedClockInfoGet>(
+            module,
+            b"ADL_Adapter_ObservedClockInfo_Get\0",
+        )
+    };
 
     Ok(AdlLibrary {
         module,
@@ -442,6 +607,16 @@ fn load_adl_library(dll_name: &str) -> Result<AdlLibrary, String> {
         adapter_number_of_adapters_get,
         adapter_info_get,
         adapter_active_get,
+        overdrive_caps,
+        overdrive5_current_activity_get,
+        overdrive5_temperature_get,
+        overdrive5_fan_speed_info_get,
+        overdrive5_fan_speed_get,
+        overdrive5_od_parameters_get,
+        adapter_memory_info_get,
+        adapter_video_bios_info_get,
+        adapter_asic_family_type_get,
+        adapter_observed_clock_info_get,
     })
 }
 
@@ -500,43 +675,7 @@ fn enumerate_adapters(library: &AdlLibrary) -> Result<EnumerationResult, Enumera
 
     let adapters = adapter_info
         .into_iter()
-        .map(|info| {
-            let mut provider_warnings = Vec::new();
-            if info.i_vendor_id != 1002 {
-                provider_warnings.push(
-                    "ADL returned unexpected adapter identity; record preserved without cross-provider validation."
-                        .to_string(),
-                );
-            }
-
-            let (adl_adapter_active, active_return_code, active_errors) =
-                query_adapter_active(library, info.i_adapter_index);
-
-            AdlAdapterRecord {
-                adl_raw_identity: AdlRawIdentity {
-                    adl_adapter_index: info.i_adapter_index,
-                    adl_udid: adl_c_string(&info.str_udid),
-                    adl_adapter_name: adl_c_string(&info.str_adapter_name),
-                    adl_display_name: adl_c_string(&info.str_display_name),
-                    adl_vendor_id: info.i_vendor_id,
-                    adl_present: info.i_present != 0,
-                    adl_exists: info.i_exist != 0,
-                    adl_bus_number: info.i_bus_number,
-                    adl_device_number: info.i_device_number,
-                    adl_function_number: info.i_function_number,
-                    adl_driver_path: adl_c_string(&info.str_driver_path),
-                    adl_driver_path_ext: adl_c_string(&info.str_driver_path_ext),
-                    adl_pnp_string: adl_c_string(&info.str_pnp_string),
-                    adl_os_display_index: info.i_os_display_index,
-                },
-                adl_metrics: AdlMetrics { adl_adapter_active },
-                adl_return_codes: AdapterReturnCodes {
-                    adl_adapter_active_get: active_return_code,
-                },
-                provider_warnings,
-                provider_errors: active_errors,
-            }
-        })
+        .map(|info| build_adapter_record(library, info))
         .collect::<Vec<_>>();
 
     Ok(EnumerationResult {
@@ -546,10 +685,81 @@ fn enumerate_adapters(library: &AdlLibrary) -> Result<EnumerationResult, Enumera
     })
 }
 
+fn build_adapter_record(library: &AdlLibrary, info: AdapterInfo) -> AdlAdapterRecord {
+    let mut provider_warnings = Vec::new();
+    let adl_calls = if info.i_vendor_id != 1002 {
+        provider_warnings.push(
+            "ADL returned non-AMD adapter identity; record preserved, but extended AMD ADL telemetry discovery was skipped for this adapter."
+                .to_string(),
+        );
+        vec![query_adapter_active(library, info.i_adapter_index)]
+    } else {
+        collect_adapter_calls(library, info.i_adapter_index)
+    };
+    let provider_errors = adl_calls
+        .iter()
+        .filter(|call| call.state == "error")
+        .filter_map(|call| call.error_message.clone())
+        .collect::<Vec<_>>();
+    provider_warnings.extend(
+        adl_calls
+            .iter()
+            .filter(|call| call.state == "unsupported" || call.state == "not_available")
+            .filter_map(|call| call.error_message.clone()),
+    );
+
+    AdlAdapterRecord {
+        adl_raw_identity: AdlRawIdentity {
+            adl_adapter_index: info.i_adapter_index,
+            adl_udid: adl_c_string(&info.str_udid),
+            adl_adapter_name: adl_c_string(&info.str_adapter_name),
+            adl_display_name: adl_c_string(&info.str_display_name),
+            adl_vendor_id: info.i_vendor_id,
+            adl_present: info.i_present != 0,
+            adl_exists: info.i_exist != 0,
+            adl_bus_number: info.i_bus_number,
+            adl_device_number: info.i_device_number,
+            adl_function_number: info.i_function_number,
+            adl_driver_path: adl_c_string(&info.str_driver_path),
+            adl_driver_path_ext: adl_c_string(&info.str_driver_path_ext),
+            adl_pnp_string: adl_c_string(&info.str_pnp_string),
+            adl_os_display_index: info.i_os_display_index,
+        },
+        adl_calls,
+        provider_warnings,
+        provider_errors,
+    }
+}
+
+fn collect_adapter_calls(library: &AdlLibrary, adapter_index: i32) -> Vec<AdlApiCall> {
+    vec![
+        query_adapter_active(library, adapter_index),
+        query_overdrive_caps(library, adapter_index),
+        query_current_activity(library, adapter_index),
+        query_observed_clock_info(library, adapter_index),
+        query_temperature(library, adapter_index),
+        query_od_parameters(library, adapter_index),
+        query_fan_speed_info(library, adapter_index),
+        query_fan_speed(library, adapter_index, ADL_FANCTRL_SPEED_TYPE_PERCENT),
+        query_fan_speed(library, adapter_index, ADL_FANCTRL_SPEED_TYPE_RPM),
+        query_memory_info(library, adapter_index),
+        query_video_bios_info(library, adapter_index),
+        query_asic_family_type(library, adapter_index),
+    ]
+}
+
 fn zeroed_adapter_info() -> AdapterInfo {
     let mut info = unsafe { MaybeUninit::<AdapterInfo>::zeroed().assume_init() };
     info.i_size = size_of::<AdapterInfo>() as i32;
     info
+}
+
+fn zeroed_with_size<T>(size: usize) -> T {
+    let mut value = unsafe { MaybeUninit::<T>::zeroed().assume_init() };
+    unsafe {
+        ptr::write((&mut value as *mut T).cast::<c_int>(), size as c_int);
+    }
+    value
 }
 
 fn adl_c_string(raw: &[c_char]) -> String {
@@ -587,50 +797,537 @@ unsafe fn load_optional_symbol<T>(module: NonNull<c_void>, name: &[u8]) -> Optio
     Some(std::mem::transmute_copy(&symbol))
 }
 
-fn query_adapter_active(
-    library: &AdlLibrary,
-    adapter_index: i32,
-) -> (AdlMetricBoolCall, Option<i32>, Vec<String>) {
+fn query_adapter_active(library: &AdlLibrary, adapter_index: i32) -> AdlApiCall {
     let Some(active_get) = library.adapter_active_get else {
-        return (
-            AdlMetricBoolCall {
-                attempted: false,
-                state: "not_attempted",
-                adl_return_code: None,
-                value: None,
-            },
-            None,
-            vec!["ADL_Adapter_Active_Get symbol unavailable in loaded ADL DLL.".to_string()],
+        return unsupported_call(
+            "adapter_active",
+            "ADL_Adapter_Active_Get",
+            "ADL_Adapter_Active_Get symbol unavailable in loaded ADL DLL.",
         );
     };
 
     let mut active = 0i32;
     let result = unsafe { active_get(adapter_index, &mut active) };
     if result != ADL_OK {
-        return (
-            AdlMetricBoolCall {
-                attempted: true,
-                state: "error",
-                adl_return_code: Some(result),
-                value: None,
-            },
-            Some(result),
-            vec![format!(
+        return call_from_error(
+            "adapter_active",
+            "ADL_Adapter_Active_Get",
+            result,
+            format!(
                 "ADL_Adapter_Active_Get failed for adapter index {adapter_index} with status {result}."
-            )],
+            ),
         );
     }
 
-    (
-        AdlMetricBoolCall {
-            attempted: true,
-            state: "ok",
-            adl_return_code: Some(result),
-            value: Some(active != 0),
+    AdlApiCall {
+        metric_key: "adapter_active",
+        source_api: "ADL_Adapter_Active_Get",
+        state: "ok",
+        adl_return_code: Some(result),
+        raw: json!({ "value": active != 0 }),
+        unit: None,
+        error_message: None,
+    }
+}
+
+fn query_overdrive_caps(library: &AdlLibrary, adapter_index: i32) -> AdlApiCall {
+    let Some(overdrive_caps) = library.overdrive_caps else {
+        return unsupported_call(
+            "overdrive_caps",
+            "ADL_Overdrive_Caps",
+            "ADL_Overdrive_Caps symbol unavailable in loaded ADL DLL.",
+        );
+    };
+
+    let mut supported = 0i32;
+    let mut enabled = 0i32;
+    let mut version = 0i32;
+    let result =
+        unsafe { overdrive_caps(adapter_index, &mut supported, &mut enabled, &mut version) };
+    if result != ADL_OK {
+        return call_from_error(
+            "overdrive_caps",
+            "ADL_Overdrive_Caps",
+            result,
+            format!(
+                "ADL_Overdrive_Caps failed for adapter index {adapter_index} with status {result}."
+            ),
+        );
+    }
+
+    let state = if supported == 0 {
+        "not_available"
+    } else {
+        "ok"
+    };
+    let error_message = if supported == 0 {
+        Some(
+            "ADL_Overdrive_Caps succeeded but reported overdrive unsupported for this adapter."
+                .to_string(),
+        )
+    } else {
+        None
+    };
+
+    AdlApiCall {
+        metric_key: "overdrive_caps",
+        source_api: "ADL_Overdrive_Caps",
+        state,
+        adl_return_code: Some(result),
+        raw: json!({
+            "supported": supported != 0,
+            "enabled": enabled != 0,
+            "version": version
+        }),
+        unit: None,
+        error_message,
+    }
+}
+
+fn query_current_activity(library: &AdlLibrary, adapter_index: i32) -> AdlApiCall {
+    let Some(current_activity_get) = library.overdrive5_current_activity_get else {
+        return unsupported_call(
+            "overdrive5_current_activity",
+            "ADL_Overdrive5_CurrentActivity_Get",
+            "ADL_Overdrive5_CurrentActivity_Get symbol unavailable in loaded ADL DLL.",
+        );
+    };
+
+    let mut activity = zeroed_with_size::<AdlPmActivity>(size_of::<AdlPmActivity>());
+    let result = unsafe { current_activity_get(adapter_index, &mut activity) };
+    if result != ADL_OK {
+        return call_from_error(
+            "overdrive5_current_activity",
+            "ADL_Overdrive5_CurrentActivity_Get",
+            result,
+            format!("ADL_Overdrive5_CurrentActivity_Get failed for adapter index {adapter_index} with status {result}."),
+        );
+    }
+
+    AdlApiCall {
+        metric_key: "overdrive5_current_activity",
+        source_api: "ADL_Overdrive5_CurrentActivity_Get",
+        state: "ok",
+        adl_return_code: Some(result),
+        raw: json!({
+            "engine_clock_10khz": activity.i_engine_clock,
+            "memory_clock_10khz": activity.i_memory_clock,
+            "vddc_mv": activity.i_vddc,
+            "activity_percent": activity.i_activity_percent,
+            "current_performance_level": activity.i_current_performance_level,
+            "current_bus_speed": activity.i_current_bus_speed,
+            "current_bus_lanes": activity.i_current_bus_lanes,
+            "maximum_bus_lanes": activity.i_maximum_bus_lanes,
+            "reserved": activity.i_reserved
+        }),
+        unit: None,
+        error_message: None,
+    }
+}
+
+fn query_observed_clock_info(library: &AdlLibrary, adapter_index: i32) -> AdlApiCall {
+    let Some(observed_clock_info_get) = library.adapter_observed_clock_info_get else {
+        return unsupported_call(
+            "adapter_observed_clock_info",
+            "ADL_Adapter_ObservedClockInfo_Get",
+            "ADL_Adapter_ObservedClockInfo_Get symbol unavailable in loaded ADL DLL.",
+        );
+    };
+
+    let mut core_clock = 0i32;
+    let mut memory_clock = 0i32;
+    let result =
+        unsafe { observed_clock_info_get(adapter_index, &mut core_clock, &mut memory_clock) };
+    if result != ADL_OK {
+        return call_from_error(
+            "adapter_observed_clock_info",
+            "ADL_Adapter_ObservedClockInfo_Get",
+            result,
+            format!("ADL_Adapter_ObservedClockInfo_Get failed for adapter index {adapter_index} with status {result}."),
+        );
+    }
+
+    AdlApiCall {
+        metric_key: "adapter_observed_clock_info",
+        source_api: "ADL_Adapter_ObservedClockInfo_Get",
+        state: "ok",
+        adl_return_code: Some(result),
+        raw: json!({
+            "core_clock_10khz": core_clock,
+            "memory_clock_10khz": memory_clock
+        }),
+        unit: Some("10_khz"),
+        error_message: None,
+    }
+}
+
+fn query_temperature(library: &AdlLibrary, adapter_index: i32) -> AdlApiCall {
+    let Some(temperature_get) = library.overdrive5_temperature_get else {
+        return unsupported_call(
+            "overdrive5_temperature",
+            "ADL_Overdrive5_Temperature_Get",
+            "ADL_Overdrive5_Temperature_Get symbol unavailable in loaded ADL DLL.",
+        );
+    };
+
+    let mut temperature = zeroed_with_size::<AdlTemperature>(size_of::<AdlTemperature>());
+    let thermal_controller_index = 0i32;
+    let result =
+        unsafe { temperature_get(adapter_index, thermal_controller_index, &mut temperature) };
+    if result != ADL_OK {
+        return call_from_error(
+            "overdrive5_temperature",
+            "ADL_Overdrive5_Temperature_Get",
+            result,
+            format!("ADL_Overdrive5_Temperature_Get failed for adapter index {adapter_index} with status {result}."),
+        );
+    }
+
+    AdlApiCall {
+        metric_key: "overdrive5_temperature",
+        source_api: "ADL_Overdrive5_Temperature_Get",
+        state: "ok",
+        adl_return_code: Some(result),
+        raw: json!({
+            "thermal_controller_index": thermal_controller_index,
+            "temperature_millidegrees_celsius": temperature.i_temperature
+        }),
+        unit: Some("millidegrees_celsius"),
+        error_message: None,
+    }
+}
+
+fn query_od_parameters(library: &AdlLibrary, adapter_index: i32) -> AdlApiCall {
+    let Some(od_parameters_get) = library.overdrive5_od_parameters_get else {
+        return unsupported_call(
+            "overdrive5_od_parameters",
+            "ADL_Overdrive5_ODParameters_Get",
+            "ADL_Overdrive5_ODParameters_Get symbol unavailable in loaded ADL DLL.",
+        );
+    };
+
+    let mut params = zeroed_with_size::<AdlOdParameters>(size_of::<AdlOdParameters>());
+    let result = unsafe { od_parameters_get(adapter_index, &mut params) };
+    if result != ADL_OK {
+        return call_from_error(
+            "overdrive5_od_parameters",
+            "ADL_Overdrive5_ODParameters_Get",
+            result,
+            format!("ADL_Overdrive5_ODParameters_Get failed for adapter index {adapter_index} with status {result}."),
+        );
+    }
+
+    AdlApiCall {
+        metric_key: "overdrive5_od_parameters",
+        source_api: "ADL_Overdrive5_ODParameters_Get",
+        state: "ok",
+        adl_return_code: Some(result),
+        raw: json!({
+            "number_of_performance_levels": params.i_number_of_performance_levels,
+            "activity_reporting_supported": params.i_activity_reporting_supported != 0,
+            "discrete_performance_levels": params.i_discrete_performance_levels != 0,
+            "reserved": params.i_reserved,
+            "engine_clock_range": range_json(params.s_engine_clock),
+            "memory_clock_range": range_json(params.s_memory_clock),
+            "vddc_range": range_json(params.s_vddc)
+        }),
+        unit: None,
+        error_message: None,
+    }
+}
+
+fn query_fan_speed_info(library: &AdlLibrary, adapter_index: i32) -> AdlApiCall {
+    let Some(fan_speed_info_get) = library.overdrive5_fan_speed_info_get else {
+        return unsupported_call(
+            "overdrive5_fan_speed_info",
+            "ADL_Overdrive5_FanSpeedInfo_Get",
+            "ADL_Overdrive5_FanSpeedInfo_Get symbol unavailable in loaded ADL DLL.",
+        );
+    };
+
+    let mut fan_speed_info = zeroed_with_size::<AdlFanSpeedInfo>(size_of::<AdlFanSpeedInfo>());
+    let thermal_controller_index = 0i32;
+    let result =
+        unsafe { fan_speed_info_get(adapter_index, thermal_controller_index, &mut fan_speed_info) };
+    if result != ADL_OK {
+        return call_from_error(
+            "overdrive5_fan_speed_info",
+            "ADL_Overdrive5_FanSpeedInfo_Get",
+            result,
+            format!("ADL_Overdrive5_FanSpeedInfo_Get failed for adapter index {adapter_index} with status {result}."),
+        );
+    }
+
+    AdlApiCall {
+        metric_key: "overdrive5_fan_speed_info",
+        source_api: "ADL_Overdrive5_FanSpeedInfo_Get",
+        state: "ok",
+        adl_return_code: Some(result),
+        raw: json!({
+            "thermal_controller_index": thermal_controller_index,
+            "flags": fan_speed_info.i_flags,
+            "min_percent": fan_speed_info.i_min_percent,
+            "max_percent": fan_speed_info.i_max_percent,
+            "min_rpm": fan_speed_info.i_min_rpm,
+            "max_rpm": fan_speed_info.i_max_rpm
+        }),
+        unit: None,
+        error_message: None,
+    }
+}
+
+fn query_fan_speed(library: &AdlLibrary, adapter_index: i32, speed_type: i32) -> AdlApiCall {
+    let Some(fan_speed_get) = library.overdrive5_fan_speed_get else {
+        return unsupported_call(
+            fan_metric_key(speed_type),
+            "ADL_Overdrive5_FanSpeed_Get",
+            "ADL_Overdrive5_FanSpeed_Get symbol unavailable in loaded ADL DLL.",
+        );
+    };
+
+    let mut fan_speed = zeroed_with_size::<AdlFanSpeedValue>(size_of::<AdlFanSpeedValue>());
+    fan_speed.i_speed_type = speed_type;
+    let thermal_controller_index = 0i32;
+    let result = unsafe { fan_speed_get(adapter_index, thermal_controller_index, &mut fan_speed) };
+    if result != ADL_OK {
+        return call_from_error(
+            fan_metric_key(speed_type),
+            "ADL_Overdrive5_FanSpeed_Get",
+            result,
+            format!("ADL_Overdrive5_FanSpeed_Get failed for adapter index {adapter_index} with status {result} for speed_type {speed_type}."),
+        );
+    }
+
+    AdlApiCall {
+        metric_key: fan_metric_key(speed_type),
+        source_api: "ADL_Overdrive5_FanSpeed_Get",
+        state: "ok",
+        adl_return_code: Some(result),
+        raw: json!({
+            "thermal_controller_index": thermal_controller_index,
+            "speed_type": fan_speed.i_speed_type,
+            "fan_speed": fan_speed.i_fan_speed,
+            "flags": fan_speed.i_flags
+        }),
+        unit: fan_unit(speed_type),
+        error_message: None,
+    }
+}
+
+fn query_memory_info(library: &AdlLibrary, adapter_index: i32) -> AdlApiCall {
+    let Some(memory_info_get) = library.adapter_memory_info_get else {
+        return unsupported_call(
+            "adapter_memory_info",
+            "ADL_Adapter_MemoryInfo_Get",
+            "ADL_Adapter_MemoryInfo_Get symbol unavailable in loaded ADL DLL.",
+        );
+    };
+
+    let mut memory_info = unsafe { MaybeUninit::<AdlMemoryInfo>::zeroed().assume_init() };
+    let result = unsafe { memory_info_get(adapter_index, &mut memory_info) };
+    if result != ADL_OK {
+        return call_from_error(
+            "adapter_memory_info",
+            "ADL_Adapter_MemoryInfo_Get",
+            result,
+            format!("ADL_Adapter_MemoryInfo_Get failed for adapter index {adapter_index} with status {result}."),
+        );
+    }
+
+    let memory_type = adl_c_string(&memory_info.str_memory_type);
+    let memory_bandwidth = adl_c_string(&memory_info.str_memory_bandwidth);
+    let state = if memory_type.is_empty()
+        && memory_bandwidth.is_empty()
+        && memory_info.i_memory_size <= 0
+    {
+        "not_available"
+    } else {
+        "ok"
+    };
+    let error_message = if state == "not_available" {
+        Some(
+            "ADL_Adapter_MemoryInfo_Get succeeded but returned no populated memory details."
+                .to_string(),
+        )
+    } else {
+        None
+    };
+
+    AdlApiCall {
+        metric_key: "adapter_memory_info",
+        source_api: "ADL_Adapter_MemoryInfo_Get",
+        state,
+        adl_return_code: Some(result),
+        raw: json!({
+            "memory_type": memory_type,
+            "memory_size_raw": memory_info.i_memory_size,
+            "memory_bandwidth": memory_bandwidth
+        }),
+        unit: None,
+        error_message,
+    }
+}
+
+fn query_video_bios_info(library: &AdlLibrary, adapter_index: i32) -> AdlApiCall {
+    let Some(video_bios_info_get) = library.adapter_video_bios_info_get else {
+        return unsupported_call(
+            "adapter_video_bios_info",
+            "ADL_Adapter_VideoBiosInfo_Get",
+            "ADL_Adapter_VideoBiosInfo_Get symbol unavailable in loaded ADL DLL.",
+        );
+    };
+
+    let mut bios_info = unsafe { MaybeUninit::<AdlBiosInfo>::zeroed().assume_init() };
+    let result = unsafe { video_bios_info_get(adapter_index, &mut bios_info) };
+    if result != ADL_OK {
+        return call_from_error(
+            "adapter_video_bios_info",
+            "ADL_Adapter_VideoBiosInfo_Get",
+            result,
+            format!("ADL_Adapter_VideoBiosInfo_Get failed for adapter index {adapter_index} with status {result}."),
+        );
+    }
+
+    let part_number = adl_c_string(&bios_info.str_part_number);
+    let version = adl_c_string(&bios_info.str_version);
+    let date = adl_c_string(&bios_info.str_date);
+    let state = if part_number.is_empty() && version.is_empty() && date.is_empty() {
+        "not_available"
+    } else {
+        "ok"
+    };
+    let error_message = if state == "not_available" {
+        Some(
+            "ADL_Adapter_VideoBiosInfo_Get succeeded but returned no populated BIOS strings."
+                .to_string(),
+        )
+    } else {
+        None
+    };
+
+    AdlApiCall {
+        metric_key: "adapter_video_bios_info",
+        source_api: "ADL_Adapter_VideoBiosInfo_Get",
+        state,
+        adl_return_code: Some(result),
+        raw: json!({
+            "part_number": part_number,
+            "version": version,
+            "date": date
+        }),
+        unit: None,
+        error_message,
+    }
+}
+
+fn query_asic_family_type(library: &AdlLibrary, adapter_index: i32) -> AdlApiCall {
+    let Some(asic_family_type_get) = library.adapter_asic_family_type_get else {
+        return unsupported_call(
+            "adapter_asic_family_type",
+            "ADL_Adapter_ASICFamilyType_Get",
+            "ADL_Adapter_ASICFamilyType_Get symbol unavailable in loaded ADL DLL.",
+        );
+    };
+
+    let mut asic_family_type = 0i32;
+    let mut valids = 0i32;
+    let result = unsafe { asic_family_type_get(adapter_index, &mut asic_family_type, &mut valids) };
+    if result != ADL_OK {
+        return call_from_error(
+            "adapter_asic_family_type",
+            "ADL_Adapter_ASICFamilyType_Get",
+            result,
+            format!("ADL_Adapter_ASICFamilyType_Get failed for adapter index {adapter_index} with status {result}."),
+        );
+    }
+
+    let state = if asic_family_type == 0 && valids == 0 {
+        "not_available"
+    } else {
+        "ok"
+    };
+    let error_message = if state == "not_available" {
+        Some(
+            "ADL_Adapter_ASICFamilyType_Get succeeded but returned zeroed ASIC family details."
+                .to_string(),
+        )
+    } else {
+        None
+    };
+
+    AdlApiCall {
+        metric_key: "adapter_asic_family_type",
+        source_api: "ADL_Adapter_ASICFamilyType_Get",
+        state,
+        adl_return_code: Some(result),
+        raw: json!({
+            "asic_family_type": asic_family_type,
+            "valids": valids
+        }),
+        unit: None,
+        error_message,
+    }
+}
+
+fn unsupported_call(
+    metric_key: &'static str,
+    source_api: &'static str,
+    message: &str,
+) -> AdlApiCall {
+    AdlApiCall {
+        metric_key,
+        source_api,
+        state: "unsupported",
+        adl_return_code: None,
+        raw: Value::Null,
+        unit: None,
+        error_message: Some(message.to_string()),
+    }
+}
+
+fn call_from_error(
+    metric_key: &'static str,
+    source_api: &'static str,
+    result: i32,
+    message: String,
+) -> AdlApiCall {
+    AdlApiCall {
+        metric_key,
+        source_api,
+        state: if result == ADL_ERR_NOT_SUPPORTED {
+            "unsupported"
+        } else {
+            "error"
         },
-        Some(result),
-        Vec::new(),
-    )
+        adl_return_code: Some(result),
+        raw: Value::Null,
+        unit: None,
+        error_message: Some(message),
+    }
+}
+
+fn range_json(range: AdlOdParameterRange) -> Value {
+    json!({
+        "min": range.i_min,
+        "max": range.i_max,
+        "step": range.i_step
+    })
+}
+
+fn fan_metric_key(speed_type: i32) -> &'static str {
+    match speed_type {
+        ADL_FANCTRL_SPEED_TYPE_PERCENT => "overdrive5_fan_speed_percent",
+        ADL_FANCTRL_SPEED_TYPE_RPM => "overdrive5_fan_speed_rpm",
+        _ => "overdrive5_fan_speed_unknown",
+    }
+}
+
+fn fan_unit(speed_type: i32) -> Option<&'static str> {
+    match speed_type {
+        ADL_FANCTRL_SPEED_TYPE_PERCENT => Some("percent"),
+        ADL_FANCTRL_SPEED_TYPE_RPM => Some("rpm"),
+        _ => None,
+    }
 }
 
 unsafe fn module_path(module: *mut c_void) -> Result<String, String> {
@@ -718,7 +1415,8 @@ extern "system" {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_args, CliArgs, Mode, DEFAULT_INTERVAL_MS, PROVIDER, SCHEMA, SOURCE, TELEMETRY_CLASS,
+        call_from_error, fan_metric_key, fan_unit, parse_args, CliArgs, Mode, DEFAULT_INTERVAL_MS,
+        PROVIDER, SCHEMA, SOURCE, TELEMETRY_CLASS,
     };
 
     #[test]
@@ -767,5 +1465,19 @@ mod tests {
         assert_eq!(SOURCE, "wtg.provider.amd.adl");
         assert_eq!(TELEMETRY_CLASS, "provider_telemetry");
         assert_eq!(PROVIDER, "amd.adl");
+    }
+
+    #[test]
+    fn fan_speed_metric_labels_match_speed_type() {
+        assert_eq!(fan_metric_key(1), "overdrive5_fan_speed_percent");
+        assert_eq!(fan_metric_key(2), "overdrive5_fan_speed_rpm");
+        assert_eq!(fan_unit(1), Some("percent"));
+        assert_eq!(fan_unit(2), Some("rpm"));
+    }
+
+    #[test]
+    fn unsupported_return_code_maps_to_unsupported_state() {
+        let call = call_from_error("x", "ADL_Test", -8, "boom".to_string());
+        assert_eq!(call.state, "unsupported");
     }
 }
