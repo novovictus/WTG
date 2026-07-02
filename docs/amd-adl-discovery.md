@@ -73,9 +73,9 @@ ADL can surface non-AMD adapter identity/topology records. This branch preserves
 Short watch and snapshot runs on the current test bed have shown:
 
 ```text
-activity: low single digits
-engine clock: observed at both 400.0 MHz and 2100.0 MHz
-memory clock: 1600.0 MHz
+activity: low single digits at rest, near 99% under sustained load
+engine clock: observed at 400.0 MHz idle-ish and 2100.0 MHz loaded
+memory clock: 1600.0 MHz on USB-C / OEM AC, 400.0 MHz on battery
 observed core clock: 21.0 MHz
 observed memory clock: 16.0 MHz
 bus: 2500 x16 / max x16
@@ -95,9 +95,158 @@ The observed `engine clock` value can jump between idle-ish and max-ish values e
 
 ## Test Context
 
-The current baseline was captured while the laptop was on reduced USB-C power rather than the full OEM AC adapter.
+The current baseline was captured on the ASUS ROG G533QS using the explicit AMD ADL provider path in the normal `wtg.exe` release build.
 
-Power source should be treated as a test variable before drawing conclusions about sustained clocks, throttling, provider completeness, or hybrid GPU residency. A full OEM AC validation cycle is intentionally deferred.
+Power source is a test variable. On this platform, ADL-reported AMD iGPU memory clock tracks power source more strongly than workload, while ADL-reported activity and engine clock track workload more strongly than power source.
+
+The known-truth reproduction harness is committed at:
+
+```text
+artifacts/dev/amd_adl_baseline_expanded.ps1
+```
+
+## Known Truth Baseline: Expanded Power/Load Cycle
+
+Known-truth artifact name:
+
+```text
+Power-State-Change_and-Full-Load-Cycle-amd_adl_baseline_expanded_LAPTOP-8CC8RC3A_20260701_233412.zip
+```
+
+The expanded baseline used six queued phases, each with a 5 second countdown and a 60 second hold window:
+
+```text
+1. USB-C REST - no load
+2. USB-C LOAD - start load
+3. USB-C LOAD CONFIRM - keep USB-C/load steady
+4. BATTERY LOAD - remove USB-C
+5. BARREL AC LOAD - connect OEM AC
+6. BARREL AC COOLDOWN - stop load, stay on OEM AC
+```
+
+Harness status:
+
+```text
+watch window closed: yes
+watch exit observed: true
+stderr: clean / header only
+samples captured: 401
+sample_seq: 0 through 400
+```
+
+Phase markers from the known-truth run:
+
+```text
+USB-C rest/no-load:       2026-07-01T23:34:31.9317221-04:00
+USB-C load start:         2026-07-01T23:35:37.8679534-04:00
+USB-C load steady:        2026-07-01T23:36:43.6550149-04:00
+Battery load:             2026-07-01T23:37:49.4483542-04:00
+Barrel AC load:           2026-07-01T23:38:57.7343620-04:00
+Barrel AC cooldown:       2026-07-01T23:40:05.3452108-04:00
+End requested:            2026-07-01T23:41:06.1552205-04:00
+Watch closed:             2026-07-01T23:41:07.3351664-04:00
+```
+
+Per-phase ADL summary from the known-truth run:
+
+```text
+USB-C REST - NO LOAD:
+  samples: 65, seq 19-83
+  activity: min 0%, max 8%, avg 0.45%
+  engine clock values: 400.0, 2087.0, 2100.0 MHz
+  memory clock values: 1600.0 MHz
+
+USB-C LOAD - START LOAD:
+  samples: 65, seq 84-148
+  activity: min 0%, max 99%, avg 96.05%
+  engine clock values: 400.0, 2100.0 MHz
+  memory clock values: 1600.0 MHz
+
+USB-C LOAD CONFIRM - STEADY STATE:
+  samples: 64, seq 149-212
+  activity: min 98%, max 99%, avg 98.97%
+  engine clock values: 2100.0 MHz
+  memory clock values: 1600.0 MHz
+
+BATTERY LOAD - REMOVE USB-C:
+  samples: 64, seq 213-276
+  activity: min 93%, max 99%, avg 98.02%
+  engine clock values: 400.0, 2100.0 MHz
+  memory clock values: 400.0, 1600.0 MHz
+
+BARREL AC LOAD - CONNECT OEM AC:
+  samples: 64, seq 277-340
+  activity: min 94%, max 99%, avg 98.78%
+  engine clock values: 400.0, 1912.0, 2100.0 MHz
+  memory clock values: 400.0, 1600.0 MHz
+
+BARREL AC COOLDOWN - STOP LOAD:
+  samples: 60, seq 341-400
+  activity: min 0%, max 99%, avg 6.62%
+  engine clock values: 400.0, 2100.0 MHz
+  memory clock values: 1600.0 MHz
+```
+
+Known-truth interpretation:
+
+```text
+USB-C / AC-like state:
+  memory clock: 1600 MHz
+
+Battery state:
+  memory clock: 400 MHz after transition settles
+
+OEM barrel AC restored:
+  memory clock: 1600 MHz after transition settles
+
+No load:
+  engine clock mostly 400 MHz
+
+Load:
+  activity near 99%
+  engine clock mostly 2100 MHz
+
+Cooldown on OEM barrel AC:
+  activity returns to idle
+  engine clock returns mostly to 400 MHz
+  memory clock remains 1600 MHz
+```
+
+Conclusion for this platform:
+
+```text
+ADL activity and engine clock reflect workload.
+ADL memory clock reflects power source.
+Power-source transitions can briefly delay or gap ADL samples.
+```
+
+This is a platform-specific finding from the ASUS G533QS test bed. It should not be generalized as an AMD-wide behavior without additional hardware.
+
+## Known Truth Harness Behavior
+
+The committed harness is the known-good reproduction example for this branch. It intentionally:
+
+- builds `wtg-app` release first
+- opens a visible `cmd.exe` watch window
+- runs `wtg.exe --provider amd --watch --interval 1000`
+- writes UTF-8 metadata, marker, watch, and stderr logs
+- uses `cmd.exe /c`, not `/k`
+- closes the watch process tree with `taskkill /PID <pid> /T /F`
+- queues phase transitions with a 5 second countdown
+- holds each phase for 60 seconds
+- writes phase markers with ISO-8601 timestamps
+
+Expected output files:
+
+```text
+amd_adl_watch.txt
+amd_adl_watch.err.txt
+phase_markers.txt
+run_metadata.txt
+run_adl_watch.cmd
+```
+
+Do not replace this harness with a background-only process for the known-truth run. The visible watch window is useful during hardware power-state changes.
 
 ## Observed `atiadlxx.dll` Surface On This Branch
 
@@ -177,6 +326,7 @@ Promising next areas, still provider-scoped if added:
 - PowerXpress
 - SmartAccessMemory
 - provider watch min/max tracking for short-run spike visibility
+- sample gap tracking around power-source transitions
 
 ## Why These Are Skipped
 
