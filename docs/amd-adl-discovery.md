@@ -9,25 +9,80 @@ The purpose of this branch is discovery, not parity. NVIDIA/NVML remains WTG's p
 Supported AMD ADL commands:
 
 ```powershell
-.\target\release\wtg.exe --provider amd --once
-.\target\release\wtg.exe --provider amd --watch --interval 1000
+.\target\release\wtg.exe --once --provider amd
+.\target\release\wtg.exe --watch --provider amd --interval 1000
+.\target\release\wtg.exe --once --stats --provider amd
+.\target\release\wtg.exe --watch --stats --provider amd --interval 1000
+.\target\release\wtg.exe --probe --provider amd
+```
+
+Current output roles:
+
+```text
+AMD --once:
+  compact human ADL snapshot
+
+AMD --watch:
+  compact repeated human ADL snapshot
+
+AMD --stats:
+  ADL-native JSON stats/provenance
+  schema: wtg.amd_adl.stats.v1
+
+AMD --watch --stats:
+  one ADL-native JSON stats object per tick
+
+AMD --probe:
+  compact [probe] key:value output
 ```
 
 Intentional rejections and omissions:
 
 ```text
-AMD --stats: rejected
+AMD --probe-fields: rejected; NVML field IDs are provider-specific
 AMD sinks: rejected
 AMD MQTT/Home Assistant publishing: not implemented
-AMD output schema: no stable schema field
+AMD JSONL/CSV sink schema: not committed
 AMD telemetry class: provider_telemetry
 ```
 
-The CLI output is intentionally compact. Detailed ADL notes live here instead of in normal `wtg.exe` output.
+The human CLI output remains intentionally compact. Detailed ADL notes live here instead of in normal human `wtg.exe` output.
+
+## Mode Alignment
+
+AMD ADL now follows the same WTG mode split as the NVIDIA/NVML path:
+
+```text
+--once:
+  compact human snapshot
+
+--watch:
+  repeated compact human snapshot
+
+--stats:
+  structured JSON stats/provenance output
+
+--probe:
+  compact key:value probe output
+```
+
+The ADL stats schema is provider-native:
+
+```text
+schema: wtg.amd_adl.stats.v1
+provider: amd
+provider_authority: AMD ADL
+provider_source: wtg.provider.amd.adl
+telemetry_class: provider_telemetry
+```
+
+This schema is not an NVML compatibility schema. It preserves ADL-native adapter/group facts, source APIs, states, units, and unavailable/error results without inventing missing NVML-equivalent fields.
 
 ## Current Branch Baseline
 
 Current branch: `dev/0.2.8-amd-adl-discovery`
+
+Current spike branch: `spike/0.2.8-amd-adl-provider-modes`
 
 Current version: `0.2.8`
 
@@ -68,6 +123,39 @@ vendor=10,bus=1,device=0,function=0
 
 ADL can surface non-AMD adapter identity/topology records. This branch preserves those records as ADL observations but does not treat them as NVIDIA telemetry and does not route them through the NVIDIA/NVML truth path.
 
+## Current Human Watch Shape
+
+Representative AMD ADL watch summary:
+
+```text
+ADL records: 7 | physical adapter groups: 2 | AMD: 1 | non-AMD: 1 | extended AMD probes: 1
+```
+
+Representative AMD adapter watch fields:
+
+```text
+active: yes
+activity: 99%
+engine clock: 2100.0 MHz
+memory clock: 1600.0 MHz
+perf level raw: -1
+bus: 2500 x16 / max x16
+observed core clock: 21.0 MHz
+vbios: 017.010.000.028 | 113-CEZANNE-017 | 2020/11/13 02:11
+asic family: 34 valid=175
+unavailable: overdrive caps, temp, fan, memory info
+```
+
+Representative non-AMD ADL topology-only watch block:
+
+```text
+NVIDIA GeForce RTX 3080 Laptop GPU [vendor=10,bus=1,device=0,function=0]
+  seen by ADL only; AMD extended discovery skipped
+  ADL logical records: 3, 4, 5, 6
+```
+
+The watch path says `physical adapter groups`, not `physical GPUs`, because ADL returns logical adapter records and WTG groups those records into physical adapter groups.
+
 ## Current Observed AMD Values
 
 Short watch and snapshot runs on the current test bed have shown:
@@ -92,6 +180,8 @@ some Overdrive capability surfaces
 ```
 
 The observed `engine clock` value can jump between idle-ish and max-ish values even while activity remains low. That should be treated as provider-reported ADL behavior, not as proof of sustained workload.
+
+These observations are platform-specific to the current ASUS G533QS test bed. They should not be generalized as AMD-wide behavior without additional hardware.
 
 ## Test Context
 
@@ -271,7 +361,7 @@ Optional low-risk telemetry entry points currently matched and queried when expo
 - `ADL_Adapter_VideoBiosInfo_Get`
 - `ADL_Adapter_ASICFamilyType_Get`
 
-These are the actively bound discovery surfaces today. The compact CLI summary reports current matched/attempted/result counts rather than printing long symbol lists.
+These are the actively bound discovery surfaces today. The compact human CLI summary reports current matched/attempted/result counts rather than printing long symbol lists.
 
 ## APIs Currently Queried
 
@@ -344,7 +434,7 @@ The goal is to keep `wtg.exe --provider amd` read-only, low-risk, and operationa
 
 ## Documentation Rule
 
-Operational CLI output should stay compact and factual:
+Operational human CLI output should stay compact and factual:
 
 - topology counts
 - physical adapter grouping
@@ -353,7 +443,9 @@ Operational CLI output should stay compact and factual:
 - successful low-risk facts
 - compact unavailable/error summaries
 
-Long API rationale, skipped surfaces, future candidates, and test-context caveats belong in this document, not in normal terminal output.
+Long API rationale, skipped surfaces, future candidates, and test-context caveats belong in this document, not in normal human terminal output.
+
+Structured JSON stats output is allowed to be detailed because it is explicitly requested with `--stats`. It should preserve provider provenance and unavailable/error states without turning ADL into an NVML compatibility layer.
 
 ## Pruning Rule
 
