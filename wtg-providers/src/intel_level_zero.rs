@@ -549,12 +549,21 @@ fn build_device_record(
                 properties.vendor_id, properties.device_id
             );
 
-            facts.push(ok_fact("device_name", "zeDeviceGetProperties", json!(name)));
             facts.push(ok_fact(
                 "device_key",
                 "wtg.intel.level_zero.device_key",
                 json!(key.clone()),
             ));
+            if name.is_empty() {
+                facts.push(not_available_fact(
+                    "device_name",
+                    "zeDeviceGetProperties",
+                    "Level Zero returned an empty device name.".to_string(),
+                ));
+                unavailable.push("name");
+            } else {
+                facts.push(ok_fact("device_name", "zeDeviceGetProperties", json!(name)));
+            }
             facts.push(ok_fact(
                 "device_type",
                 "zeDeviceGetProperties",
@@ -680,14 +689,26 @@ fn query_device_properties(
 }
 
 fn push_snapshot_device_lines(lines: &mut Vec<String>, device: &DeviceRecord) {
-    lines.push(format!(
-        "Intel device {}: {}",
-        device.device_index,
-        fact_string(device, "device_name").unwrap_or("unknown")
-    ));
-    lines.push(format!("  Device key: {}", device.key));
+    if let Some(device_name) = fact_string(device, "device_name") {
+        lines.push(format!(
+            "Intel device {}: {device_name}",
+            device.device_index
+        ));
+        lines.push(format!("  Device key: {}", device.key));
+    } else {
+        lines.push(format!(
+            "Intel device {} [{}]",
+            device.device_index, device.key
+        ));
+    }
     if let Some(device_type) = fact_string(device, "device_type") {
         lines.push(format!("  Device type: {device_type}"));
+    }
+    if let Some(vendor_id) = fact_u64(device, "vendor_id") {
+        lines.push(format!("  Vendor ID: 0x{vendor_id:04x} ({vendor_id})"));
+    }
+    if let Some(device_id) = fact_u64(device, "device_id") {
+        lines.push(format!("  Device ID: 0x{device_id:04x} ({device_id})"));
     }
     if let Some(uuid) = fact_string(device, "uuid") {
         lines.push(format!("  UUID: {uuid}"));
@@ -701,11 +722,14 @@ fn push_snapshot_device_lines(lines: &mut Vec<String>, device: &DeviceRecord) {
 }
 
 fn push_watch_device_lines(lines: &mut Vec<String>, device: &DeviceRecord) {
-    lines.push(format!(
-        "{} [{}]",
-        fact_string(device, "device_name").unwrap_or("Intel device"),
-        device.key
-    ));
+    if let Some(device_name) = fact_string(device, "device_name") {
+        lines.push(format!("{device_name} [{}]", device.key));
+    } else {
+        lines.push(format!(
+            "Intel device {} [{}]",
+            device.device_index, device.key
+        ));
+    }
     if let Some(device_type) = fact_string(device, "device_type") {
         lines.push(format!("  device type: {device_type}"));
     }
@@ -718,13 +742,18 @@ fn push_watch_device_lines(lines: &mut Vec<String>, device: &DeviceRecord) {
 }
 
 fn push_probe_device_lines(lines: &mut Vec<String>, device: &DeviceRecord) {
-    lines.push(format!(
-        "device.name: {}",
-        fact_string(device, "device_name").unwrap_or("unknown")
-    ));
+    if let Some(device_name) = fact_string(device, "device_name") {
+        lines.push(format!("device.name: {device_name}"));
+    }
     lines.push(format!("device.key: {}", device.key));
     if let Some(device_type) = fact_string(device, "device_type") {
         lines.push(format!("device.type: {device_type}"));
+    }
+    if let Some(vendor_id) = fact_u64(device, "vendor_id") {
+        lines.push(format!("device.vendor_id: 0x{vendor_id:04x} ({vendor_id})"));
+    }
+    if let Some(device_id) = fact_u64(device, "device_id") {
+        lines.push(format!("device.device_id: 0x{device_id:04x} ({device_id})"));
     }
     if let Some(uuid) = fact_string(device, "uuid") {
         lines.push(format!("device.uuid: {uuid}"));
@@ -784,6 +813,21 @@ fn ok_fact(metric_key: &'static str, source_api: &'static str, raw: Value) -> In
     }
 }
 
+fn not_available_fact(
+    metric_key: &'static str,
+    source_api: &'static str,
+    error_message: String,
+) -> IntelFact {
+    IntelFact {
+        metric_key,
+        source_api,
+        state: "not_available",
+        raw: Value::Null,
+        unit: None,
+        error_message: Some(error_message),
+    }
+}
+
 fn stats_field(
     raw: Value,
     source_api: &'static str,
@@ -828,6 +872,14 @@ fn fact_number(device: &DeviceRecord, metric_key: &str) -> Option<f64> {
         .iter()
         .find(|fact| fact.metric_key == metric_key && fact.state == "ok")
         .and_then(|fact| fact.raw.as_f64())
+}
+
+fn fact_u64(device: &DeviceRecord, metric_key: &str) -> Option<u64> {
+    device
+        .facts
+        .iter()
+        .find(|fact| fact.metric_key == metric_key && fact.state == "ok")
+        .and_then(|fact| fact.raw.as_u64())
 }
 
 fn ze_device_type_name(device_type: u32) -> &'static str {
@@ -892,7 +944,12 @@ extern "system" {
 
 #[cfg(test)]
 mod tests {
-    use super::{PROVIDER, PROVIDER_AUTHORITY, SOURCE, STATS_SCHEMA, TELEMETRY_CLASS};
+    use std::mem::MaybeUninit;
+
+    use super::{
+        build_device_record, format_snapshot, sample_status, ProviderSample, ZeDeviceProperties,
+        PROVIDER, PROVIDER_AUTHORITY, SOURCE, STATS_SCHEMA, TELEMETRY_CLASS, ZE_RESULT_SUCCESS,
+    };
 
     #[test]
     fn provider_constants_match_contract() {
@@ -901,5 +958,59 @@ mod tests {
         assert_eq!(SOURCE, "wtg.provider.intel.level_zero");
         assert_eq!(TELEMETRY_CLASS, "provider_telemetry");
         assert_eq!(STATS_SCHEMA, "wtg.intel_level_zero.stats.v1");
+    }
+
+    #[test]
+    fn empty_device_name_is_not_reported_as_ok() {
+        let mut properties = unsafe { MaybeUninit::<ZeDeviceProperties>::zeroed().assume_init() };
+        properties.device_type = 1;
+        properties.vendor_id = 0x8086;
+        properties.device_id = 0x4c8b;
+        properties.core_clock_rate = 1300;
+        properties.uuid = [
+            0x24, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x86, 0x80, 0x8b, 0x4c, 0x04, 0x00,
+            0x00, 0x00,
+        ];
+
+        let device = build_device_record(0, 0, Ok((properties, ZE_RESULT_SUCCESS)));
+        let name_fact = device
+            .facts
+            .iter()
+            .find(|fact| fact.metric_key == "device_name")
+            .expect("device_name fact");
+
+        assert_eq!(name_fact.state, "not_available");
+        assert!(name_fact.raw.is_null());
+        assert!(device.unavailable.contains(&"name"));
+
+        let sample = ProviderSample {
+            wtg_version: "0.2.8",
+            provider: PROVIDER,
+            provider_authority: PROVIDER_AUTHORITY,
+            provider_source: SOURCE,
+            telemetry_class: TELEMETRY_CLASS,
+            status: "ok",
+            sample_seq: 0,
+            timestamp_unix_ms: 0,
+            dll_name: None,
+            dll_path: None,
+            telemetry_exports_matched: 4,
+            optional_calls_attempted: 1,
+            optional_calls_ok: 1,
+            optional_calls_unsupported: 0,
+            optional_calls_not_available: 0,
+            optional_calls_error: 0,
+            driver_record_count: 1,
+            device_record_count: 1,
+            devices: vec![device],
+            errors: Vec::new(),
+        };
+
+        assert_eq!(sample_status(&sample), "ok");
+        let rendered = format_snapshot(&sample);
+        assert!(rendered.contains("Intel device 0 [driver=0,device=0,vendor=0x8086,device=0x4c8b]"));
+        assert!(rendered.contains("Vendor ID: 0x8086 (32902)"));
+        assert!(rendered.contains("Device ID: 0x4c8b (19595)"));
+        assert!(rendered.contains("Unavailable: name, activity, memory, power, temperature"));
     }
 }
