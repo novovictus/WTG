@@ -14,7 +14,6 @@ const TELEMETRY_CLASS: &str = "provider_telemetry";
 const PROVIDER: &str = "amd.adl";
 const PROVIDER_AUTHORITY: &str = "AMD ADL";
 const DEFAULT_INTERVAL_MS: u64 = 1000;
-
 const ADL_OK: i32 = 0;
 const ADL_ERR_NOT_SUPPORTED: i32 = -8;
 const ADL_MAX_PATH: usize = 256;
@@ -506,85 +505,11 @@ pub fn format_snapshot(sample: &ProviderSample) -> String {
             if sample.physical_adapter_groups.is_empty() {
                 lines.push("No physical adapter groups returned by ADL.".to_string());
             } else {
-                for group in sample.physical_adapter_groups.iter() {
-                    let primary_adapter = sample.adapters.iter().find(|adapter| {
-                        adapter.adl_raw_identity.adl_adapter_index
-                            == group.physical_adapter_primary_index
-                    });
-                    let adapter_name = primary_adapter
-                        .map(|adapter| adapter.adl_raw_identity.adl_adapter_name.as_str())
-                        .unwrap_or("unknown");
-                    let active = primary_adapter
-                        .and_then(adapter_active_value)
-                        .unwrap_or(false);
-
-                    lines.push(format!(
-                        "Physical adapter group {}",
-                        group.physical_adapter_key
-                    ));
-                    lines.push(format!("  Adapter name: {adapter_name}"));
-                    lines.push(format!(
-                        "  Vendor kind: {}",
-                        if group.physical_vendor_id == 1002 {
-                            "AMD"
-                        } else {
-                            "non-AMD"
-                        }
-                    ));
-                    lines.push(format!(
-                        "  Primary ADL adapter index: {}",
-                        group.physical_adapter_primary_index
-                    ));
-                    lines.push(format!(
-                        "  Logical ADL record indexes: {}",
-                        group
-                            .logical_adapter_indices
-                            .iter()
-                            .map(i32::to_string)
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                    lines.push(format!(
-                        "  Extended AMD discovery attempted: {}",
-                        yes_no(group.extended_amd_discovery_attempted)
-                    ));
-                    lines.push(format!("  Active: {}", yes_no(active)));
-                    lines.push(String::new());
-                }
-            }
-
-            if lines.last().is_some_and(String::is_empty) {
-                lines.pop();
-            }
-
-            let summary = optional_call_summary(sample);
-            lines.push(String::new());
-            lines.push("ADL discovery summary:".to_string());
-            lines.push(format!(
-                "  telemetry exports matched: {}",
-                sample.telemetry_exports_matched
-            ));
-            lines.push(format!("  optional calls attempted: {}", summary.attempted));
-            lines.push(format!(
-                "  ok: {} | unsupported: {} | not_available: {} | error: {}",
-                summary.ok, summary.unsupported, summary.not_available, summary.error
-            ));
-
-            let additional_facts = snapshot_additional_fact_lines(sample);
-            if !additional_facts.is_empty() {
-                lines.push(String::new());
-                lines.push("Additional ADL facts:".to_string());
-                for fact in additional_facts {
-                    lines.push(format!("  {fact}"));
-                }
-            }
-
-            let unavailable = snapshot_unavailable_fact_lines(sample);
-            if !unavailable.is_empty() {
-                lines.push(String::new());
-                lines.push("Unavailable ADL facts:".to_string());
-                for fact in unavailable {
-                    lines.push(format!("  {fact}"));
+                for (index, group) in sample.physical_adapter_groups.iter().enumerate() {
+                    push_snapshot_group_lines(&mut lines, sample, group, index);
+                    if index + 1 != sample.physical_adapter_groups.len() {
+                        lines.push(String::new());
+                    }
                 }
             }
 
@@ -608,7 +533,7 @@ pub fn format_watch_sample(sample: &ProviderSample) -> String {
             let mut lines = Vec::new();
             lines.push(format!("sample_seq: {}", sample.sample_seq));
             lines.push(format!(
-                "ADL records: {} | physical GPUs: {} | AMD: {} | non-AMD: {} | extended AMD probes: {}",
+                "ADL records: {} | physical adapter groups: {} | AMD: {} | non-AMD: {} | extended AMD probes: {}",
                 sample.adapters.len(),
                 sample.physical_adapter_group_count,
                 sample.amd_physical_adapter_count,
@@ -645,6 +570,167 @@ pub fn format_watch_sample(sample: &ProviderSample) -> String {
     }
 }
 
+pub fn format_stats_snapshot_json(sample: &ProviderSample, tick_seq: u64, tick_ts: &str) -> String {
+    let adapters = sample
+        .physical_adapter_groups
+        .iter()
+        .map(|group| stats_adapter_json(sample, group))
+        .collect::<Vec<_>>();
+    let summary = optional_call_summary(sample);
+    let payload = json!({
+        "adapters": adapters,
+        "adl": {
+            "adapter_record_count": stats_number_field(
+                sample.adapters.len(),
+                "ADL_Adapter_AdapterInfo_Get",
+                "ok",
+                None,
+                None,
+            ),
+            "physical_adapter_group_count": stats_number_field(
+                sample.physical_adapter_group_count,
+                "wtg.adl.physical_grouping",
+                "ok",
+                None,
+                None,
+            ),
+            "amd_physical_adapter_count": stats_number_field(
+                sample.amd_physical_adapter_count,
+                "wtg.adl.physical_grouping",
+                "ok",
+                None,
+                None,
+            ),
+            "non_amd_physical_adapter_count": stats_number_field(
+                sample.non_amd_physical_adapter_count,
+                "wtg.adl.physical_grouping",
+                "ok",
+                None,
+                None,
+            ),
+            "extended_discovery_run_count": stats_number_field(
+                sample.extended_amd_discovery_run_count,
+                "wtg.adl.extended_discovery",
+                "ok",
+                None,
+                None,
+            ),
+            "telemetry_exports_matched": stats_number_field(
+                sample.telemetry_exports_matched,
+                "wtg.adl.export_matching",
+                "ok",
+                None,
+                None,
+            ),
+            "optional_calls_attempted": stats_number_field(
+                summary.attempted,
+                "wtg.adl.optional_calls",
+                "ok",
+                None,
+                None,
+            ),
+            "optional_calls_ok": stats_number_field(
+                summary.ok,
+                "wtg.adl.optional_calls",
+                "ok",
+                None,
+                None,
+            ),
+            "optional_calls_unsupported": stats_number_field(
+                summary.unsupported,
+                "wtg.adl.optional_calls",
+                "ok",
+                None,
+                None,
+            ),
+            "optional_calls_not_available": stats_number_field(
+                summary.not_available,
+                "wtg.adl.optional_calls",
+                "ok",
+                None,
+                None,
+            ),
+            "optional_calls_error": stats_number_field(
+                summary.error,
+                "wtg.adl.optional_calls",
+                "ok",
+                None,
+                None,
+            )
+        },
+        "provider": "amd",
+        "provider_authority": PROVIDER_AUTHORITY,
+        "provider_source": SOURCE,
+        "schema": "wtg.amd_adl.stats.v1",
+        "telemetry_class": TELEMETRY_CLASS,
+        "tick_seq": tick_seq,
+        "tick_ts": tick_ts,
+        "timestamp_unix_ms": sample.timestamp_unix_ms,
+        "wtg_version": sample.wtg_version
+    });
+
+    serde_json::to_string_pretty(&payload).expect("ADL stats JSON serialization should succeed")
+}
+
+pub fn format_probe_snapshot(sample: &ProviderSample) -> String {
+    let reason = sample
+        .errors
+        .first()
+        .map(String::as_str)
+        .unwrap_or("provider returned no additional details");
+    let mut lines = Vec::new();
+    lines.push("[probe] provider=amd_adl".to_string());
+    lines.push(format!("wtg.version: {}", sample.wtg_version));
+    lines.push(format!("provider.authority: {}", sample.provider_authority));
+    lines.push(format!("provider.source: {}", sample.source));
+    lines.push(format!("telemetry.class: {}", sample.telemetry_class));
+    lines.push(format!("adl.adapter_records: {}", sample.adapters.len()));
+    lines.push(format!(
+        "adl.physical_adapter_groups: {}",
+        sample.physical_adapter_group_count
+    ));
+    lines.push(format!(
+        "adl.amd_physical_adapters: {}",
+        sample.amd_physical_adapter_count
+    ));
+    lines.push(format!(
+        "adl.non_amd_physical_adapters: {}",
+        sample.non_amd_physical_adapter_count
+    ));
+    lines.push(format!(
+        "adl.telemetry_exports_matched: {}",
+        sample.telemetry_exports_matched
+    ));
+    let summary = optional_call_summary(sample);
+    lines.push(format!(
+        "adl.optional_calls_attempted: {}",
+        summary.attempted
+    ));
+    lines.push(format!("adl.optional_calls.ok: {}", summary.ok));
+    lines.push(format!(
+        "adl.optional_calls.unsupported: {}",
+        summary.unsupported
+    ));
+    lines.push(format!(
+        "adl.optional_calls.not_available: {}",
+        summary.not_available
+    ));
+    lines.push(format!("adl.optional_calls.error: {}", summary.error));
+    if sample.status != "ok" {
+        lines.push(format!("provider.status: {}", sample.status));
+        lines.push(format!("reason: {reason}"));
+        return lines.join("\n");
+    }
+
+    for (index, group) in sample.physical_adapter_groups.iter().enumerate() {
+        lines.push(String::new());
+        lines.push(format!("[probe] adapter={index}"));
+        push_probe_group_lines(&mut lines, sample, group);
+    }
+
+    lines.join("\n")
+}
+
 fn adapter_active_value(adapter: &AdlAdapterRecord) -> Option<bool> {
     adapter
         .adl_calls
@@ -659,6 +745,198 @@ fn yes_no(value: bool) -> &'static str {
         "yes"
     } else {
         "no"
+    }
+}
+
+fn push_snapshot_group_lines(
+    lines: &mut Vec<String>,
+    sample: &ProviderSample,
+    group: &PhysicalAdapterGroup,
+    index: usize,
+) {
+    let Some(adapter) = primary_adapter_for_group(sample, group) else {
+        lines.push(format!("ADL adapter group {index}: missing primary record"));
+        return;
+    };
+
+    lines.push(format!(
+        "ADL adapter group {index}: {}",
+        adapter.adl_raw_identity.adl_adapter_name
+    ));
+    lines.push(format!("  Physical key: {}", group.physical_adapter_key));
+    lines.push(format!(
+        "  Logical ADL records: {}",
+        group
+            .logical_adapter_indices
+            .iter()
+            .map(i32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+
+    if group.physical_vendor_id != 1002 {
+        lines.push("  Vendor scope: topology only".to_string());
+        return;
+    }
+
+    lines.push(format!(
+        "  Active: {}",
+        yes_no(adapter_active_value(adapter).unwrap_or(false))
+    ));
+    if let Some(raw) = call_raw(adapter, "overdrive5_current_activity") {
+        if let Some(activity_percent) = raw.get("activity_percent").and_then(Value::as_i64) {
+            lines.push(format!("  Activity: {activity_percent}%"));
+        }
+        if let Some(engine_clock_10khz) = raw.get("engine_clock_10khz").and_then(Value::as_i64) {
+            lines.push(format!(
+                "  Engine clock: {:.1} MHz",
+                (engine_clock_10khz as f64) / 100.0
+            ));
+        }
+        if let Some(memory_clock_10khz) = raw.get("memory_clock_10khz").and_then(Value::as_i64) {
+            lines.push(format!(
+                "  Memory clock: {:.1} MHz",
+                (memory_clock_10khz as f64) / 100.0
+            ));
+        }
+        if let (Some(current_bus_speed), Some(current_bus_lanes), Some(maximum_bus_lanes)) = (
+            raw.get("current_bus_speed").and_then(Value::as_i64),
+            raw.get("current_bus_lanes").and_then(Value::as_i64),
+            raw.get("maximum_bus_lanes").and_then(Value::as_i64),
+        ) {
+            lines.push(format!(
+                "  Bus: {current_bus_speed} x{current_bus_lanes} / max x{maximum_bus_lanes}"
+            ));
+        }
+    }
+    if let Some(raw) = call_raw(adapter, "adapter_video_bios_info") {
+        if let Some(version) = raw.get("version").and_then(Value::as_str) {
+            if !version.is_empty() {
+                lines.push(format!("  VBIOS: {version}"));
+            }
+        }
+    }
+    let unavailable = unavailable_metric_labels(adapter);
+    if !unavailable.is_empty() {
+        lines.push(format!("  Unavailable: {}", unavailable.join(", ")));
+    }
+}
+
+fn push_probe_group_lines(
+    lines: &mut Vec<String>,
+    sample: &ProviderSample,
+    group: &PhysicalAdapterGroup,
+) {
+    let Some(adapter) = primary_adapter_for_group(sample, group) else {
+        lines.push("adapter.status: missing_primary_record".to_string());
+        return;
+    };
+
+    lines.push(format!(
+        "adapter.name: {}",
+        adapter.adl_raw_identity.adl_adapter_name
+    ));
+    lines.push(format!(
+        "adapter.physical_key: {}",
+        group.physical_adapter_key
+    ));
+    lines.push(format!(
+        "adapter.vendor_kind: {}",
+        if group.physical_vendor_id == 1002 {
+            "AMD"
+        } else {
+            "non-AMD"
+        }
+    ));
+    lines.push(format!(
+        "adapter.logical_adl_records: {}",
+        group
+            .logical_adapter_indices
+            .iter()
+            .map(i32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+
+    if group.physical_vendor_id != 1002 {
+        lines.push("adapter.vendor_scope: topology_only".to_string());
+        return;
+    }
+
+    lines.push(format!(
+        "adapter.active: {}",
+        yes_no(adapter_active_value(adapter).unwrap_or(false))
+    ));
+    if let Some(raw) = call_raw(adapter, "overdrive5_current_activity") {
+        if let Some(activity_percent) = raw.get("activity_percent").and_then(Value::as_i64) {
+            lines.push(format!("activity.pct: {activity_percent}"));
+        }
+        if let Some(engine_clock_10khz) = raw.get("engine_clock_10khz").and_then(Value::as_i64) {
+            lines.push(format!(
+                "clock.engine_mhz: {:.1}",
+                (engine_clock_10khz as f64) / 100.0
+            ));
+        }
+        if let Some(memory_clock_10khz) = raw.get("memory_clock_10khz").and_then(Value::as_i64) {
+            lines.push(format!(
+                "clock.memory_mhz: {:.1}",
+                (memory_clock_10khz as f64) / 100.0
+            ));
+        }
+        if let (Some(current_bus_speed), Some(current_bus_lanes)) = (
+            raw.get("current_bus_speed").and_then(Value::as_i64),
+            raw.get("current_bus_lanes").and_then(Value::as_i64),
+        ) {
+            lines.push(format!(
+                "bus.current: {current_bus_speed} x{current_bus_lanes}"
+            ));
+        }
+        if let Some(maximum_bus_lanes) = raw.get("maximum_bus_lanes").and_then(Value::as_i64) {
+            lines.push(format!("bus.max: x{maximum_bus_lanes}"));
+        }
+    }
+    if let Some(raw) = call_raw(adapter, "adapter_observed_clock_info") {
+        if let Some(core_clock_10khz) = raw.get("core_clock_10khz").and_then(Value::as_i64) {
+            lines.push(format!(
+                "clock.observed_core_mhz: {:.1}",
+                (core_clock_10khz as f64) / 100.0
+            ));
+        }
+        if let Some(memory_clock_10khz) = raw.get("memory_clock_10khz").and_then(Value::as_i64) {
+            lines.push(format!(
+                "clock.observed_memory_mhz: {:.1}",
+                (memory_clock_10khz as f64) / 100.0
+            ));
+        }
+    }
+    if let Some(raw) = call_raw(adapter, "adapter_video_bios_info") {
+        if let Some(version) = raw.get("version").and_then(Value::as_str) {
+            if !version.is_empty() {
+                lines.push(format!("vbios.version: {version}"));
+            }
+        }
+        if let Some(part_number) = raw.get("part_number").and_then(Value::as_str) {
+            if !part_number.is_empty() {
+                lines.push(format!("vbios.part_number: {part_number}"));
+            }
+        }
+        if let Some(date) = raw.get("date").and_then(Value::as_str) {
+            if !date.is_empty() {
+                lines.push(format!("vbios.date: {date}"));
+            }
+        }
+    }
+    if let Some(raw) = call_raw(adapter, "adapter_asic_family_type") {
+        if let Some(asic_family_type) = raw.get("asic_family_type").and_then(Value::as_i64) {
+            lines.push(format!("asic.family_type: {asic_family_type}"));
+        }
+        if let Some(valids) = raw.get("valids").and_then(Value::as_i64) {
+            lines.push(format!("asic.valids: {valids}"));
+        }
+    }
+    let unavailable = unavailable_metric_labels(adapter);
+    if !unavailable.is_empty() {
+        lines.push(format!("unavailable: {}", unavailable.join(", ")));
     }
 }
 
@@ -684,7 +962,12 @@ fn push_watch_group_lines(
         lines.push("  seen by ADL only; AMD extended discovery skipped".to_string());
         lines.push(format!(
             "  ADL logical records: {}",
-            group.logical_record_count
+            group
+                .logical_adapter_indices
+                .iter()
+                .map(i32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
         return;
     }
@@ -711,7 +994,7 @@ fn push_watch_group_lines(
             ));
         }
         if let Some(perf_level) = raw.get("current_performance_level").and_then(Value::as_i64) {
-            lines.push(format!("  perf level: {perf_level}"));
+            lines.push(format!("  perf level raw: {perf_level}"));
         }
         if let (Some(current_bus_speed), Some(current_bus_lanes), Some(maximum_bus_lanes)) = (
             raw.get("current_bus_speed").and_then(Value::as_i64),
@@ -792,6 +1075,302 @@ fn metric_state<'a>(adapter: &'a AdlAdapterRecord, metric_key: &str) -> Option<&
         .map(|call| call.state)
 }
 
+fn stats_field(
+    raw: Value,
+    source_api: &'static str,
+    state: &'static str,
+    unit: Option<&'static str>,
+    error_message: Option<String>,
+) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("raw".to_string(), raw);
+    object.insert(
+        "source_api".to_string(),
+        Value::String(source_api.to_string()),
+    );
+    object.insert("state".to_string(), Value::String(state.to_string()));
+    if let Some(unit) = unit {
+        object.insert("unit".to_string(), Value::String(unit.to_string()));
+    }
+    if let Some(error_message) = error_message {
+        object.insert("error_message".to_string(), Value::String(error_message));
+    }
+    Value::Object(object)
+}
+
+fn stats_number_field(
+    raw: usize,
+    source_api: &'static str,
+    state: &'static str,
+    unit: Option<&'static str>,
+    error_message: Option<String>,
+) -> Value {
+    stats_field(
+        Value::Number(serde_json::Number::from(raw as u64)),
+        source_api,
+        state,
+        unit,
+        error_message,
+    )
+}
+
+fn stats_string_field(
+    raw: impl Into<String>,
+    source_api: &'static str,
+    state: &'static str,
+    error_message: Option<String>,
+) -> Value {
+    stats_field(
+        Value::String(raw.into()),
+        source_api,
+        state,
+        None,
+        error_message,
+    )
+}
+
+fn stats_call_field(
+    call: Option<&AdlApiCall>,
+    source_api: &'static str,
+    raw: Option<Value>,
+    unit: Option<&'static str>,
+) -> Value {
+    match call {
+        Some(call) => stats_field(
+            raw.unwrap_or(Value::Null),
+            call.source_api,
+            call.state,
+            unit.or(call.unit),
+            call.error_message.clone(),
+        ),
+        None => stats_field(
+            Value::Null,
+            source_api,
+            "not_available",
+            unit,
+            Some(format!(
+                "{source_api} was not attempted for this adapter group."
+            )),
+        ),
+    }
+}
+
+fn stats_adapter_json(sample: &ProviderSample, group: &PhysicalAdapterGroup) -> Value {
+    let Some(adapter) = primary_adapter_for_group(sample, group) else {
+        return json!({
+            "physical_key": stats_string_field(
+                group.physical_adapter_key.clone(),
+                "wtg.adl.physical_grouping",
+                "ok",
+                None
+            ),
+            "state": stats_string_field(
+                "missing_primary_record",
+                "wtg.adl.physical_grouping",
+                "error",
+                Some("WTG ADL physical grouping found no primary record.".to_string())
+            )
+        });
+    };
+
+    let mut object = serde_json::Map::new();
+    object.insert(
+        "physical_key".to_string(),
+        stats_string_field(
+            group.physical_adapter_key.clone(),
+            "wtg.adl.physical_grouping",
+            "ok",
+            None,
+        ),
+    );
+    object.insert(
+        "name".to_string(),
+        stats_string_field(
+            adapter.adl_raw_identity.adl_adapter_name.clone(),
+            "ADL_Adapter_AdapterInfo_Get",
+            "ok",
+            None,
+        ),
+    );
+    object.insert(
+        "vendor_kind".to_string(),
+        stats_string_field(
+            if group.physical_vendor_id == 1002 {
+                "AMD"
+            } else {
+                "non-AMD"
+            },
+            "ADL_Adapter_AdapterInfo_Get",
+            "ok",
+            None,
+        ),
+    );
+    object.insert(
+        "logical_adapter_indexes".to_string(),
+        stats_field(
+            json!(group.logical_adapter_indices),
+            "wtg.adl.physical_grouping",
+            "ok",
+            None,
+            None,
+        ),
+    );
+
+    if group.physical_vendor_id != 1002 {
+        object.insert(
+            "vendor_scope".to_string(),
+            stats_string_field("topology_only", "wtg.adl.vendor_scope", "ok", None),
+        );
+        return Value::Object(object);
+    }
+
+    let active_call = adapter
+        .adl_calls
+        .iter()
+        .find(|call| call.metric_key == "adapter_active");
+    object.insert(
+        "active".to_string(),
+        stats_call_field(
+            active_call,
+            "ADL_Adapter_Active_Get",
+            active_call.and_then(|call| call.raw.get("value")).cloned(),
+            None,
+        ),
+    );
+
+    let current_activity = adapter
+        .adl_calls
+        .iter()
+        .find(|call| call.metric_key == "overdrive5_current_activity");
+    object.insert(
+        "activity_pct".to_string(),
+        stats_call_field(
+            current_activity,
+            "ADL_Overdrive5_CurrentActivity_Get",
+            current_activity
+                .and_then(|call| call.raw.get("activity_percent"))
+                .cloned(),
+            Some("percent"),
+        ),
+    );
+    object.insert(
+        "engine_clock_mhz".to_string(),
+        stats_call_field(
+            current_activity,
+            "ADL_Overdrive5_CurrentActivity_Get",
+            current_activity
+                .and_then(|call| call.raw.get("engine_clock_10khz"))
+                .and_then(Value::as_i64)
+                .map(|value| {
+                    Value::Number(
+                        serde_json::Number::from_f64(value as f64 / 100.0)
+                            .expect("finite engine clock expected"),
+                    )
+                }),
+            Some("mhz"),
+        ),
+    );
+    object.insert(
+        "memory_clock_mhz".to_string(),
+        stats_call_field(
+            current_activity,
+            "ADL_Overdrive5_CurrentActivity_Get",
+            current_activity
+                .and_then(|call| call.raw.get("memory_clock_10khz"))
+                .and_then(Value::as_i64)
+                .map(|value| {
+                    Value::Number(
+                        serde_json::Number::from_f64(value as f64 / 100.0)
+                            .expect("finite memory clock expected"),
+                    )
+                }),
+            Some("mhz"),
+        ),
+    );
+    object.insert(
+        "bus_current".to_string(),
+        stats_call_field(
+            current_activity,
+            "ADL_Overdrive5_CurrentActivity_Get",
+            current_activity.map(|call| {
+                json!({
+                    "speed": call.raw.get("current_bus_speed").and_then(Value::as_i64),
+                    "lanes": call.raw.get("current_bus_lanes").and_then(Value::as_i64)
+                })
+            }),
+            None,
+        ),
+    );
+
+    let observed_clock = adapter
+        .adl_calls
+        .iter()
+        .find(|call| call.metric_key == "adapter_observed_clock_info");
+    object.insert(
+        "observed_core_clock_mhz".to_string(),
+        stats_call_field(
+            observed_clock,
+            "ADL_Adapter_ObservedClockInfo_Get",
+            observed_clock
+                .and_then(|call| call.raw.get("core_clock_10khz"))
+                .and_then(Value::as_i64)
+                .map(|value| {
+                    Value::Number(
+                        serde_json::Number::from_f64(value as f64 / 100.0)
+                            .expect("finite observed core clock expected"),
+                    )
+                }),
+            Some("mhz"),
+        ),
+    );
+    object.insert(
+        "observed_memory_clock_mhz".to_string(),
+        stats_call_field(
+            observed_clock,
+            "ADL_Adapter_ObservedClockInfo_Get",
+            observed_clock
+                .and_then(|call| call.raw.get("memory_clock_10khz"))
+                .and_then(Value::as_i64)
+                .map(|value| {
+                    Value::Number(
+                        serde_json::Number::from_f64(value as f64 / 100.0)
+                            .expect("finite observed memory clock expected"),
+                    )
+                }),
+            Some("mhz"),
+        ),
+    );
+
+    let bios = adapter
+        .adl_calls
+        .iter()
+        .find(|call| call.metric_key == "adapter_video_bios_info");
+    object.insert(
+        "vbios_version".to_string(),
+        stats_call_field(
+            bios,
+            "ADL_Adapter_VideoBiosInfo_Get",
+            bios.and_then(|call| call.raw.get("version")).cloned(),
+            None,
+        ),
+    );
+
+    object.insert(
+        "temperature_c".to_string(),
+        stats_call_field(
+            adapter
+                .adl_calls
+                .iter()
+                .find(|call| call.metric_key == "overdrive5_temperature"),
+            "ADL_Overdrive5_Temperature_Get",
+            None,
+            Some("celsius"),
+        ),
+    );
+
+    Value::Object(object)
+}
+
 #[derive(Default)]
 struct OptionalCallSummary {
     attempted: usize,
@@ -825,133 +1404,6 @@ fn optional_call_summary(sample: &ProviderSample) -> OptionalCallSummary {
 
 fn is_optional_telemetry_call(call: &AdlApiCall) -> bool {
     call.metric_key != "adapter_active" && call.metric_key != "extended_discovery"
-}
-
-fn snapshot_additional_fact_lines(sample: &ProviderSample) -> Vec<String> {
-    let mut lines = Vec::new();
-
-    for group in sample
-        .physical_adapter_groups
-        .iter()
-        .filter(|group| group.physical_vendor_id == 1002)
-    {
-        let Some(adapter) = primary_adapter_for_group(sample, group) else {
-            continue;
-        };
-
-        if let Some(raw) = call_raw(adapter, "overdrive5_current_activity") {
-            let mut parts = Vec::new();
-            if let Some(activity_percent) = raw.get("activity_percent").and_then(Value::as_i64) {
-                parts.push(format!("activity {activity_percent}%"));
-            }
-            if let Some(engine_clock_10khz) = raw.get("engine_clock_10khz").and_then(Value::as_i64)
-            {
-                parts.push(format!(
-                    "engine {:.1} MHz",
-                    (engine_clock_10khz as f64) / 100.0
-                ));
-            }
-            if let Some(memory_clock_10khz) = raw.get("memory_clock_10khz").and_then(Value::as_i64)
-            {
-                parts.push(format!(
-                    "memory {:.1} MHz",
-                    (memory_clock_10khz as f64) / 100.0
-                ));
-            }
-            if let Some(perf_level) = raw.get("current_performance_level").and_then(Value::as_i64) {
-                parts.push(format!("perf {perf_level}"));
-            }
-            if let (Some(current_bus_speed), Some(current_bus_lanes), Some(maximum_bus_lanes)) = (
-                raw.get("current_bus_speed").and_then(Value::as_i64),
-                raw.get("current_bus_lanes").and_then(Value::as_i64),
-                raw.get("maximum_bus_lanes").and_then(Value::as_i64),
-            ) {
-                parts.push(format!(
-                    "bus {current_bus_speed} x{current_bus_lanes} / max x{maximum_bus_lanes}"
-                ));
-            }
-            if !parts.is_empty() {
-                lines.push(format!(
-                    "{} [{}]: {}",
-                    adapter.adl_raw_identity.adl_adapter_name,
-                    group.physical_adapter_key,
-                    parts.join(" | ")
-                ));
-            }
-        }
-
-        let mut parts = Vec::new();
-        if let Some(raw) = call_raw(adapter, "adapter_observed_clock_info") {
-            if let Some(core_clock_10khz) = raw.get("core_clock_10khz").and_then(Value::as_i64) {
-                parts.push(format!(
-                    "observed core {:.1} MHz",
-                    (core_clock_10khz as f64) / 100.0
-                ));
-            }
-            if let Some(memory_clock_10khz) = raw.get("memory_clock_10khz").and_then(Value::as_i64)
-            {
-                parts.push(format!(
-                    "observed memory {:.1} MHz",
-                    (memory_clock_10khz as f64) / 100.0
-                ));
-            }
-        }
-        if let Some(raw) = call_raw(adapter, "adapter_video_bios_info") {
-            let version = raw.get("version").and_then(Value::as_str).unwrap_or("");
-            let part_number = raw.get("part_number").and_then(Value::as_str).unwrap_or("");
-            let date = raw.get("date").and_then(Value::as_str).unwrap_or("");
-            if !version.is_empty() || !part_number.is_empty() || !date.is_empty() {
-                parts.push(format!("vbios {version} | {part_number} | {date}"));
-            }
-        }
-        if let Some(raw) = call_raw(adapter, "adapter_asic_family_type") {
-            let asic_family_type = raw
-                .get("asic_family_type")
-                .and_then(Value::as_i64)
-                .unwrap_or_default();
-            let valids = raw
-                .get("valids")
-                .and_then(Value::as_i64)
-                .unwrap_or_default();
-            parts.push(format!("asic family {asic_family_type} valid={valids}"));
-        }
-        if !parts.is_empty() {
-            lines.push(format!(
-                "{} [{}]: {}",
-                adapter.adl_raw_identity.adl_adapter_name,
-                group.physical_adapter_key,
-                parts.join(" | ")
-            ));
-        }
-    }
-
-    lines
-}
-
-fn snapshot_unavailable_fact_lines(sample: &ProviderSample) -> Vec<String> {
-    let mut lines = Vec::new();
-
-    for group in sample
-        .physical_adapter_groups
-        .iter()
-        .filter(|group| group.physical_vendor_id == 1002)
-    {
-        let Some(adapter) = primary_adapter_for_group(sample, group) else {
-            continue;
-        };
-
-        let unavailable = unavailable_metric_labels(adapter);
-        if !unavailable.is_empty() {
-            lines.push(format!(
-                "{} [{}]: {}",
-                adapter.adl_raw_identity.adl_adapter_name,
-                group.physical_adapter_key,
-                unavailable.join(", ")
-            ));
-        }
-    }
-
-    lines
 }
 
 fn primary_adapter_for_group<'a>(

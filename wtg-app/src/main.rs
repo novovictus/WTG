@@ -269,7 +269,7 @@ fn print_help() {
         "Usage:\n",
         "  wtg.exe --once [--stats] [--provider amd] [--sink jsonl|csv]\n",
         "  wtg.exe --watch [--interval <ms>] [--stats] [--provider amd] [--sink jsonl|csv|mqtt]\n",
-        "  wtg.exe --probe [--sink jsonl|csv]\n",
+        "  wtg.exe --probe [--provider amd] [--sink jsonl|csv]\n",
         "  wtg.exe --probe-fields --field-id <u32> [--field-id <u32> ...] [--sink jsonl|csv]\n",
         "  wtg.exe --sink mqtt --mqtt-ha-remove-discovery --mqtt-host <host> --mqtt-node-id <id>\n",
         "\n",
@@ -279,7 +279,7 @@ fn print_help() {
         "  --config <path>         Load explicit WTG TOML config.\n",
         "  --interval <ms>         Polling interval in milliseconds for --watch.\n",
         "  --stats                 Print stable key:value stats output for --once or --watch.\n",
-        "  --provider amd          Use the experimental AMD ADL provider for --once or --watch.\n",
+        "  --provider amd          Use the experimental AMD ADL provider for --once, --watch, or --probe.\n",
         "  --probe                 Capture one context-rich probe block.\n",
         "  --probe-fields          Query explicit NVML field-value IDs.\n",
         "  --field-id <u32>        Repeatable field ID for --probe-fields.\n",
@@ -334,6 +334,43 @@ fn print_mode_header(mode: &str, provider: Option<ProviderKind>, interval_ms: Op
 }
 
 fn run_amd_provider(args: &CliArgs) -> ! {
+    if args.probe {
+        let sample = amd_adl::collect_once(0);
+        println!("{}", amd_adl::format_probe_snapshot(&sample));
+        process::exit(0);
+    }
+
+    if args.once && args.stats {
+        let sample = amd_adl::collect_once(0);
+        let tick_ts = now_ts();
+        println!(
+            "{}",
+            amd_adl::format_stats_snapshot_json(&sample, 0, &tick_ts)
+        );
+        process::exit(0);
+    }
+
+    if args.watch && args.stats {
+        let interval_ms = args.interval_ms.unwrap_or(DEFAULT_INTERVAL_MS);
+        if interval_ms < 100 {
+            eprintln!("WTG note: very low interval ({interval_ms}ms). ADL metrics may not update this quickly; expect duplicates.");
+        }
+
+        let sleep_dur = Duration::from_millis(interval_ms);
+        let mut sample_seq = 0u64;
+        loop {
+            let sample = amd_adl::collect_once(sample_seq);
+            let tick_ts = now_ts();
+            println!(
+                "{}",
+                amd_adl::format_stats_snapshot_json(&sample, sample_seq, &tick_ts)
+            );
+            println!();
+            sample_seq = sample_seq.saturating_add(1);
+            thread::sleep(sleep_dur);
+        }
+    }
+
     print_product_header();
     if args.once {
         let sample = amd_adl::collect_once(0);
@@ -705,17 +742,7 @@ fn validate_args_result(parsed: &CliArgs) -> Result<(), String> {
         return Err("--stats requires --once or --watch.".to_string());
     }
 
-    if parsed.provider.is_some() && !once && !watch {
-        return Err("--provider is valid only with --once or --watch.".to_string());
-    }
-
     if parsed.provider == Some(ProviderKind::Amd) {
-        if stats {
-            return Err("--provider amd does not support --stats.".to_string());
-        }
-        if probe {
-            return Err("--provider amd does not support --probe.".to_string());
-        }
         if probe_fields {
             return Err("--provider amd does not support --probe-fields.".to_string());
         }
@@ -725,6 +752,10 @@ fn validate_args_result(parsed: &CliArgs) -> Result<(), String> {
         if parsed.mqtt_ha_remove_discovery {
             return Err("--provider amd does not support --mqtt-ha-remove-discovery.".to_string());
         }
+    }
+
+    if parsed.provider.is_some() && !once && !watch && !probe {
+        return Err("--provider is valid only with --once, --watch, or --probe.".to_string());
     }
 
     if parsed.mqtt_ha_remove_discovery && (once || watch || probe || probe_fields || stats) {
@@ -1445,15 +1476,77 @@ mod tests {
     }
 
     #[test]
-    fn provider_amd_rejects_stats() {
+    fn provider_amd_accepts_once_stats() {
         let mut args = CliArgs::default();
         args.once = true;
         args.stats = true;
         args.provider = Some(ProviderKind::Amd);
 
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_amd_accepts_once() {
+        let mut args = CliArgs::default();
+        args.once = true;
+        args.provider = Some(ProviderKind::Amd);
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_amd_accepts_watch() {
+        let mut args = CliArgs::default();
+        args.watch = true;
+        args.provider = Some(ProviderKind::Amd);
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_amd_accepts_watch_stats() {
+        let mut args = CliArgs::default();
+        args.watch = true;
+        args.stats = true;
+        args.provider = Some(ProviderKind::Amd);
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_amd_accepts_probe() {
+        let mut args = CliArgs::default();
+        args.probe = true;
+        args.provider = Some(ProviderKind::Amd);
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_amd_rejects_once_and_probe() {
+        let mut args = CliArgs::default();
+        args.once = true;
+        args.probe = true;
+        args.provider = Some(ProviderKind::Amd);
+
         let err = validate_args_result(&args).unwrap_err();
 
-        assert_eq!(err, "--provider amd does not support --stats.");
+        assert_eq!(
+            err,
+            "--probe is mutually exclusive with --once and --watch."
+        );
+    }
+
+    #[test]
+    fn provider_amd_rejects_probe_fields() {
+        let mut args = CliArgs::default();
+        args.probe_fields = true;
+        args.provider = Some(ProviderKind::Amd);
+        args.field_ids.push(1);
+
+        let err = validate_args_result(&args).unwrap_err();
+
+        assert_eq!(err, "--provider amd does not support --probe-fields.");
     }
 
     #[test]
