@@ -19,16 +19,24 @@ Runtime DLL: ze_loader.dll
 Provider source: wtg.provider.intel.level_zero
 Telemetry class: provider_telemetry
 Stats schema: wtg.intel_level_zero.stats.v1
+Latest code commit: e421618 Refine Intel Level Zero device property output
 ```
 
-On the current test machine, the Intel Level Zero runtime is not installed. The provider therefore fails cleanly as unavailable instead of crashing or inventing telemetry.
-
-Observed unavailable result:
+The Intel provider has now been validated in both runtime states:
 
 ```text
-Provider status: unavailable
-Reason: Intel Level Zero runtime DLL ze_loader.dll was not found.
+runtime missing:
+  provider.status: unavailable
+  reason: Intel Level Zero runtime DLL ze_loader.dll was not found.
+
+runtime present on bench:
+  provider.status: ok
+  driver records: 1
+  device records: 1
+  zeDeviceGetProperties: ok
 ```
+
+This remains a discovery/property scaffold. It proves that WTG can load Level Zero, enumerate an Intel GPU device, and emit provider-native property facts. It does not yet claim live Intel utilization, memory, power, or temperature telemetry.
 
 ## Current CLI Contract
 
@@ -123,7 +131,7 @@ zeDeviceGetProperties
 Per-device facts currently derived from `zeDeviceGetProperties` when available:
 
 ```text
-device_name
+device_name, if non-empty
 device_key
 device_type
 vendor_id
@@ -141,10 +149,105 @@ driver=<driver_index>,device=<device_index>,vendor=0x<vendor_id>,device=0x<devic
 Unavailable provider-scoped facts are summarized rather than faked:
 
 ```text
+name, when Level Zero returns an empty device name
 activity
 memory
 power
 temperature
+```
+
+## Observed Bench Result
+
+Live bench capture proved the Level Zero path is alive for the bench Intel iGPU. The provider loaded, initialized, enumerated one driver and one device, and returned device properties.
+
+Observed compact human output after `e421618`:
+
+```text
+WTG snapshot mode (provider: Intel Level Zero)
+Provider source: wtg.provider.intel.level_zero
+Telemetry class: provider_telemetry
+
+Intel driver records returned: 1
+Intel device records returned: 1
+
+Intel device 0 [driver=0,device=0,vendor=0x8086,device=0x4c8b]
+  Device type: gpu
+  Vendor ID: 0x8086 (32902)
+  Device ID: 0x4c8b (19595)
+  UUID: 240000002000000086808b4c04000000
+  Core clock: 1300.0 MHz
+  Unavailable: name, activity, memory, power, temperature
+```
+
+Observed stats/provenance highlights:
+
+```text
+provider: intel
+provider_authority: Intel Level Zero
+provider_source: wtg.provider.intel.level_zero
+schema: wtg.intel_level_zero.stats.v1
+telemetry_class: provider_telemetry
+
+intel.driver_record_count.raw: 1
+intel.device_record_count.raw: 1
+intel.telemetry_exports_matched.raw: 4
+intel.optional_calls_attempted.raw: 1
+intel.optional_calls_ok.raw: 1
+intel.optional_calls_error.raw: 0
+```
+
+Observed device facts:
+
+```text
+device_key.raw: driver=0,device=0,vendor=0x8086,device=0x4c8b
+device_type.raw: gpu
+vendor_id.raw: 32902
+device_id.raw: 19595
+uuid.raw: 240000002000000086808b4c04000000
+core_clock_mhz.raw: 1300
+```
+
+Level Zero returned an empty device name on this bench. WTG now preserves that as a provider-scoped unavailable fact instead of reporting a successful empty string:
+
+```text
+device_name.raw: null
+device_name.state: not_available
+device_name.source_api: zeDeviceGetProperties
+device_name.error_message: Level Zero returned an empty device name.
+```
+
+## Watch Stats Observation
+
+`--watch --stats --provider intel` emits one structured JSON object per tick and increments `tick_seq` as expected.
+
+Bench watch capture showed stable ticks from `0` through `18` with the same provider identity, schema, driver/device counts, device key, vendor/device IDs, UUID, and `core_clock_mhz` value.
+
+The repeated value:
+
+```text
+core_clock_mhz.raw: 1300
+source_api: zeDeviceGetProperties
+```
+
+should be treated as a Level Zero property value, not live changing frequency telemetry. A GPU stress spike did not create new Intel indicators in the current output because the provider does not yet query Level Zero Sysman or other live activity, power, temperature, memory, or utilization APIs.
+
+Current Intel watch/stats proves:
+
+```text
+Level Zero enumeration is stable across ticks
+JSON stats emission works across ticks
+empty-name provenance remains correct across ticks
+provider/source/schema/class remain stable across ticks
+```
+
+Current Intel watch/stats does not prove:
+
+```text
+Intel utilization telemetry
+Intel memory usage telemetry
+Intel power telemetry
+Intel temperature telemetry
+live Intel frequency telemetry
 ```
 
 ## Unavailable Runtime Shape
@@ -184,7 +287,7 @@ telemetry_class: provider_telemetry
 
 The unavailable reason should be preserved in the relevant provenance wrapper instead of being collapsed into a fake device or fake zero telemetry.
 
-## Expected Available Runtime Shape
+## Current Available Runtime Shape
 
 When Intel Level Zero is installed and returns devices, compact human output should remain provider-scoped and factual:
 
@@ -196,19 +299,20 @@ Telemetry class: provider_telemetry
 Intel driver records returned: <n>
 Intel device records returned: <n>
 
-Intel device 0: <provider-reported name>
-  Device key: driver=<driver_index>,device=<device_index>,vendor=0x<vendor_id>,device=0x<device_id>
+Intel device <device_index> [driver=<driver_index>,device=<device_index>,vendor=0x<vendor_id>,device=0x<device_id>]
   Device type: <provider-reported type>
+  Vendor ID: 0x<vendor_id> (<vendor_id decimal>)
+  Device ID: 0x<device_id> (<device_id decimal>)
   UUID: <provider-reported UUID if non-zero>
   Core clock: <provider-reported MHz> MHz
-  Unavailable: activity, memory, power, temperature
+  Unavailable: <compact unavailable summary>
 ```
 
-The current implementation does not yet claim utilization, memory usage, power, or temperature support.
+The current implementation does not yet claim utilization, memory usage, power, temperature, or live frequency support.
 
 ## Validation Baseline
 
-Validation reported for the scaffold:
+Validation reported for the scaffold and `e421618` cleanup:
 
 ```text
 cargo fmt
@@ -256,13 +360,25 @@ This spike intentionally does not add:
 
 Promising next areas, still provider-scoped if added:
 
-- validate on a system with Intel Level Zero installed
-- confirm structure type handling against real devices
-- add explicit Level Zero / Sysman constants instead of discovery probing where appropriate
-- query memory properties / memory state if exposed through a safe Level Zero or Sysman path
-- query power, temperature, frequency, and utilization if exposed through safe provider-native calls
-- record driver/runtime version if exposed by the provider surface
-- add Intel-specific docs once a live-runtime artifact exists
+- replace any remaining structure-type probing with explicit verified Level Zero constants
+- query driver/runtime properties if exposed safely by Level Zero
+- query memory properties or memory state if exposed through a safe Level Zero or Sysman path
+- query live frequency through provider-native frequency domains if safely exposed
+- query power, temperature, engine activity, and memory usage through Level Zero Sysman if exposed through safe provider-native calls
+- preserve unavailable/error facts for every missing or unsupported live API
+- keep Intel sinks rejected until a deliberate provider-native sink schema exists
+
+Likely future Sysman candidates, not part of this scaffold:
+
+```text
+zesDeviceEnumFrequencyDomains / zesFrequencyGetState
+zesDeviceEnumTemperatureSensors / zesTemperatureGetState
+zesDeviceEnumPowerDomains / zesPowerGetEnergyCounter or power properties
+zesDeviceEnumEngineGroups / zesEngineGetActivity
+zesDeviceEnumMemoryModules / zesMemoryGetState
+```
+
+These calls need careful dynamic symbol loading and structure definitions. They should not be added as a late-night quick pass.
 
 ## Documentation Rule
 
@@ -271,7 +387,7 @@ Operational human CLI output should stay compact and factual:
 - provider/source/class
 - provider status
 - driver/device counts
-- compact provider-native identity facts
+- compact provider-native identity/property facts
 - compact unavailable/error summaries
 
 Structured JSON stats output is allowed to be detailed because it is explicitly requested with `--stats`. It should preserve provider provenance and unavailable/error states without turning Intel Level Zero into an NVML compatibility layer.
