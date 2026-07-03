@@ -47,7 +47,7 @@ use probe_fields::{
     format_probe_fields_snapshot,
 };
 use sink::{Sink, SinkKind};
-use wtg_providers::amd_adl;
+use wtg_providers::{amd_adl, intel_level_zero};
 
 /// Default sampling interval when `--watch` is enabled.
 /// 1000ms is conservative and matches NVML’s practical update cadence for many metrics.
@@ -60,6 +60,7 @@ const STATS_SCHEMA: u32 = 0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProviderKind {
     Amd,
+    Intel,
 }
 
 struct CliArgs {
@@ -267,9 +268,9 @@ fn print_help() {
         "\n",
         "\n",
         "Usage:\n",
-        "  wtg.exe --once [--stats] [--provider amd] [--sink jsonl|csv]\n",
-        "  wtg.exe --watch [--interval <ms>] [--stats] [--provider amd] [--sink jsonl|csv|mqtt]\n",
-        "  wtg.exe --probe [--provider amd] [--sink jsonl|csv]\n",
+        "  wtg.exe --once [--stats] [--provider amd|intel] [--sink jsonl|csv]\n",
+        "  wtg.exe --watch [--interval <ms>] [--stats] [--provider amd|intel] [--sink jsonl|csv|mqtt]\n",
+        "  wtg.exe --probe [--provider amd|intel] [--sink jsonl|csv]\n",
         "  wtg.exe --probe-fields --field-id <u32> [--field-id <u32> ...] [--sink jsonl|csv]\n",
         "  wtg.exe --sink mqtt --mqtt-ha-remove-discovery --mqtt-host <host> --mqtt-node-id <id>\n",
         "\n",
@@ -279,7 +280,7 @@ fn print_help() {
         "  --config <path>         Load explicit WTG TOML config.\n",
         "  --interval <ms>         Polling interval in milliseconds for --watch.\n",
         "  --stats                 Print stable key:value stats output for --once or --watch.\n",
-        "  --provider amd          Use the experimental AMD ADL provider for --once, --watch, or --probe.\n",
+        "  --provider amd|intel    Use an experimental provider for --once, --watch, or --probe.\n",
         "  --probe                 Capture one context-rich probe block.\n",
         "  --probe-fields          Query explicit NVML field-value IDs.\n",
         "  --field-id <u32>        Repeatable field ID for --probe-fields.\n",
@@ -316,6 +317,7 @@ fn print_product_header() {
 fn provider_display_name(provider: Option<ProviderKind>) -> &'static str {
     match provider {
         Some(ProviderKind::Amd) => "AMD ADL",
+        Some(ProviderKind::Intel) => "Intel Level Zero",
         None => "NVIDIA NVML",
     }
 }
@@ -404,6 +406,89 @@ fn run_amd_provider(args: &CliArgs) -> ! {
     }
 }
 
+fn run_intel_provider(args: &CliArgs) -> ! {
+    if args.probe {
+        let sample = intel_level_zero::collect_once(0);
+        println!("{}", intel_level_zero::format_probe_snapshot(&sample));
+        process::exit(if intel_level_zero::sample_status(&sample) == "ok" {
+            0
+        } else {
+            2
+        });
+    }
+
+    if args.once && args.stats {
+        let sample = intel_level_zero::collect_once(0);
+        let tick_ts = now_ts();
+        println!(
+            "{}",
+            intel_level_zero::format_stats_snapshot_json(&sample, 0, &tick_ts)
+        );
+        process::exit(if intel_level_zero::sample_status(&sample) == "ok" {
+            0
+        } else {
+            2
+        });
+    }
+
+    if args.watch && args.stats {
+        let interval_ms = args.interval_ms.unwrap_or(DEFAULT_INTERVAL_MS);
+        if interval_ms < 100 {
+            eprintln!("WTG note: very low interval ({interval_ms}ms). Intel Level Zero metrics may not update this quickly; expect duplicates.");
+        }
+
+        let sleep_dur = Duration::from_millis(interval_ms);
+        let mut sample_seq = 0u64;
+        loop {
+            let sample = intel_level_zero::collect_once(sample_seq);
+            let tick_ts = now_ts();
+            println!(
+                "{}",
+                intel_level_zero::format_stats_snapshot_json(&sample, sample_seq, &tick_ts)
+            );
+            println!();
+            sample_seq = sample_seq.saturating_add(1);
+            thread::sleep(sleep_dur);
+        }
+    }
+
+    print_product_header();
+    if args.once {
+        let sample = intel_level_zero::collect_once(0);
+        print_mode_header("snapshot", args.provider, None);
+        println!("Provider source: {}", intel_level_zero::provider_source());
+        println!("Telemetry class: {}", intel_level_zero::telemetry_class());
+        println!();
+        println!("{}", intel_level_zero::format_snapshot(&sample));
+        process::exit(if intel_level_zero::sample_status(&sample) == "ok" {
+            0
+        } else {
+            2
+        });
+    }
+
+    let interval_ms = args.interval_ms.unwrap_or(DEFAULT_INTERVAL_MS);
+    if interval_ms < 100 {
+        eprintln!("WTG note: very low interval ({interval_ms}ms). Intel Level Zero metrics may not update this quickly; expect duplicates.");
+    }
+
+    print_mode_header("watch", args.provider, Some(interval_ms));
+    println!("Provider source: {}", intel_level_zero::provider_source());
+    println!("Telemetry class: {}", intel_level_zero::telemetry_class());
+    println!();
+
+    let sleep_dur = Duration::from_millis(interval_ms);
+    let mut sample_seq = 0u64;
+    loop {
+        let sample = intel_level_zero::collect_once(sample_seq);
+        println!("--- tick {} ---", now_ts());
+        println!("{}", intel_level_zero::format_watch_sample(&sample));
+        println!();
+        sample_seq = sample_seq.saturating_add(1);
+        thread::sleep(sleep_dur);
+    }
+}
+
 fn usage_error(message: &str) -> ! {
     eprintln!("WTG usage error: {message}");
     process::exit(2);
@@ -447,12 +532,15 @@ fn parse_args() -> CliArgs {
             }
             "--provider" => {
                 if i + 1 >= args.len() {
-                    usage_error("--provider requires a value. Supported: amd.");
+                    usage_error("--provider requires a value. Supported: amd, intel.");
                 }
 
                 parsed.provider = Some(match args[i + 1].as_str() {
                     "amd" => ProviderKind::Amd,
-                    other => usage_error(&format!("--provider value must be amd. Got: {other}")),
+                    "intel" => ProviderKind::Intel,
+                    other => usage_error(&format!(
+                        "--provider value must be amd or intel. Got: {other}"
+                    )),
                 });
                 i += 2;
             }
@@ -754,6 +842,20 @@ fn validate_args_result(parsed: &CliArgs) -> Result<(), String> {
         }
     }
 
+    if parsed.provider == Some(ProviderKind::Intel) {
+        if probe_fields {
+            return Err("--provider intel does not support --probe-fields.".to_string());
+        }
+        if parsed.sink.is_some() {
+            return Err("--provider intel does not support --sink.".to_string());
+        }
+        if parsed.mqtt_ha_remove_discovery {
+            return Err(
+                "--provider intel does not support --mqtt-ha-remove-discovery.".to_string(),
+            );
+        }
+    }
+
     if parsed.provider.is_some() && !once && !watch && !probe {
         return Err("--provider is valid only with --once, --watch, or --probe.".to_string());
     }
@@ -1017,6 +1119,9 @@ fn main() {
 
     if args.provider == Some(ProviderKind::Amd) {
         run_amd_provider(&args);
+    }
+    if args.provider == Some(ProviderKind::Intel) {
+        run_intel_provider(&args);
     }
 
     let sink = match args.sink {
@@ -1559,6 +1664,92 @@ mod tests {
         let err = validate_args_result(&args).unwrap_err();
 
         assert_eq!(err, "--provider amd does not support --sink.");
+    }
+
+    #[test]
+    fn provider_intel_accepts_once() {
+        let mut args = CliArgs::default();
+        args.once = true;
+        args.provider = Some(ProviderKind::Intel);
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_intel_accepts_watch() {
+        let mut args = CliArgs::default();
+        args.watch = true;
+        args.provider = Some(ProviderKind::Intel);
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_intel_accepts_once_stats() {
+        let mut args = CliArgs::default();
+        args.once = true;
+        args.stats = true;
+        args.provider = Some(ProviderKind::Intel);
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_intel_accepts_watch_stats() {
+        let mut args = CliArgs::default();
+        args.watch = true;
+        args.stats = true;
+        args.provider = Some(ProviderKind::Intel);
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_intel_accepts_probe() {
+        let mut args = CliArgs::default();
+        args.probe = true;
+        args.provider = Some(ProviderKind::Intel);
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_intel_rejects_once_and_probe() {
+        let mut args = CliArgs::default();
+        args.once = true;
+        args.probe = true;
+        args.provider = Some(ProviderKind::Intel);
+
+        let err = validate_args_result(&args).unwrap_err();
+
+        assert_eq!(
+            err,
+            "--probe is mutually exclusive with --once and --watch."
+        );
+    }
+
+    #[test]
+    fn provider_intel_rejects_probe_fields() {
+        let mut args = CliArgs::default();
+        args.probe_fields = true;
+        args.provider = Some(ProviderKind::Intel);
+        args.field_ids.push(1);
+
+        let err = validate_args_result(&args).unwrap_err();
+
+        assert_eq!(err, "--provider intel does not support --probe-fields.");
+    }
+
+    #[test]
+    fn provider_intel_rejects_sink() {
+        let mut args = CliArgs::default();
+        args.once = true;
+        args.provider = Some(ProviderKind::Intel);
+        args.sink = Some(SinkKind::Jsonl);
+
+        let err = validate_args_result(&args).unwrap_err();
+
+        assert_eq!(err, "--provider intel does not support --sink.");
     }
 
     #[test]
