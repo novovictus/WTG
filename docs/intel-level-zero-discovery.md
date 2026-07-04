@@ -1,6 +1,6 @@
-# Intel Level Zero Provider Scaffold
+﻿# Intel Level Zero / Sysman Provider Discovery
 
-This spike adds an explicit Intel provider-scoped discovery path selected with `--provider intel`.
+This branch adds an explicit Intel provider-scoped discovery path selected with `--provider intel`.
 
 The Intel path is a supporting provider witness. It does not change the NVIDIA/NVML primary truth path, does not change the AMD ADL provider path, and does not translate Intel facts into NVML-equivalent fields.
 
@@ -13,21 +13,36 @@ Current version: `0.2.9`
 Current implementation status:
 
 ```text
-Intel provider type: scaffold / discovery spike
+Intel provider type: Level Zero / Sysman discovery provider
 Runtime target: Intel Level Zero loader
 Runtime DLL: ze_loader.dll
 Provider source: wtg.provider.intel.level_zero
 Telemetry class: provider_telemetry
-Stats schema: wtg.intel_level_zero.stats.v1
+Stats schema: wtg.intel_level_zero.stats.v3
 ```
 
-On the current test machine, the Intel Level Zero runtime is not installed. The provider therefore fails cleanly as unavailable instead of crashing or inventing telemetry.
+Bench validation has confirmed that the clean bench runtime exposes Intel Level Zero and Sysman through `ze_loader.dll`.
 
-Observed unavailable result:
+Validated bench target:
 
 ```text
-Provider status: unavailable
-Reason: Intel Level Zero runtime DLL ze_loader.dll was not found.
+Host: INSPIRON3861 / bench
+Intel device: Intel UHD 730
+Vendor ID: 0x8086
+Device ID: 0x4c8b
+UUID: 240000002000000086808b4c04000000
+Core clock: 1300.0 MHz
+```
+
+Validated provider state:
+
+```text
+provider.status: ok
+intel.driver_records: 1
+intel.device_records: 1
+intel.telemetry_exports_matched: 4
+intel.sysman_exports_matched: 16
+intel.sysman.zesInit_result: ok (raw=0)
 ```
 
 ## Current CLI Contract
@@ -38,7 +53,7 @@ Supported Intel provider commands:
 .\target\release\wtg.exe --once --provider intel
 .\target\release\wtg.exe --watch --provider intel --interval 1000
 .\target\release\wtg.exe --once --stats --provider intel
-.\target\release\wtg.exe --watch --stats --provider intel --interval 1000
+.\target\release\wtg.exe --watch --stats --provider intel --interval 250
 .\target\release\wtg.exe --probe --provider intel
 ```
 
@@ -75,14 +90,14 @@ Intel follows the same WTG mode split used by NVIDIA/NVML and AMD ADL:
 The Intel stats schema is provider-native:
 
 ```text
-schema: wtg.intel_level_zero.stats.v1
+schema: wtg.intel_level_zero.stats.v3
 provider: intel
 provider_authority: Intel Level Zero
 provider_source: wtg.provider.intel.level_zero
 telemetry_class: provider_telemetry
 ```
 
-This schema is not an NVML compatibility schema. It preserves Intel Level Zero facts, source APIs, states, units, and unavailable/error results without inventing missing NVML-equivalent fields.
+This schema is not an NVML compatibility schema. It preserves Intel Level Zero and Sysman facts, source APIs, states, units, unavailable results, and error results without inventing missing NVML-equivalent fields.
 
 ## Runtime Loading Behavior
 
@@ -92,9 +107,9 @@ The provider dynamically loads the Intel Level Zero runtime DLL:
 ze_loader.dll
 ```
 
-The current scaffold does not hard-link against Level Zero at build time. It attempts to load exported Level Zero functions at runtime and reports a clean unavailable state when the DLL or required symbols are missing.
+The implementation does not hard-link against Level Zero at build time. It attempts to load exported Level Zero and Sysman functions at runtime and reports a clean unavailable state when the DLL or required symbols are missing.
 
-Required Level Zero entry points currently loaded:
+Required base Level Zero entry points currently loaded:
 
 ```text
 zeInit
@@ -103,15 +118,37 @@ zeDeviceGet
 zeDeviceGetProperties
 ```
 
-Current export count:
+Optional Sysman entry points currently probed and used when available:
+
+```text
+zesInit
+zesDeviceEnumEngineGroups
+zesEngineGetProperties
+zesEngineGetActivity
+zesDeviceEnumMemoryModules
+zesMemoryGetProperties
+zesMemoryGetState
+zesDeviceEnumPowerDomains
+zesPowerGetProperties
+zesPowerGetEnergyCounter
+zesDeviceEnumTemperatureSensors
+zesTemperatureGetProperties
+zesTemperatureGetState
+zesDeviceEnumFrequencyDomains
+zesFrequencyGetProperties
+zesFrequencyGetState
+```
+
+Validated bench export counts:
 
 ```text
 telemetry_exports_matched: 4
+sysman_exports_matched: 16
 ```
 
 ## Current Discovery Surface
 
-If Level Zero initializes and returns drivers/devices, the provider currently attempts:
+If Level Zero initializes and returns drivers/devices, the provider attempts:
 
 ```text
 zeInit
@@ -120,7 +157,7 @@ zeDeviceGet
 zeDeviceGetProperties
 ```
 
-Per-device facts currently derived from `zeDeviceGetProperties` when available:
+Per-device facts derived from `zeDeviceGetProperties` when available:
 
 ```text
 device_name
@@ -138,14 +175,80 @@ The device key is WTG provider-scoped and currently shaped as:
 driver=<driver_index>,device=<device_index>,vendor=0x<vendor_id>,device=0x<device_id>
 ```
 
-Unavailable provider-scoped facts are summarized rather than faked:
+After successful `zesInit`, the provider enumerates these Sysman domain groups per Level Zero device:
 
 ```text
-activity
-memory
-power
+engine_groups
+memory_modules
+power_domains
+temperature_sensors
+frequency_domains
+```
+
+For each domain group, the provider emits provider-scoped count/status facts. When handles exist and calls succeed, it emits raw handle/property/state facts using the exact Sysman API name in `source_api`.
+
+Validated bench domain counts:
+
+```text
+sysman.engine_groups.count: 3
+sysman.memory_modules.count: 1
+sysman.power_domains.count: 1
+sysman.temperature_sensors.count: 0
+sysman.frequency_domains.count: 1
+```
+
+Validated bench domain status:
+
+```text
+sysman.engine_groups.status: ok
+sysman.memory_modules.status: ok
+sysman.power_domains.status: ok
+sysman.temperature_sensors.status: not_available
+sysman.frequency_domains.status: ok
+```
+
+The bench returned zero temperature sensor handles. WTG reports this as `not_available` and keeps temperature in the unavailable summary. It does not synthesize a temperature value.
+
+Unavailable provider-scoped facts on the current bench:
+
+```text
+name
 temperature
 ```
+
+## Available Runtime Shape
+
+On the validated bench, compact human output remains provider-scoped and factual:
+
+```text
+WTG snapshot mode (provider: Intel Level Zero)
+Provider source: wtg.provider.intel.level_zero
+Telemetry class: provider_telemetry
+
+Intel driver records returned: 1
+Intel device records returned: 1
+
+Intel device 0 [driver=0,device=0,vendor=0x8086,device=0x4c8b]
+  Device type: gpu
+  Vendor ID: 0x8086 (32902)
+  Device ID: 0x4c8b (19595)
+  UUID: 240000002000000086808b4c04000000
+  Core clock: 1300.0 MHz
+  Unavailable: name, temperature
+```
+
+Probe output includes both the base Level Zero facts and Sysman domain facts:
+
+```text
+device.sysman.engine_groups.count: ok (raw=3)
+device.sysman.memory_modules.count: ok (raw=1)
+device.sysman.power_domains.count: ok (raw=1)
+device.sysman.temperature_sensors.count: ok (raw=0)
+device.sysman.temperature_sensors.status: not_available (raw=null) [zesDeviceEnumTemperatureSensors returned zero handles.]
+device.sysman.frequency_domains.count: ok (raw=1)
+```
+
+Stats and watch-stats output include the same provider-scoped Sysman facts under the Intel device object with schema `wtg.intel_level_zero.stats.v3`.
 
 ## Unavailable Runtime Shape
 
@@ -175,7 +278,7 @@ reason: Intel Level Zero runtime DLL ze_loader.dll was not found.
 Stats output remains parseable JSON even when unavailable. It should still include:
 
 ```text
-schema: wtg.intel_level_zero.stats.v1
+schema: wtg.intel_level_zero.stats.v3
 provider: intel
 provider_authority: Intel Level Zero
 provider_source: wtg.provider.intel.level_zero
@@ -184,49 +287,41 @@ telemetry_class: provider_telemetry
 
 The unavailable reason should be preserved in the relevant provenance wrapper instead of being collapsed into a fake device or fake zero telemetry.
 
-## Expected Available Runtime Shape
-
-When Intel Level Zero is installed and returns devices, compact human output should remain provider-scoped and factual:
-
-```text
-WTG snapshot mode (provider: Intel Level Zero)
-Provider source: wtg.provider.intel.level_zero
-Telemetry class: provider_telemetry
-
-Intel driver records returned: <n>
-Intel device records returned: <n>
-
-Intel device 0: <provider-reported name>
-  Device key: driver=<driver_index>,device=<device_index>,vendor=0x<vendor_id>,device=0x<device_id>
-  Device type: <provider-reported type>
-  UUID: <provider-reported UUID if non-zero>
-  Core clock: <provider-reported MHz> MHz
-  Unavailable: activity, memory, power, temperature
-```
-
-The current implementation does not yet claim utilization, memory usage, power, or temperature support.
-
 ## Validation Baseline
 
-Validation reported for the scaffold:
+Local validation reported for the 0.2.9 Intel Sysman provider:
 
 ```text
 cargo fmt
 cargo test
-cargo build -p wtg-app --release
+cargo build -p wtg-app --bin wtg --release
+git grep -n "wtg-provider-probe\|src/bin/wtg-provider-probe\|--bin wtg-provider-probe"
 ```
 
-Runtime checks reported:
+Bench runtime checks reported:
 
 ```powershell
-.\target\release\wtg.exe --once --provider intel
-.\target\release\wtg.exe --once --stats --provider intel
-.\target\release\wtg.exe --probe --provider intel
-.\target\release\wtg.exe --watch --provider intel --interval 1000
-.\target\release\wtg.exe --watch --stats --provider intel --interval 1000
+.\wtg.exe --version
+.\wtg.exe --once
+.\wtg.exe --once --provider intel
+.\wtg.exe --probe --provider intel
+.\wtg.exe --once --stats --provider intel
+.\wtg.exe --watch --stats --provider intel --interval 250
 ```
 
-Expected rejections reported:
+Bench validation result:
+
+```text
+version: WTG - WhatTheGPU v0.2.9
+NVIDIA default --once: ok
+Intel --once: ok
+Intel --probe: ok, includes Sysman domain facts
+Intel --once --stats: ok, valid JSON, schema v3
+Intel --watch --stats: ok, repeated valid JSON objects
+state=error facts observed: 0
+```
+
+Expected rejections:
 
 ```powershell
 .\target\release\wtg.exe --probe-fields --provider intel --field-id 1
@@ -238,7 +333,7 @@ Expected rejections reported:
 
 ## Non-Goals
 
-This spike intentionally does not add:
+This provider cycle intentionally does not add:
 
 - PDH
 - WMI
@@ -251,18 +346,17 @@ This spike intentionally does not add:
 - NVML-equivalent Intel field names
 - fake zero values for missing Intel facts
 - cross-vendor telemetry normalization
+- standalone provider probe binaries
 
 ## Candidate Future Expansions
 
 Promising next areas, still provider-scoped if added:
 
-- validate on a system with Intel Level Zero installed
-- confirm structure type handling against real devices
-- add explicit Level Zero / Sysman constants instead of discovery probing where appropriate
-- query memory properties / memory state if exposed through a safe Level Zero or Sysman path
-- query power, temperature, frequency, and utilization if exposed through safe provider-native calls
+- decode selected Sysman buffers into typed Intel-native facts only after structure layouts are confirmed
 - record driver/runtime version if exposed by the provider surface
-- add Intel-specific docs once a live-runtime artifact exists
+- validate on additional Intel hardware and driver/runtime combinations
+- compare behavior across integrated Intel graphics and discrete Intel Arc hardware
+- decide whether selected Sysman facts should remain raw-only or gain typed provider-native wrappers
 
 ## Documentation Rule
 
@@ -274,7 +368,7 @@ Operational human CLI output should stay compact and factual:
 - compact provider-native identity facts
 - compact unavailable/error summaries
 
-Structured JSON stats output is allowed to be detailed because it is explicitly requested with `--stats`. It should preserve provider provenance and unavailable/error states without turning Intel Level Zero into an NVML compatibility layer.
+Structured JSON stats output is allowed to be detailed because it is explicitly requested with `--stats`. It should preserve provider provenance and unavailable/error states without turning Intel Level Zero or Sysman into an NVML compatibility layer.
 
 ## Pruning Rule
 
