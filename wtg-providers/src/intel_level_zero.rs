@@ -12,15 +12,19 @@ const SOURCE: &str = "wtg.provider.intel.level_zero";
 const TELEMETRY_CLASS: &str = "provider_telemetry";
 const PROVIDER: &str = "intel";
 const PROVIDER_AUTHORITY: &str = "Intel Level Zero";
-const STATS_SCHEMA: &str = "wtg.intel_level_zero.stats.v2";
+const STATS_SCHEMA: &str = "wtg.intel_level_zero.stats.v3";
 const ZE_RESULT_SUCCESS: i32 = 0;
 const ZE_MAX_DEVICE_NAME: usize = 256;
+const SYSMAN_BUFFER_BYTES: usize = 512;
 
 type ZeInit = unsafe extern "C" fn(u32) -> i32;
 type ZeDriverGet = unsafe extern "C" fn(*mut u32, *mut *mut c_void) -> i32;
 type ZeDeviceGet = unsafe extern "C" fn(*mut c_void, *mut u32, *mut *mut c_void) -> i32;
 type ZeDeviceGetProperties = unsafe extern "C" fn(*mut c_void, *mut ZeDeviceProperties) -> i32;
 type ZesInit = unsafe extern "C" fn(u32) -> i32;
+type ZesEnumHandles = unsafe extern "C" fn(*mut c_void, *mut u32, *mut *mut c_void) -> i32;
+type ZesGetBuffer = unsafe extern "C" fn(*mut c_void, *mut SysmanBuffer) -> i32;
+type ZesGetTemperatureState = unsafe extern "C" fn(*mut c_void, *mut f64) -> i32;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -46,6 +50,14 @@ struct ZeDeviceProperties {
     kernel_timestamp_valid_bits: u32,
     uuid: [u8; 16],
     name: [c_char; ZE_MAX_DEVICE_NAME],
+}
+
+#[repr(C, align(8))]
+#[derive(Clone, Copy)]
+struct SysmanBuffer {
+    stype: u32,
+    p_next: *mut c_void,
+    bytes: [u8; SYSMAN_BUFFER_BYTES],
 }
 
 #[derive(Debug, Serialize)]
@@ -85,7 +97,7 @@ struct DeviceRecord {
 
 #[derive(Debug, Serialize, Clone)]
 struct IntelFact {
-    metric_key: &'static str,
+    metric_key: String,
     source_api: &'static str,
     state: &'static str,
     raw: Value,
@@ -102,6 +114,21 @@ struct LevelZeroLibrary {
     ze_device_get: ZeDeviceGet,
     ze_device_get_properties: ZeDeviceGetProperties,
     zes_init: Option<ZesInit>,
+    zes_device_enum_engine_groups: Option<ZesEnumHandles>,
+    zes_engine_get_properties: Option<ZesGetBuffer>,
+    zes_engine_get_activity: Option<ZesGetBuffer>,
+    zes_device_enum_memory_modules: Option<ZesEnumHandles>,
+    zes_memory_get_properties: Option<ZesGetBuffer>,
+    zes_memory_get_state: Option<ZesGetBuffer>,
+    zes_device_enum_power_domains: Option<ZesEnumHandles>,
+    zes_power_get_properties: Option<ZesGetBuffer>,
+    zes_power_get_energy_counter: Option<ZesGetBuffer>,
+    zes_device_enum_temperature_sensors: Option<ZesEnumHandles>,
+    zes_temperature_get_properties: Option<ZesGetBuffer>,
+    zes_temperature_get_state: Option<ZesGetTemperatureState>,
+    zes_device_enum_frequency_domains: Option<ZesEnumHandles>,
+    zes_frequency_get_properties: Option<ZesGetBuffer>,
+    zes_frequency_get_state: Option<ZesGetBuffer>,
 }
 
 struct SysmanExportSpec {
@@ -112,6 +139,19 @@ struct SysmanExportSpec {
 struct SysmanProbe {
     exports_matched: usize,
     facts: Vec<IntelFact>,
+    zes_init_ok: bool,
+}
+
+struct SysmanDomainGroup {
+    domain_key: &'static str,
+    unavailable_label: &'static str,
+    enum_source_api: &'static str,
+    enum_handles: Option<ZesEnumHandles>,
+    property_source_api: &'static str,
+    get_properties: Option<ZesGetBuffer>,
+    state_source_api: &'static str,
+    get_state_buffer: Option<ZesGetBuffer>,
+    get_state_temperature: Option<ZesGetTemperatureState>,
 }
 
 const SYSMAN_EXPORT_SPECS: &[SysmanExportSpec] = &[
@@ -222,7 +262,7 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                 );
             }
 
-            match enumerate_devices(&library) {
+            match enumerate_devices(&library, sysman_probe.zes_init_ok) {
                 Ok(enumeration) => enumeration.into_sample(sample_seq, library, sysman_probe),
                 Err(reason) => unavailable_sample(
                     sample_seq,
@@ -552,6 +592,43 @@ impl LevelZeroLibrary {
         let ze_device_get_properties =
             unsafe { load_symbol::<ZeDeviceGetProperties>(module, b"zeDeviceGetProperties\0")? };
         let zes_init = unsafe { load_optional_symbol::<ZesInit>(module, b"zesInit\0") };
+        let zes_device_enum_engine_groups = unsafe {
+            load_optional_symbol::<ZesEnumHandles>(module, b"zesDeviceEnumEngineGroups\0")
+        };
+        let zes_engine_get_properties =
+            unsafe { load_optional_symbol::<ZesGetBuffer>(module, b"zesEngineGetProperties\0") };
+        let zes_engine_get_activity =
+            unsafe { load_optional_symbol::<ZesGetBuffer>(module, b"zesEngineGetActivity\0") };
+        let zes_device_enum_memory_modules = unsafe {
+            load_optional_symbol::<ZesEnumHandles>(module, b"zesDeviceEnumMemoryModules\0")
+        };
+        let zes_memory_get_properties =
+            unsafe { load_optional_symbol::<ZesGetBuffer>(module, b"zesMemoryGetProperties\0") };
+        let zes_memory_get_state =
+            unsafe { load_optional_symbol::<ZesGetBuffer>(module, b"zesMemoryGetState\0") };
+        let zes_device_enum_power_domains = unsafe {
+            load_optional_symbol::<ZesEnumHandles>(module, b"zesDeviceEnumPowerDomains\0")
+        };
+        let zes_power_get_properties =
+            unsafe { load_optional_symbol::<ZesGetBuffer>(module, b"zesPowerGetProperties\0") };
+        let zes_power_get_energy_counter =
+            unsafe { load_optional_symbol::<ZesGetBuffer>(module, b"zesPowerGetEnergyCounter\0") };
+        let zes_device_enum_temperature_sensors = unsafe {
+            load_optional_symbol::<ZesEnumHandles>(module, b"zesDeviceEnumTemperatureSensors\0")
+        };
+        let zes_temperature_get_properties = unsafe {
+            load_optional_symbol::<ZesGetBuffer>(module, b"zesTemperatureGetProperties\0")
+        };
+        let zes_temperature_get_state = unsafe {
+            load_optional_symbol::<ZesGetTemperatureState>(module, b"zesTemperatureGetState\0")
+        };
+        let zes_device_enum_frequency_domains = unsafe {
+            load_optional_symbol::<ZesEnumHandles>(module, b"zesDeviceEnumFrequencyDomains\0")
+        };
+        let zes_frequency_get_properties =
+            unsafe { load_optional_symbol::<ZesGetBuffer>(module, b"zesFrequencyGetProperties\0") };
+        let zes_frequency_get_state =
+            unsafe { load_optional_symbol::<ZesGetBuffer>(module, b"zesFrequencyGetState\0") };
 
         Ok(Self {
             module,
@@ -562,6 +639,21 @@ impl LevelZeroLibrary {
             ze_device_get,
             ze_device_get_properties,
             zes_init,
+            zes_device_enum_engine_groups,
+            zes_engine_get_properties,
+            zes_engine_get_activity,
+            zes_device_enum_memory_modules,
+            zes_memory_get_properties,
+            zes_memory_get_state,
+            zes_device_enum_power_domains,
+            zes_power_get_properties,
+            zes_power_get_energy_counter,
+            zes_device_enum_temperature_sensors,
+            zes_temperature_get_properties,
+            zes_temperature_get_state,
+            zes_device_enum_frequency_domains,
+            zes_frequency_get_properties,
+            zes_frequency_get_state,
         })
     }
 
@@ -584,7 +676,7 @@ impl LevelZeroLibrary {
                 ));
             } else {
                 facts.push(IntelFact {
-                    metric_key: spec.metric_key,
+                    metric_key: spec.metric_key.to_string(),
                     source_api: "wtg.intel.level_zero.dynamic_load",
                     state: "not_available",
                     raw: json!(false),
@@ -597,47 +689,116 @@ impl LevelZeroLibrary {
             }
         }
 
-        match self.zes_init {
+        let zes_init_ok = match self.zes_init {
             Some(zes_init) => {
                 let result = unsafe { zes_init(0) };
                 if result == ZE_RESULT_SUCCESS {
                     facts.push(IntelFact {
-                        metric_key: "zesInit_result",
+                        metric_key: "zesInit_result".to_string(),
                         source_api: "zesInit",
                         state: "ok",
                         raw: json!(result),
                         unit: None,
                         error_message: None,
                     });
+                    true
                 } else {
                     facts.push(IntelFact {
-                        metric_key: "zesInit_result",
+                        metric_key: "zesInit_result".to_string(),
                         source_api: "zesInit",
                         state: "error",
                         raw: json!(result),
                         unit: None,
                         error_message: Some(format!("zesInit failed with status {result}.")),
                     });
+                    false
                 }
             }
-            None => facts.push(IntelFact {
-                metric_key: "zesInit_result",
-                source_api: "zesInit",
-                state: "not_available",
-                raw: Value::Null,
-                unit: None,
-                error_message: Some("missing optional Sysman symbol zesInit.".to_string()),
-            }),
-        }
+            None => {
+                facts.push(IntelFact {
+                    metric_key: "zesInit_result".to_string(),
+                    source_api: "zesInit",
+                    state: "not_available",
+                    raw: Value::Null,
+                    unit: None,
+                    error_message: Some("missing optional Sysman symbol zesInit.".to_string()),
+                });
+                false
+            }
+        };
 
         SysmanProbe {
             exports_matched,
             facts,
+            zes_init_ok,
         }
+    }
+
+    fn sysman_domain_groups(&self) -> [SysmanDomainGroup; 5] {
+        [
+            SysmanDomainGroup {
+                domain_key: "engine_groups",
+                unavailable_label: "activity",
+                enum_source_api: "zesDeviceEnumEngineGroups",
+                enum_handles: self.zes_device_enum_engine_groups,
+                property_source_api: "zesEngineGetProperties",
+                get_properties: self.zes_engine_get_properties,
+                state_source_api: "zesEngineGetActivity",
+                get_state_buffer: self.zes_engine_get_activity,
+                get_state_temperature: None,
+            },
+            SysmanDomainGroup {
+                domain_key: "memory_modules",
+                unavailable_label: "memory",
+                enum_source_api: "zesDeviceEnumMemoryModules",
+                enum_handles: self.zes_device_enum_memory_modules,
+                property_source_api: "zesMemoryGetProperties",
+                get_properties: self.zes_memory_get_properties,
+                state_source_api: "zesMemoryGetState",
+                get_state_buffer: self.zes_memory_get_state,
+                get_state_temperature: None,
+            },
+            SysmanDomainGroup {
+                domain_key: "power_domains",
+                unavailable_label: "power",
+                enum_source_api: "zesDeviceEnumPowerDomains",
+                enum_handles: self.zes_device_enum_power_domains,
+                property_source_api: "zesPowerGetProperties",
+                get_properties: self.zes_power_get_properties,
+                state_source_api: "zesPowerGetEnergyCounter",
+                get_state_buffer: self.zes_power_get_energy_counter,
+                get_state_temperature: None,
+            },
+            SysmanDomainGroup {
+                domain_key: "temperature_sensors",
+                unavailable_label: "temperature",
+                enum_source_api: "zesDeviceEnumTemperatureSensors",
+                enum_handles: self.zes_device_enum_temperature_sensors,
+                property_source_api: "zesTemperatureGetProperties",
+                get_properties: self.zes_temperature_get_properties,
+                state_source_api: "zesTemperatureGetState",
+                get_state_buffer: None,
+                get_state_temperature: self.zes_temperature_get_state,
+            },
+            SysmanDomainGroup {
+                domain_key: "frequency_domains",
+                unavailable_label: "frequency",
+                enum_source_api: "zesDeviceEnumFrequencyDomains",
+                enum_handles: self.zes_device_enum_frequency_domains,
+                property_source_api: "zesFrequencyGetProperties",
+                get_properties: self.zes_frequency_get_properties,
+                state_source_api: "zesFrequencyGetState",
+                get_state_buffer: self.zes_frequency_get_state,
+                get_state_temperature: None,
+            },
+        ]
     }
 }
 
-fn enumerate_devices(library: &LevelZeroLibrary) -> Result<Enumeration, String> {
+fn enumerate_devices(
+    library: &LevelZeroLibrary,
+    sysman_ready: bool,
+) -> Result<Enumeration, String> {
     let mut driver_count = 0u32;
     let result = unsafe { (library.ze_driver_get)(&mut driver_count, ptr::null_mut()) };
     if result != ZE_RESULT_SUCCESS {
@@ -694,9 +855,12 @@ fn enumerate_devices(library: &LevelZeroLibrary) -> Result<Enumeration, String> 
             }
 
             devices.push(build_device_record(
+                library,
                 driver_index,
                 device_index,
+                device,
                 property_result,
+                sysman_ready,
             ));
         }
     }
@@ -714,9 +878,12 @@ fn enumerate_devices(library: &LevelZeroLibrary) -> Result<Enumeration, String> 
 }
 
 fn build_device_record(
+    library: &LevelZeroLibrary,
     driver_index: usize,
     device_index: usize,
+    device: *mut c_void,
     property_result: Result<(ZeDeviceProperties, i32), String>,
+    sysman_ready: bool,
 ) -> DeviceRecord {
     let mut facts = Vec::new();
     let mut unavailable = Vec::new();
@@ -761,7 +928,7 @@ fn build_device_record(
                 json!(properties.device_id),
             ));
             facts.push(IntelFact {
-                metric_key: "core_clock_mhz",
+                metric_key: "core_clock_mhz".to_string(),
                 source_api: "zeDeviceGetProperties",
                 state: "ok",
                 raw: json!(properties.core_clock_rate),
@@ -778,7 +945,7 @@ fn build_device_record(
                 facts.push(ok_fact("uuid", "zeDeviceGetProperties", json!(uuid_hex)));
             }
 
-            unavailable.extend(["activity", "memory", "power", "temperature"]);
+            extend_sysman_device_facts(library, device, &mut facts, &mut unavailable, sysman_ready);
 
             DeviceRecord {
                 driver_index,
@@ -791,7 +958,7 @@ fn build_device_record(
         Ok((_, result)) => {
             let key = format!("driver={driver_index},device={device_index}");
             facts.push(IntelFact {
-                metric_key: "device_key",
+                metric_key: "device_key".to_string(),
                 source_api: "wtg.intel.level_zero.device_key",
                 state: "ok",
                 raw: json!(key.clone()),
@@ -799,7 +966,7 @@ fn build_device_record(
                 error_message: None,
             });
             facts.push(IntelFact {
-                metric_key: "device_name",
+                metric_key: "device_name".to_string(),
                 source_api: "zeDeviceGetProperties",
                 state: "error",
                 raw: Value::Null,
@@ -808,7 +975,8 @@ fn build_device_record(
                     "zeDeviceGetProperties failed for driver {driver_index} device {device_index} with status {result}."
                 )),
             });
-            unavailable.extend(["name", "type", "activity", "memory", "power", "temperature"]);
+            unavailable.extend(["name", "type"]);
+            extend_sysman_device_facts(library, device, &mut facts, &mut unavailable, sysman_ready);
             DeviceRecord {
                 driver_index,
                 device_index,
@@ -820,7 +988,7 @@ fn build_device_record(
         Err(error_message) => {
             let key = format!("driver={driver_index},device={device_index}");
             facts.push(IntelFact {
-                metric_key: "device_key",
+                metric_key: "device_key".to_string(),
                 source_api: "wtg.intel.level_zero.device_key",
                 state: "ok",
                 raw: json!(key.clone()),
@@ -828,14 +996,15 @@ fn build_device_record(
                 error_message: None,
             });
             facts.push(IntelFact {
-                metric_key: "device_name",
+                metric_key: "device_name".to_string(),
                 source_api: "zeDeviceGetProperties",
                 state: "error",
                 raw: Value::Null,
                 unit: None,
                 error_message: Some(error_message),
             });
-            unavailable.extend(["name", "type", "activity", "memory", "power", "temperature"]);
+            unavailable.extend(["name", "type"]);
+            extend_sysman_device_facts(library, device, &mut facts, &mut unavailable, sysman_ready);
             DeviceRecord {
                 driver_index,
                 device_index,
@@ -867,6 +1036,228 @@ fn query_device_properties(
         "zeDeviceGetProperties failed for all attempted structure type values; last status {}.",
         last_result.unwrap_or_default()
     ))
+}
+
+fn extend_sysman_device_facts(
+    library: &LevelZeroLibrary,
+    device: *mut c_void,
+    facts: &mut Vec<IntelFact>,
+    unavailable: &mut Vec<&'static str>,
+    sysman_ready: bool,
+) {
+    for group in library.sysman_domain_groups().iter() {
+        if !sysman_ready {
+            facts.push(not_available_fact(
+                format!("sysman.{}.status", group.domain_key),
+                group.enum_source_api,
+                "Intel Sysman is unavailable because zesInit did not complete successfully."
+                    .to_string(),
+            ));
+            facts.push(not_available_fact(
+                format!("sysman.{}.count", group.domain_key),
+                group.enum_source_api,
+                "Intel Sysman is unavailable because zesInit did not complete successfully."
+                    .to_string(),
+            ));
+            unavailable.push(group.unavailable_label);
+            continue;
+        }
+
+        let Some(enum_handles) = group.enum_handles else {
+            facts.push(not_available_fact(
+                format!("sysman.{}.status", group.domain_key),
+                group.enum_source_api,
+                format!("missing optional Sysman symbol {}.", group.enum_source_api),
+            ));
+            facts.push(not_available_fact(
+                format!("sysman.{}.count", group.domain_key),
+                group.enum_source_api,
+                format!("missing optional Sysman symbol {}.", group.enum_source_api),
+            ));
+            unavailable.push(group.unavailable_label);
+            continue;
+        };
+
+        let mut handle_count = 0u32;
+        let result = unsafe { enum_handles(device, &mut handle_count, ptr::null_mut()) };
+        if result != ZE_RESULT_SUCCESS {
+            facts.push(error_fact(
+                format!("sysman.{}.status", group.domain_key),
+                group.enum_source_api,
+                result,
+                format!(
+                    "{}(count) failed with status {result}.",
+                    group.enum_source_api
+                ),
+            ));
+            facts.push(error_fact(
+                format!("sysman.{}.count", group.domain_key),
+                group.enum_source_api,
+                result,
+                format!(
+                    "{}(count) failed with status {result}.",
+                    group.enum_source_api
+                ),
+            ));
+            unavailable.push(group.unavailable_label);
+            continue;
+        }
+
+        facts.push(IntelFact {
+            metric_key: format!("sysman.{}.count", group.domain_key),
+            source_api: group.enum_source_api,
+            state: "ok",
+            raw: json!(handle_count),
+            unit: None,
+            error_message: None,
+        });
+
+        if handle_count == 0 {
+            facts.push(not_available_fact(
+                format!("sysman.{}.status", group.domain_key),
+                group.enum_source_api,
+                format!("{} returned zero handles.", group.enum_source_api),
+            ));
+            unavailable.push(group.unavailable_label);
+            continue;
+        }
+
+        let mut handles = vec![ptr::null_mut(); handle_count as usize];
+        let result = unsafe { enum_handles(device, &mut handle_count, handles.as_mut_ptr()) };
+        if result != ZE_RESULT_SUCCESS {
+            facts.push(error_fact(
+                format!("sysman.{}.status", group.domain_key),
+                group.enum_source_api,
+                result,
+                format!(
+                    "{}(handles) failed with status {result}.",
+                    group.enum_source_api
+                ),
+            ));
+            unavailable.push(group.unavailable_label);
+            continue;
+        }
+
+        facts.push(ok_fact(
+            format!("sysman.{}.status", group.domain_key),
+            group.enum_source_api,
+            json!("ok"),
+        ));
+
+        let mut saw_success = false;
+        for (handle_index, handle) in handles.into_iter().enumerate() {
+            facts.push(ok_fact(
+                format!("sysman.{}.{}.handle", group.domain_key, handle_index),
+                group.enum_source_api,
+                json!(handle_pointer_json(handle_index, handle)),
+            ));
+
+            match group.get_properties {
+                Some(get_properties) => match query_sysman_buffer(get_properties, handle) {
+                    Ok(buffer) => {
+                        saw_success = true;
+                        facts.push(ok_fact(
+                            format!("sysman.{}.{}.properties", group.domain_key, handle_index),
+                            group.property_source_api,
+                            json!(handle_buffer_json(handle_index, handle, &buffer)),
+                        ));
+                    }
+                    Err(result) => facts.push(error_fact(
+                        format!("sysman.{}.{}.properties", group.domain_key, handle_index),
+                        group.property_source_api,
+                        result,
+                        format!(
+                            "{} failed for handle index {handle_index} with status {result}.",
+                            group.property_source_api
+                        ),
+                    )),
+                },
+                None => facts.push(not_available_fact(
+                    format!("sysman.{}.{}.properties", group.domain_key, handle_index),
+                    group.property_source_api,
+                    format!(
+                        "missing optional Sysman symbol {}.",
+                        group.property_source_api
+                    ),
+                )),
+            }
+
+            if let Some(get_state) = group.get_state_buffer {
+                match query_sysman_buffer(get_state, handle) {
+                    Ok(buffer) => {
+                        saw_success = true;
+                        facts.push(ok_fact(
+                            format!("sysman.{}.{}.state", group.domain_key, handle_index),
+                            group.state_source_api,
+                            json!(handle_buffer_json(handle_index, handle, &buffer)),
+                        ));
+                    }
+                    Err(result) => facts.push(error_fact(
+                        format!("sysman.{}.{}.state", group.domain_key, handle_index),
+                        group.state_source_api,
+                        result,
+                        format!(
+                            "{} failed for handle index {handle_index} with status {result}.",
+                            group.state_source_api
+                        ),
+                    )),
+                }
+            } else if let Some(get_temp_state) = group.get_state_temperature {
+                let mut temperature_c = 0.0f64;
+                let result = unsafe { get_temp_state(handle, &mut temperature_c) };
+                if result == ZE_RESULT_SUCCESS {
+                    saw_success = true;
+                    facts.push(ok_fact(
+                        format!("sysman.{}.{}.state", group.domain_key, handle_index),
+                        group.state_source_api,
+                        json!({
+                            "handle_index": handle_index,
+                            "handle_ptr": pointer_hex(handle),
+                            "temperature_c": temperature_c
+                        }),
+                    ));
+                } else {
+                    facts.push(error_fact(
+                        format!("sysman.{}.{}.state", group.domain_key, handle_index),
+                        group.state_source_api,
+                        result,
+                        format!(
+                            "{} failed for handle index {handle_index} with status {result}.",
+                            group.state_source_api
+                        ),
+                    ));
+                }
+            } else {
+                facts.push(not_available_fact(
+                    format!("sysman.{}.{}.state", group.domain_key, handle_index),
+                    group.state_source_api,
+                    format!("missing optional Sysman symbol {}.", group.state_source_api),
+                ));
+            }
+        }
+
+        if !saw_success {
+            unavailable.push(group.unavailable_label);
+        }
+    }
+}
+
+fn query_sysman_buffer(call: ZesGetBuffer, handle: *mut c_void) -> Result<SysmanBuffer, i32> {
+    let mut last_result = None;
+    for stype in 0..64u32 {
+        let mut buffer = SysmanBuffer {
+            stype,
+            p_next: ptr::null_mut(),
+            bytes: [0u8; SYSMAN_BUFFER_BYTES],
+        };
+        let result = unsafe { call(handle, &mut buffer) };
+        last_result = Some(result);
+        if result == ZE_RESULT_SUCCESS {
+            return Ok(buffer);
+        }
+    }
+
+    Err(last_result.unwrap_or_default())
 }
 
 fn push_snapshot_device_lines(lines: &mut Vec<String>, device: &DeviceRecord) {
@@ -942,6 +1333,12 @@ fn push_probe_device_lines(lines: &mut Vec<String>, device: &DeviceRecord) {
     if let Some(core_clock_mhz) = fact_number(device, "core_clock_mhz") {
         lines.push(format!("device.core_clock_mhz: {core_clock_mhz:.1}"));
     }
+    for fact in device.facts.iter() {
+        if is_base_probe_fact_key(&fact.metric_key) {
+            continue;
+        }
+        lines.push(format_probe_fact_line("device", fact));
+    }
     if !device.unavailable.is_empty() {
         lines.push(format!("unavailable: {}", device.unavailable.join(", ")));
     }
@@ -966,7 +1363,7 @@ fn stats_device_json(device: &DeviceRecord) -> Value {
                 Value::String(error_message.clone()),
             );
         }
-        object.insert(fact.metric_key.to_string(), Value::Object(entry));
+        object.insert(fact.metric_key.clone(), Value::Object(entry));
     }
     if !device.unavailable.is_empty() {
         object.insert(
@@ -1002,14 +1399,14 @@ fn stats_facts_json(facts: &[IntelFact]) -> Value {
                 Value::String(error_message.clone()),
             );
         }
-        object.insert(fact.metric_key.to_string(), Value::Object(entry));
+        object.insert(fact.metric_key.clone(), Value::Object(entry));
     }
     Value::Object(object)
 }
 
-fn ok_fact(metric_key: &'static str, source_api: &'static str, raw: Value) -> IntelFact {
+fn ok_fact(metric_key: impl Into<String>, source_api: &'static str, raw: Value) -> IntelFact {
     IntelFact {
-        metric_key,
+        metric_key: metric_key.into(),
         source_api,
         state: "ok",
         raw,
@@ -1019,15 +1416,31 @@ fn ok_fact(metric_key: &'static str, source_api: &'static str, raw: Value) -> In
 }
 
 fn not_available_fact(
-    metric_key: &'static str,
+    metric_key: impl Into<String>,
     source_api: &'static str,
     error_message: String,
 ) -> IntelFact {
     IntelFact {
-        metric_key,
+        metric_key: metric_key.into(),
         source_api,
         state: "not_available",
         raw: Value::Null,
+        unit: None,
+        error_message: Some(error_message),
+    }
+}
+
+fn error_fact(
+    metric_key: impl Into<String>,
+    source_api: &'static str,
+    raw_code: i32,
+    error_message: String,
+) -> IntelFact {
+    IntelFact {
+        metric_key: metric_key.into(),
+        source_api,
+        state: "error",
+        raw: json!(raw_code),
         unit: None,
         error_message: Some(error_message),
     }
@@ -1072,6 +1485,35 @@ fn format_probe_fact_line(prefix: &str, fact: &IntelFact) -> String {
         ),
         None => format!("{prefix}.{}: {} (raw={raw})", fact.metric_key, fact.state),
     }
+}
+
+fn is_base_probe_fact_key(metric_key: &str) -> bool {
+    matches!(
+        metric_key,
+        "device_name"
+            | "device_key"
+            | "device_type"
+            | "vendor_id"
+            | "device_id"
+            | "uuid"
+            | "core_clock_mhz"
+    )
+}
+
+fn handle_pointer_json(handle_index: usize, handle: *mut c_void) -> Value {
+    json!({
+        "handle_index": handle_index,
+        "handle_ptr": pointer_hex(handle)
+    })
+}
+
+fn handle_buffer_json(handle_index: usize, handle: *mut c_void, buffer: &SysmanBuffer) -> Value {
+    json!({
+        "handle_index": handle_index,
+        "handle_ptr": pointer_hex(handle),
+        "stype": buffer.stype,
+        "buffer_hex": sysman_buffer_hex(buffer)
+    })
 }
 
 fn fact_string<'a>(device: &'a DeviceRecord, metric_key: &str) -> Option<&'a str> {
@@ -1153,6 +1595,27 @@ fn symbol_label(name: &[u8]) -> String {
     String::from_utf8_lossy(&name[..name.len().saturating_sub(1)]).to_string()
 }
 
+fn pointer_hex(handle: *mut c_void) -> String {
+    format!("0x{:x}", handle as usize)
+}
+
+fn sysman_buffer_hex(buffer: &SysmanBuffer) -> String {
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            (buffer as *const SysmanBuffer).cast::<u8>(),
+            std::mem::size_of::<SysmanBuffer>(),
+        )
+    };
+    let last_non_zero = bytes
+        .iter()
+        .rposition(|byte| *byte != 0)
+        .map(|index| index + 1);
+    bytes[..last_non_zero.unwrap_or(0)]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 fn now_unix_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1177,15 +1640,81 @@ extern "system" {
 
 #[cfg(test)]
 mod tests {
-    use std::mem::MaybeUninit;
+    use std::ffi::c_void;
+    use std::mem::{ManuallyDrop, MaybeUninit};
+    use std::ptr::NonNull;
 
     use serde_json::json;
 
     use super::{
         build_device_record, format_probe_snapshot, format_snapshot, format_stats_snapshot_json,
-        sample_status, IntelFact, ProviderSample, ZeDeviceProperties, PROVIDER, PROVIDER_AUTHORITY,
-        SOURCE, STATS_SCHEMA, TELEMETRY_CLASS, ZE_RESULT_SUCCESS,
+        not_available_fact, ok_fact, sample_status, DeviceRecord, IntelFact, LevelZeroLibrary,
+        ProviderSample, SysmanBuffer, ZeDeviceProperties, PROVIDER, PROVIDER_AUTHORITY, SOURCE,
+        STATS_SCHEMA, TELEMETRY_CLASS, ZE_RESULT_SUCCESS,
     };
+
+    unsafe extern "C" fn stub_init(_: u32) -> i32 {
+        0
+    }
+
+    unsafe extern "C" fn stub_driver_get(_: *mut u32, _: *mut *mut c_void) -> i32 {
+        0
+    }
+
+    unsafe extern "C" fn stub_device_get(_: *mut c_void, _: *mut u32, _: *mut *mut c_void) -> i32 {
+        0
+    }
+
+    unsafe extern "C" fn stub_device_get_properties(
+        _: *mut c_void,
+        _: *mut ZeDeviceProperties,
+    ) -> i32 {
+        0
+    }
+
+    unsafe extern "C" fn stub_enum_handles(
+        _: *mut c_void,
+        _: *mut u32,
+        _: *mut *mut c_void,
+    ) -> i32 {
+        0
+    }
+
+    unsafe extern "C" fn stub_get_buffer(_: *mut c_void, _: *mut SysmanBuffer) -> i32 {
+        0
+    }
+
+    unsafe extern "C" fn stub_get_temperature(_: *mut c_void, _: *mut f64) -> i32 {
+        0
+    }
+
+    fn stub_library() -> ManuallyDrop<LevelZeroLibrary> {
+        ManuallyDrop::new(LevelZeroLibrary {
+            module: NonNull::dangling(),
+            dll_name: "ze_loader.dll".to_string(),
+            dll_path: "C:\\Intel\\ze_loader.dll".to_string(),
+            ze_init: stub_init,
+            ze_driver_get: stub_driver_get,
+            ze_device_get: stub_device_get,
+            ze_device_get_properties: stub_device_get_properties,
+            zes_init: Some(stub_init),
+            zes_device_enum_engine_groups: Some(stub_enum_handles),
+            zes_engine_get_properties: Some(stub_get_buffer),
+            zes_engine_get_activity: Some(stub_get_buffer),
+            zes_device_enum_memory_modules: Some(stub_enum_handles),
+            zes_memory_get_properties: Some(stub_get_buffer),
+            zes_memory_get_state: Some(stub_get_buffer),
+            zes_device_enum_power_domains: Some(stub_enum_handles),
+            zes_power_get_properties: Some(stub_get_buffer),
+            zes_power_get_energy_counter: Some(stub_get_buffer),
+            zes_device_enum_temperature_sensors: Some(stub_enum_handles),
+            zes_temperature_get_properties: Some(stub_get_buffer),
+            zes_temperature_get_state: Some(stub_get_temperature),
+            zes_device_enum_frequency_domains: Some(stub_enum_handles),
+            zes_frequency_get_properties: Some(stub_get_buffer),
+            zes_frequency_get_state: Some(stub_get_buffer),
+        })
+    }
 
     #[test]
     fn provider_constants_match_contract() {
@@ -1193,7 +1722,7 @@ mod tests {
         assert_eq!(PROVIDER_AUTHORITY, "Intel Level Zero");
         assert_eq!(SOURCE, "wtg.provider.intel.level_zero");
         assert_eq!(TELEMETRY_CLASS, "provider_telemetry");
-        assert_eq!(STATS_SCHEMA, "wtg.intel_level_zero.stats.v2");
+        assert_eq!(STATS_SCHEMA, "wtg.intel_level_zero.stats.v3");
     }
 
     #[test]
@@ -1208,7 +1737,15 @@ mod tests {
             0x00, 0x00,
         ];
 
-        let device = build_device_record(0, 0, Ok((properties, ZE_RESULT_SUCCESS)));
+        let library = stub_library();
+        let device = build_device_record(
+            &library,
+            0,
+            0,
+            std::ptr::null_mut(),
+            Ok((properties, ZE_RESULT_SUCCESS)),
+            false,
+        );
         let name_fact = device
             .facts
             .iter()
@@ -1249,7 +1786,9 @@ mod tests {
         assert!(rendered.contains("Intel device 0 [driver=0,device=0,vendor=0x8086,device=0x4c8b]"));
         assert!(rendered.contains("Vendor ID: 0x8086 (32902)"));
         assert!(rendered.contains("Device ID: 0x4c8b (19595)"));
-        assert!(rendered.contains("Unavailable: name, activity, memory, power, temperature"));
+        assert!(
+            rendered.contains("Unavailable: name, activity, memory, power, temperature, frequency")
+        );
     }
 
     #[test]
@@ -1276,7 +1815,7 @@ mod tests {
             device_record_count: 0,
             sysman_facts: vec![
                 IntelFact {
-                    metric_key: "zesInit_export",
+                    metric_key: "zesInit_export".to_string(),
                     source_api: "wtg.intel.level_zero.dynamic_load",
                     state: "ok",
                     raw: json!(true),
@@ -1284,7 +1823,7 @@ mod tests {
                     error_message: None,
                 },
                 IntelFact {
-                    metric_key: "zesDeviceEnumEngineGroups_export",
+                    metric_key: "zesDeviceEnumEngineGroups_export".to_string(),
                     source_api: "wtg.intel.level_zero.dynamic_load",
                     state: "not_available",
                     raw: json!(false),
@@ -1294,7 +1833,7 @@ mod tests {
                     ),
                 },
                 IntelFact {
-                    metric_key: "zesInit_result",
+                    metric_key: "zesInit_result".to_string(),
                     source_api: "zesInit",
                     state: "error",
                     raw: json!(-7),
@@ -1316,7 +1855,7 @@ mod tests {
         let stats = format_stats_snapshot_json(&sample, 11, "2026-07-03T22:00:00Z");
         let parsed: serde_json::Value =
             serde_json::from_str(&stats).expect("stats payload should parse");
-        assert_eq!(parsed["schema"], "wtg.intel_level_zero.stats.v2");
+        assert_eq!(parsed["schema"], "wtg.intel_level_zero.stats.v3");
         assert_eq!(parsed["intel"]["sysman_exports_matched"]["raw"], 1);
         assert_eq!(parsed["intel"]["sysman"]["zesInit_export"]["state"], "ok");
         assert_eq!(
@@ -1328,5 +1867,82 @@ mod tests {
             "error"
         );
         assert_eq!(parsed["intel"]["sysman"]["zesInit_result"]["raw"], -7);
+    }
+
+    #[test]
+    fn probe_output_includes_existing_device_sysman_facts() {
+        let sample = ProviderSample {
+            wtg_version: "0.2.9",
+            provider: PROVIDER,
+            provider_authority: PROVIDER_AUTHORITY,
+            provider_source: SOURCE,
+            telemetry_class: TELEMETRY_CLASS,
+            status: "ok",
+            sample_seq: 1,
+            timestamp_unix_ms: 1234,
+            dll_name: None,
+            dll_path: None,
+            telemetry_exports_matched: 4,
+            sysman_exports_matched: 16,
+            optional_calls_attempted: 1,
+            optional_calls_ok: 1,
+            optional_calls_unsupported: 0,
+            optional_calls_not_available: 0,
+            optional_calls_error: 0,
+            driver_record_count: 1,
+            device_record_count: 1,
+            sysman_facts: Vec::new(),
+            devices: vec![DeviceRecord {
+                driver_index: 0,
+                device_index: 0,
+                key: "driver=0,device=0,vendor=0x8086,device=0x4c8b".to_string(),
+                facts: vec![
+                    ok_fact(
+                        "device_key",
+                        "wtg.intel.level_zero.device_key",
+                        json!("driver=0,device=0,vendor=0x8086,device=0x4c8b"),
+                    ),
+                    ok_fact("device_type", "zeDeviceGetProperties", json!("gpu")),
+                    ok_fact("vendor_id", "zeDeviceGetProperties", json!(0x8086)),
+                    ok_fact("device_id", "zeDeviceGetProperties", json!(0x4c8b)),
+                    ok_fact(
+                        "sysman.engine_groups.count",
+                        "zesDeviceEnumEngineGroups",
+                        json!(3),
+                    ),
+                    ok_fact(
+                        "sysman.engine_groups.status",
+                        "zesDeviceEnumEngineGroups",
+                        json!("ok"),
+                    ),
+                    ok_fact(
+                        "sysman.engine_groups.0.state",
+                        "zesEngineGetActivity",
+                        json!({"handle_index": 0, "buffer_hex": "abcd"}),
+                    ),
+                    not_available_fact(
+                        "sysman.temperature_sensors.status",
+                        "zesDeviceEnumTemperatureSensors",
+                        "zesDeviceEnumTemperatureSensors returned zero handles.".to_string(),
+                    ),
+                    ok_fact(
+                        "sysman.temperature_sensors.count",
+                        "zesDeviceEnumTemperatureSensors",
+                        json!(0),
+                    ),
+                ],
+                unavailable: vec!["temperature"],
+            }],
+            errors: Vec::new(),
+        };
+
+        let probe = format_probe_snapshot(&sample);
+        assert!(probe.contains("device.sysman.engine_groups.count: ok (raw=3)"));
+        assert!(probe.contains("device.sysman.engine_groups.status: ok (raw=\"ok\")"));
+        assert!(probe.contains("device.sysman.engine_groups.0.state: ok"));
+        assert!(probe.contains("device.sysman.temperature_sensors.count: ok (raw=0)"));
+        assert!(
+            probe.contains("device.sysman.temperature_sensors.status: not_available (raw=null)")
+        );
     }
 }
