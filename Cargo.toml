@@ -3,7 +3,7 @@ members = ["wtg-core", "wtg-app", "wtg-view", "wtg-providers"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.8"
+version = "0.2.9"
 edition = "2021"
 rust-version = "1.80"
 authors = ["Adam Hooper"]
