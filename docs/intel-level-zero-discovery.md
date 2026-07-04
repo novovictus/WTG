@@ -6,9 +6,9 @@ The Intel path is a supporting provider witness. It does not change the NVIDIA/N
 
 ## Current Status
 
-Current branch: `spike/0.2.8-intel-level-zero-provider`
+Current branch: `dev/0.2.9-intel-level-zero-provider`
 
-Current version: `0.2.8`
+Current version: `0.2.9`
 
 Current implementation status:
 
@@ -164,7 +164,7 @@ Probe output is expected to look like:
 
 ```text
 [probe] provider=intel_level_zero
-wtg.version: 0.2.8
+wtg.version: 0.2.9
 provider.authority: Intel Level Zero
 provider.source: wtg.provider.intel.level_zero
 telemetry.class: provider_telemetry

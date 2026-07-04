@@ -13,7 +13,7 @@ Current branch: `dev/0.2.9-intel-level-zero-provider`
 
 WTG 0.2.9 is the Intel Level Zero/Sysman provider exploration cycle. WTG remains NVIDIA/NVML-centric; NVIDIA/NVML is still the primary truth provider and the only provider with the stable expanded `--once --stats` JSON surface.
 
-AMD ADL is the completed 0.2.8 experimental provider path selected with `--provider amd`. Intel Level Zero is the active 0.2.9 experimental provider path selected with `--provider intel`. AMD output is provider-scoped, read-only, and intentionally not translated into NVML field names or cross-vendor equivalence claims. The AMD path currently supports compact snapshot and watch output only.
+AMD ADL is the completed 0.2.8 experimental provider path selected with `--provider amd`. Intel Level Zero is the active 0.2.9 experimental provider path selected with `--provider intel`. AMD and Intel output are provider-scoped, read-only, and intentionally not translated into NVML field names or cross-vendor equivalence claims. The AMD path supports compact snapshot/watch output plus provider-scoped stats/probe output.
 
 Current development builds include:
 
@@ -174,10 +174,10 @@ Supported commands:
 Intentional boundaries:
 
 ```text
-AMD --stats: rejected
+AMD --stats: provider-scoped JSON stats/provenance
 AMD sinks: rejected
 AMD MQTT/Home Assistant publishing: not implemented
-AMD output schema: no stable schema field
+AMD output schema: wtg.amd_adl.stats.v1
 AMD telemetry class: provider_telemetry
 ```
 
@@ -398,3 +398,4 @@ For automated watch checks, avoid `Select-Object -First ...` as final evidence b
 - Capture full-power AC versus reduced USB-C behavior as a later validation cycle.
 - Keep NVIDIA/NVML as the primary truth provider while ADL remains provider-scoped experimental telemetry.
 - Keep README as a project entry point and maintain detailed operational docs under `docs/` and `artifacts/dev/`.
+

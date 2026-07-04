@@ -8,7 +8,7 @@ WTG provider priority remains:
 2. AMD / ADL as a completed secondary experimental provider foundation.
 3. Intel / Level Zero as the active 0.2.9 experimental provider path.
 
-The AMD ADL path was expanded through 0.2.8 as a provider-scoped telemetry foundation. The Intel Level Zero path is active in 0.2.9. It is included in the workspace for build and version alignment, and it is invoked from `wtg-app` only when explicitly requested with `--provider amd`.
+The AMD ADL path was expanded through 0.2.8 as a provider-scoped telemetry foundation. The Intel Level Zero path is active in 0.2.9. It is included in the workspace for build and version alignment, and AMD ADL is invoked with `--provider amd`; Intel Level Zero is invoked with `--provider intel`.
 
 The provider boundary preserves source semantics. ADL adapter records are exposed as ADL adapter records. They are not translated into NVML devices, Task Manager GPU numbers, or cross-provider parity fields.
 

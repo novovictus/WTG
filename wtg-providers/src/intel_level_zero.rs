@@ -12,7 +12,7 @@ const SOURCE: &str = "wtg.provider.intel.level_zero";
 const TELEMETRY_CLASS: &str = "provider_telemetry";
 const PROVIDER: &str = "intel";
 const PROVIDER_AUTHORITY: &str = "Intel Level Zero";
-const STATS_SCHEMA: &str = "wtg.intel_level_zero.stats.v1";
+const STATS_SCHEMA: &str = "wtg.intel_level_zero.stats.v2";
 const ZE_RESULT_SUCCESS: i32 = 0;
 const ZE_MAX_DEVICE_NAME: usize = 256;
 
@@ -20,6 +20,7 @@ type ZeInit = unsafe extern "C" fn(u32) -> i32;
 type ZeDriverGet = unsafe extern "C" fn(*mut u32, *mut *mut c_void) -> i32;
 type ZeDeviceGet = unsafe extern "C" fn(*mut c_void, *mut u32, *mut *mut c_void) -> i32;
 type ZeDeviceGetProperties = unsafe extern "C" fn(*mut c_void, *mut ZeDeviceProperties) -> i32;
+type ZesInit = unsafe extern "C" fn(u32) -> i32;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -60,6 +61,7 @@ pub struct ProviderSample {
     dll_name: Option<String>,
     dll_path: Option<String>,
     telemetry_exports_matched: usize,
+    sysman_exports_matched: usize,
     optional_calls_attempted: usize,
     optional_calls_ok: usize,
     optional_calls_unsupported: usize,
@@ -67,6 +69,7 @@ pub struct ProviderSample {
     optional_calls_error: usize,
     driver_record_count: usize,
     device_record_count: usize,
+    sysman_facts: Vec<IntelFact>,
     devices: Vec<DeviceRecord>,
     errors: Vec<String>,
 }
@@ -98,7 +101,85 @@ struct LevelZeroLibrary {
     ze_driver_get: ZeDriverGet,
     ze_device_get: ZeDeviceGet,
     ze_device_get_properties: ZeDeviceGetProperties,
+    zes_init: Option<ZesInit>,
 }
+
+struct SysmanExportSpec {
+    metric_key: &'static str,
+    symbol_name: &'static [u8],
+}
+
+struct SysmanProbe {
+    exports_matched: usize,
+    facts: Vec<IntelFact>,
+}
+
+const SYSMAN_EXPORT_SPECS: &[SysmanExportSpec] = &[
+    SysmanExportSpec {
+        metric_key: "zesInit_export",
+        symbol_name: b"zesInit\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesDeviceEnumEngineGroups_export",
+        symbol_name: b"zesDeviceEnumEngineGroups\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesEngineGetProperties_export",
+        symbol_name: b"zesEngineGetProperties\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesEngineGetActivity_export",
+        symbol_name: b"zesEngineGetActivity\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesDeviceEnumMemoryModules_export",
+        symbol_name: b"zesDeviceEnumMemoryModules\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesMemoryGetProperties_export",
+        symbol_name: b"zesMemoryGetProperties\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesMemoryGetState_export",
+        symbol_name: b"zesMemoryGetState\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesDeviceEnumPowerDomains_export",
+        symbol_name: b"zesDeviceEnumPowerDomains\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesPowerGetProperties_export",
+        symbol_name: b"zesPowerGetProperties\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesPowerGetEnergyCounter_export",
+        symbol_name: b"zesPowerGetEnergyCounter\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesDeviceEnumTemperatureSensors_export",
+        symbol_name: b"zesDeviceEnumTemperatureSensors\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesTemperatureGetProperties_export",
+        symbol_name: b"zesTemperatureGetProperties\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesTemperatureGetState_export",
+        symbol_name: b"zesTemperatureGetState\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesDeviceEnumFrequencyDomains_export",
+        symbol_name: b"zesDeviceEnumFrequencyDomains\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesFrequencyGetProperties_export",
+        symbol_name: b"zesFrequencyGetProperties\0",
+    },
+    SysmanExportSpec {
+        metric_key: "zesFrequencyGetState_export",
+        symbol_name: b"zesFrequencyGetState\0",
+    },
+];
 
 impl Drop for LevelZeroLibrary {
     fn drop(&mut self) {
@@ -128,28 +209,33 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
     match LevelZeroLibrary::load() {
         Ok(library) => {
             let init_result = unsafe { (library.ze_init)(0) };
+            let sysman_probe = library.probe_sysman();
             if init_result != ZE_RESULT_SUCCESS {
                 return unavailable_sample(
                     sample_seq,
                     Some(library.dll_name.clone()),
                     Some(library.dll_path.clone()),
                     library.telemetry_exports_matched(),
+                    sysman_probe.exports_matched,
+                    sysman_probe.facts,
                     format!("zeInit failed with status {init_result}."),
                 );
             }
 
             match enumerate_devices(&library) {
-                Ok(enumeration) => enumeration.into_sample(sample_seq, library),
+                Ok(enumeration) => enumeration.into_sample(sample_seq, library, sysman_probe),
                 Err(reason) => unavailable_sample(
                     sample_seq,
                     Some(library.dll_name.clone()),
                     Some(library.dll_path.clone()),
                     library.telemetry_exports_matched(),
+                    sysman_probe.exports_matched,
+                    sysman_probe.facts,
                     reason,
                 ),
             }
         }
-        Err(reason) => unavailable_sample(sample_seq, None, None, 0, reason),
+        Err(reason) => unavailable_sample(sample_seq, None, None, 0, 0, Vec::new(), reason),
     }
 }
 
@@ -235,6 +321,10 @@ pub fn format_probe_snapshot(sample: &ProviderSample) -> String {
         sample.telemetry_exports_matched
     ));
     lines.push(format!(
+        "intel.sysman_exports_matched: {}",
+        sample.sysman_exports_matched
+    ));
+    lines.push(format!(
         "intel.optional_calls_attempted: {}",
         sample.optional_calls_attempted
     ));
@@ -254,6 +344,9 @@ pub fn format_probe_snapshot(sample: &ProviderSample) -> String {
         "intel.optional_calls.error: {}",
         sample.optional_calls_error
     ));
+    for fact in sample.sysman_facts.iter() {
+        lines.push(format_probe_fact_line("intel.sysman", fact));
+    }
 
     for device in sample.devices.iter() {
         lines.push(String::new());
@@ -294,6 +387,14 @@ pub fn format_stats_snapshot_json(sample: &ProviderSample, tick_seq: u64, tick_t
                 None,
                 None
             ),
+            "sysman_exports_matched": stats_number_field(
+                sample.sysman_exports_matched,
+                "wtg.intel.level_zero.dynamic_load",
+                "ok",
+                None,
+                None
+            ),
+            "sysman": stats_facts_json(&sample.sysman_facts),
             "optional_calls_attempted": stats_number_field(
                 sample.optional_calls_attempted,
                 "zeDeviceGetProperties",
@@ -356,7 +457,12 @@ struct Enumeration {
 }
 
 impl Enumeration {
-    fn into_sample(self, sample_seq: u64, library: LevelZeroLibrary) -> ProviderSample {
+    fn into_sample(
+        self,
+        sample_seq: u64,
+        library: LevelZeroLibrary,
+        sysman_probe: SysmanProbe,
+    ) -> ProviderSample {
         let status = if self.device_record_count == 0 {
             "unavailable"
         } else {
@@ -380,6 +486,7 @@ impl Enumeration {
             dll_name: Some(library.dll_name.clone()),
             dll_path: Some(library.dll_path.clone()),
             telemetry_exports_matched: library.telemetry_exports_matched(),
+            sysman_exports_matched: sysman_probe.exports_matched,
             optional_calls_attempted: self.optional_calls_attempted,
             optional_calls_ok: self.optional_calls_ok,
             optional_calls_unsupported: self.optional_calls_unsupported,
@@ -387,6 +494,7 @@ impl Enumeration {
             optional_calls_error: self.optional_calls_error,
             driver_record_count: self.driver_record_count,
             device_record_count: self.device_record_count,
+            sysman_facts: sysman_probe.facts,
             devices: self.devices,
             errors,
         }
@@ -398,6 +506,8 @@ fn unavailable_sample(
     dll_name: Option<String>,
     dll_path: Option<String>,
     telemetry_exports_matched: usize,
+    sysman_exports_matched: usize,
+    sysman_facts: Vec<IntelFact>,
     reason: String,
 ) -> ProviderSample {
     ProviderSample {
@@ -412,6 +522,7 @@ fn unavailable_sample(
         dll_name,
         dll_path,
         telemetry_exports_matched,
+        sysman_exports_matched,
         optional_calls_attempted: 0,
         optional_calls_ok: 0,
         optional_calls_unsupported: 0,
@@ -419,6 +530,7 @@ fn unavailable_sample(
         optional_calls_error: 0,
         driver_record_count: 0,
         device_record_count: 0,
+        sysman_facts,
         devices: Vec::new(),
         errors: vec![reason],
     }
@@ -439,6 +551,7 @@ impl LevelZeroLibrary {
         let ze_device_get = unsafe { load_symbol::<ZeDeviceGet>(module, b"zeDeviceGet\0")? };
         let ze_device_get_properties =
             unsafe { load_symbol::<ZeDeviceGetProperties>(module, b"zeDeviceGetProperties\0")? };
+        let zes_init = unsafe { load_optional_symbol::<ZesInit>(module, b"zesInit\0") };
 
         Ok(Self {
             module,
@@ -448,11 +561,79 @@ impl LevelZeroLibrary {
             ze_driver_get,
             ze_device_get,
             ze_device_get_properties,
+            zes_init,
         })
     }
 
     fn telemetry_exports_matched(&self) -> usize {
         4
+    }
+
+    fn probe_sysman(&self) -> SysmanProbe {
+        let mut exports_matched = 0usize;
+        let mut facts = Vec::new();
+
+        for spec in SYSMAN_EXPORT_SPECS.iter() {
+            let is_available = unsafe { has_symbol(self.module, spec.symbol_name) };
+            if is_available {
+                exports_matched += 1;
+                facts.push(ok_fact(
+                    spec.metric_key,
+                    "wtg.intel.level_zero.dynamic_load",
+                    json!(true),
+                ));
+            } else {
+                facts.push(IntelFact {
+                    metric_key: spec.metric_key,
+                    source_api: "wtg.intel.level_zero.dynamic_load",
+                    state: "not_available",
+                    raw: json!(false),
+                    unit: None,
+                    error_message: Some(format!(
+                        "missing optional Sysman symbol {}.",
+                        symbol_label(spec.symbol_name)
+                    )),
+                });
+            }
+        }
+
+        match self.zes_init {
+            Some(zes_init) => {
+                let result = unsafe { zes_init(0) };
+                if result == ZE_RESULT_SUCCESS {
+                    facts.push(IntelFact {
+                        metric_key: "zesInit_result",
+                        source_api: "zesInit",
+                        state: "ok",
+                        raw: json!(result),
+                        unit: None,
+                        error_message: None,
+                    });
+                } else {
+                    facts.push(IntelFact {
+                        metric_key: "zesInit_result",
+                        source_api: "zesInit",
+                        state: "error",
+                        raw: json!(result),
+                        unit: None,
+                        error_message: Some(format!("zesInit failed with status {result}.")),
+                    });
+                }
+            }
+            None => facts.push(IntelFact {
+                metric_key: "zesInit_result",
+                source_api: "zesInit",
+                state: "not_available",
+                raw: Value::Null,
+                unit: None,
+                error_message: Some("missing optional Sysman symbol zesInit.".to_string()),
+            }),
+        }
+
+        SysmanProbe {
+            exports_matched,
+            facts,
+        }
     }
 }
 
@@ -802,6 +983,30 @@ fn stats_device_json(device: &DeviceRecord) -> Value {
     Value::Object(object)
 }
 
+fn stats_facts_json(facts: &[IntelFact]) -> Value {
+    let mut object = serde_json::Map::new();
+    for fact in facts.iter() {
+        let mut entry = serde_json::Map::new();
+        entry.insert("raw".to_string(), fact.raw.clone());
+        entry.insert(
+            "source_api".to_string(),
+            Value::String(fact.source_api.to_string()),
+        );
+        entry.insert("state".to_string(), Value::String(fact.state.to_string()));
+        if let Some(unit) = fact.unit {
+            entry.insert("unit".to_string(), Value::String(unit.to_string()));
+        }
+        if let Some(error_message) = &fact.error_message {
+            entry.insert(
+                "error_message".to_string(),
+                Value::String(error_message.clone()),
+            );
+        }
+        object.insert(fact.metric_key.to_string(), Value::Object(entry));
+    }
+    Value::Object(object)
+}
+
 fn ok_fact(metric_key: &'static str, source_api: &'static str, raw: Value) -> IntelFact {
     IntelFact {
         metric_key,
@@ -858,6 +1063,17 @@ fn stats_number_field(
     stats_field(json!(raw), source_api, state, unit, error_message)
 }
 
+fn format_probe_fact_line(prefix: &str, fact: &IntelFact) -> String {
+    let raw = serde_json::to_string(&fact.raw).unwrap_or_else(|_| "null".to_string());
+    match &fact.error_message {
+        Some(error_message) => format!(
+            "{prefix}.{}: {} (raw={raw}) [{error_message}]",
+            fact.metric_key, fact.state
+        ),
+        None => format!("{prefix}.{}: {} (raw={raw})", fact.metric_key, fact.state),
+    }
+}
+
 fn fact_string<'a>(device: &'a DeviceRecord, metric_key: &str) -> Option<&'a str> {
     device
         .facts
@@ -896,11 +1112,24 @@ fn ze_device_type_name(device_type: u32) -> &'static str {
 unsafe fn load_symbol<T>(module: NonNull<c_void>, name: &[u8]) -> Result<T, String> {
     let symbol = GetProcAddress(module.as_ptr(), name.as_ptr().cast());
     if symbol.is_null() {
-        let label = String::from_utf8_lossy(&name[..name.len().saturating_sub(1)]).to_string();
+        let label = symbol_label(name);
         return Err(format!("missing Level Zero symbol {label}."));
     }
 
     Ok(std::mem::transmute_copy(&symbol))
+}
+
+unsafe fn load_optional_symbol<T>(module: NonNull<c_void>, name: &[u8]) -> Option<T> {
+    let symbol = GetProcAddress(module.as_ptr(), name.as_ptr().cast());
+    if symbol.is_null() {
+        None
+    } else {
+        Some(std::mem::transmute_copy(&symbol))
+    }
+}
+
+unsafe fn has_symbol(module: NonNull<c_void>, name: &[u8]) -> bool {
+    !GetProcAddress(module.as_ptr(), name.as_ptr().cast()).is_null()
 }
 
 unsafe fn module_path(module: *mut c_void) -> Result<String, String> {
@@ -918,6 +1147,10 @@ fn c_string(raw: &[c_char]) -> String {
         .to_string_lossy()
         .trim()
         .to_string()
+}
+
+fn symbol_label(name: &[u8]) -> String {
+    String::from_utf8_lossy(&name[..name.len().saturating_sub(1)]).to_string()
 }
 
 fn now_unix_ms() -> u128 {
@@ -946,9 +1179,12 @@ extern "system" {
 mod tests {
     use std::mem::MaybeUninit;
 
+    use serde_json::json;
+
     use super::{
-        build_device_record, format_snapshot, sample_status, ProviderSample, ZeDeviceProperties,
-        PROVIDER, PROVIDER_AUTHORITY, SOURCE, STATS_SCHEMA, TELEMETRY_CLASS, ZE_RESULT_SUCCESS,
+        build_device_record, format_probe_snapshot, format_snapshot, format_stats_snapshot_json,
+        sample_status, IntelFact, ProviderSample, ZeDeviceProperties, PROVIDER, PROVIDER_AUTHORITY,
+        SOURCE, STATS_SCHEMA, TELEMETRY_CLASS, ZE_RESULT_SUCCESS,
     };
 
     #[test]
@@ -957,7 +1193,7 @@ mod tests {
         assert_eq!(PROVIDER_AUTHORITY, "Intel Level Zero");
         assert_eq!(SOURCE, "wtg.provider.intel.level_zero");
         assert_eq!(TELEMETRY_CLASS, "provider_telemetry");
-        assert_eq!(STATS_SCHEMA, "wtg.intel_level_zero.stats.v1");
+        assert_eq!(STATS_SCHEMA, "wtg.intel_level_zero.stats.v2");
     }
 
     #[test]
@@ -984,7 +1220,7 @@ mod tests {
         assert!(device.unavailable.contains(&"name"));
 
         let sample = ProviderSample {
-            wtg_version: "0.2.8",
+            wtg_version: "0.2.9",
             provider: PROVIDER,
             provider_authority: PROVIDER_AUTHORITY,
             provider_source: SOURCE,
@@ -995,6 +1231,7 @@ mod tests {
             dll_name: None,
             dll_path: None,
             telemetry_exports_matched: 4,
+            sysman_exports_matched: 0,
             optional_calls_attempted: 1,
             optional_calls_ok: 1,
             optional_calls_unsupported: 0,
@@ -1002,6 +1239,7 @@ mod tests {
             optional_calls_error: 0,
             driver_record_count: 1,
             device_record_count: 1,
+            sysman_facts: Vec::new(),
             devices: vec![device],
             errors: Vec::new(),
         };
@@ -1012,5 +1250,83 @@ mod tests {
         assert!(rendered.contains("Vendor ID: 0x8086 (32902)"));
         assert!(rendered.contains("Device ID: 0x4c8b (19595)"));
         assert!(rendered.contains("Unavailable: name, activity, memory, power, temperature"));
+    }
+
+    #[test]
+    fn sysman_probe_and_stats_output_remain_provider_scoped() {
+        let sample = ProviderSample {
+            wtg_version: "0.2.9",
+            provider: PROVIDER,
+            provider_authority: PROVIDER_AUTHORITY,
+            provider_source: SOURCE,
+            telemetry_class: TELEMETRY_CLASS,
+            status: "ok",
+            sample_seq: 7,
+            timestamp_unix_ms: 1234,
+            dll_name: Some("ze_loader.dll".to_string()),
+            dll_path: Some("C:\\Intel\\ze_loader.dll".to_string()),
+            telemetry_exports_matched: 4,
+            sysman_exports_matched: 1,
+            optional_calls_attempted: 0,
+            optional_calls_ok: 0,
+            optional_calls_unsupported: 0,
+            optional_calls_not_available: 0,
+            optional_calls_error: 0,
+            driver_record_count: 1,
+            device_record_count: 0,
+            sysman_facts: vec![
+                IntelFact {
+                    metric_key: "zesInit_export",
+                    source_api: "wtg.intel.level_zero.dynamic_load",
+                    state: "ok",
+                    raw: json!(true),
+                    unit: None,
+                    error_message: None,
+                },
+                IntelFact {
+                    metric_key: "zesDeviceEnumEngineGroups_export",
+                    source_api: "wtg.intel.level_zero.dynamic_load",
+                    state: "not_available",
+                    raw: json!(false),
+                    unit: None,
+                    error_message: Some(
+                        "missing optional Sysman symbol zesDeviceEnumEngineGroups.".to_string(),
+                    ),
+                },
+                IntelFact {
+                    metric_key: "zesInit_result",
+                    source_api: "zesInit",
+                    state: "error",
+                    raw: json!(-7),
+                    unit: None,
+                    error_message: Some("zesInit failed with status -7.".to_string()),
+                },
+            ],
+            devices: Vec::new(),
+            errors: Vec::new(),
+        };
+
+        let probe = format_probe_snapshot(&sample);
+        assert!(probe.contains("intel.sysman_exports_matched: 1"));
+        assert!(probe.contains("intel.sysman.zesInit_export: ok (raw=true)"));
+        assert!(probe
+            .contains("intel.sysman.zesDeviceEnumEngineGroups_export: not_available (raw=false)"));
+        assert!(probe.contains("intel.sysman.zesInit_result: error (raw=-7)"));
+
+        let stats = format_stats_snapshot_json(&sample, 11, "2026-07-03T22:00:00Z");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&stats).expect("stats payload should parse");
+        assert_eq!(parsed["schema"], "wtg.intel_level_zero.stats.v2");
+        assert_eq!(parsed["intel"]["sysman_exports_matched"]["raw"], 1);
+        assert_eq!(parsed["intel"]["sysman"]["zesInit_export"]["state"], "ok");
+        assert_eq!(
+            parsed["intel"]["sysman"]["zesDeviceEnumEngineGroups_export"]["state"],
+            "not_available"
+        );
+        assert_eq!(
+            parsed["intel"]["sysman"]["zesInit_result"]["state"],
+            "error"
+        );
+        assert_eq!(parsed["intel"]["sysman"]["zesInit_result"]["raw"], -7);
     }
 }
