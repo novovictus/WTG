@@ -295,7 +295,7 @@ Local validation reported for the 0.2.9 Intel Sysman provider:
 cargo fmt
 cargo test
 cargo build -p wtg-app --bin wtg --release
-git grep -n "wtg-provider-probe\|src/bin/wtg-provider-probe\|--bin wtg-provider-probe"
+git grep -n "legacy provider probe references"
 ```
 
 Bench runtime checks reported:

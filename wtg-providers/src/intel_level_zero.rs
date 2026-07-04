@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, OsStr};
 use std::iter;
-use std::mem::MaybeUninit;
+use std::mem::{size_of, MaybeUninit};
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{self, NonNull};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -59,6 +61,88 @@ struct SysmanBuffer {
     p_next: *mut c_void,
     bytes: [u8; SYSMAN_BUFFER_BYTES],
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct ZesMemProperties {
+    stype: u32,
+    p_next: *mut c_void,
+    mem_type: u32,
+    on_subdevice: u32,
+    subdevice_id: u32,
+    location: u32,
+    physical_size: u64,
+    bus_width: i32,
+    num_channels: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct ZesMemState {
+    stype: u32,
+    p_next: *const c_void,
+    health: u32,
+    free: u64,
+    size: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct ZesFreqProperties {
+    stype: u32,
+    p_next: *mut c_void,
+    domain_type: u32,
+    on_subdevice: u32,
+    subdevice_id: u32,
+    can_control: u32,
+    is_throttle_event_supported: u32,
+    min: f64,
+    max: f64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct ZesFreqState {
+    stype: u32,
+    p_next: *const c_void,
+    current_voltage: f64,
+    request: f64,
+    tdp: f64,
+    efficient: f64,
+    actual: f64,
+    throttle_reasons: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct ZesPowerEnergyCounter {
+    energy: u64,
+    timestamp: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct ZesEngineStats {
+    active_time: u64,
+    timestamp: u64,
+}
+
+#[derive(Clone, Copy)]
+struct PowerDeltaBaseline {
+    energy_uj: u64,
+    timestamp_us: u64,
+}
+
+#[derive(Clone, Copy)]
+struct EngineDeltaBaseline {
+    active_time: u64,
+    timestamp: u64,
+}
+
+static POWER_DELTA_BASELINES: OnceLock<Mutex<HashMap<String, PowerDeltaBaseline>>> =
+    OnceLock::new();
+static ENGINE_DELTA_BASELINES: OnceLock<Mutex<HashMap<String, EngineDeltaBaseline>>> =
+    OnceLock::new();
 
 #[derive(Debug, Serialize)]
 pub struct ProviderSample {
@@ -262,7 +346,7 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
                 );
             }
 
-            match enumerate_devices(&library, sysman_probe.zes_init_ok) {
+            match enumerate_devices(&library, sample_seq, sysman_probe.zes_init_ok) {
                 Ok(enumeration) => enumeration.into_sample(sample_seq, library, sysman_probe),
                 Err(reason) => unavailable_sample(
                     sample_seq,
@@ -797,6 +881,7 @@ impl LevelZeroLibrary {
 
 fn enumerate_devices(
     library: &LevelZeroLibrary,
+    sample_seq: u64,
     sysman_ready: bool,
 ) -> Result<Enumeration, String> {
     let mut driver_count = 0u32;
@@ -856,6 +941,7 @@ fn enumerate_devices(
 
             devices.push(build_device_record(
                 library,
+                sample_seq,
                 driver_index,
                 device_index,
                 device,
@@ -879,6 +965,7 @@ fn enumerate_devices(
 
 fn build_device_record(
     library: &LevelZeroLibrary,
+    sample_seq: u64,
     driver_index: usize,
     device_index: usize,
     device: *mut c_void,
@@ -945,7 +1032,15 @@ fn build_device_record(
                 facts.push(ok_fact("uuid", "zeDeviceGetProperties", json!(uuid_hex)));
             }
 
-            extend_sysman_device_facts(library, device, &mut facts, &mut unavailable, sysman_ready);
+            extend_sysman_device_facts(
+                library,
+                sample_seq,
+                &key,
+                device,
+                &mut facts,
+                &mut unavailable,
+                sysman_ready,
+            );
 
             DeviceRecord {
                 driver_index,
@@ -976,7 +1071,15 @@ fn build_device_record(
                 )),
             });
             unavailable.extend(["name", "type"]);
-            extend_sysman_device_facts(library, device, &mut facts, &mut unavailable, sysman_ready);
+            extend_sysman_device_facts(
+                library,
+                sample_seq,
+                &key,
+                device,
+                &mut facts,
+                &mut unavailable,
+                sysman_ready,
+            );
             DeviceRecord {
                 driver_index,
                 device_index,
@@ -1004,7 +1107,15 @@ fn build_device_record(
                 error_message: Some(error_message),
             });
             unavailable.extend(["name", "type"]);
-            extend_sysman_device_facts(library, device, &mut facts, &mut unavailable, sysman_ready);
+            extend_sysman_device_facts(
+                library,
+                sample_seq,
+                &key,
+                device,
+                &mut facts,
+                &mut unavailable,
+                sysman_ready,
+            );
             DeviceRecord {
                 driver_index,
                 device_index,
@@ -1040,6 +1151,8 @@ fn query_device_properties(
 
 fn extend_sysman_device_facts(
     library: &LevelZeroLibrary,
+    sample_seq: u64,
+    device_key: &str,
     device: *mut c_void,
     facts: &mut Vec<IntelFact>,
     unavailable: &mut Vec<&'static str>,
@@ -1146,6 +1259,8 @@ fn extend_sysman_device_facts(
 
         let mut saw_success = false;
         for (handle_index, handle) in handles.into_iter().enumerate() {
+            let mut property_buffer = None;
+            let mut state_buffer = None;
             facts.push(ok_fact(
                 format!("sysman.{}.{}.handle", group.domain_key, handle_index),
                 group.enum_source_api,
@@ -1156,6 +1271,7 @@ fn extend_sysman_device_facts(
                 Some(get_properties) => match query_sysman_buffer(get_properties, handle) {
                     Ok(buffer) => {
                         saw_success = true;
+                        property_buffer = Some(buffer);
                         facts.push(ok_fact(
                             format!("sysman.{}.{}.properties", group.domain_key, handle_index),
                             group.property_source_api,
@@ -1186,6 +1302,7 @@ fn extend_sysman_device_facts(
                 match query_sysman_buffer(get_state, handle) {
                     Ok(buffer) => {
                         saw_success = true;
+                        state_buffer = Some(buffer);
                         facts.push(ok_fact(
                             format!("sysman.{}.{}.state", group.domain_key, handle_index),
                             group.state_source_api,
@@ -1234,6 +1351,18 @@ fn extend_sysman_device_facts(
                     format!("missing optional Sysman symbol {}.", group.state_source_api),
                 ));
             }
+
+            extend_typed_sysman_facts(
+                sample_seq,
+                device_key,
+                group.domain_key,
+                handle_index,
+                group.property_source_api,
+                property_buffer.as_ref(),
+                group.state_source_api,
+                state_buffer.as_ref(),
+                facts,
+            );
         }
 
         if !saw_success {
@@ -1258,6 +1387,321 @@ fn query_sysman_buffer(call: ZesGetBuffer, handle: *mut c_void) -> Result<Sysman
     }
 
     Err(last_result.unwrap_or_default())
+}
+
+fn extend_typed_sysman_facts(
+    sample_seq: u64,
+    device_key: &str,
+    domain_key: &str,
+    handle_index: usize,
+    property_source_api: &'static str,
+    property_buffer: Option<&SysmanBuffer>,
+    state_source_api: &'static str,
+    state_buffer: Option<&SysmanBuffer>,
+    facts: &mut Vec<IntelFact>,
+) {
+    match domain_key {
+        "memory_modules" => extend_memory_typed_facts(
+            handle_index,
+            property_source_api,
+            property_buffer,
+            state_source_api,
+            state_buffer,
+            facts,
+        ),
+        "frequency_domains" => extend_frequency_typed_facts(
+            handle_index,
+            property_source_api,
+            property_buffer,
+            state_source_api,
+            state_buffer,
+            facts,
+        ),
+        "power_domains" => extend_power_typed_facts(
+            sample_seq,
+            device_key,
+            handle_index,
+            state_source_api,
+            state_buffer,
+            facts,
+        ),
+        "engine_groups" => extend_engine_typed_facts(
+            sample_seq,
+            device_key,
+            handle_index,
+            state_source_api,
+            state_buffer,
+            facts,
+        ),
+        _ => {}
+    }
+}
+
+fn extend_memory_typed_facts(
+    handle_index: usize,
+    property_source_api: &'static str,
+    property_buffer: Option<&SysmanBuffer>,
+    state_source_api: &'static str,
+    state_buffer: Option<&SysmanBuffer>,
+    facts: &mut Vec<IntelFact>,
+) {
+    let property = property_buffer.and_then(decode_sysman_struct::<ZesMemProperties>);
+    let state = state_buffer.and_then(decode_sysman_struct::<ZesMemState>);
+    let base_key = format!("sysman.memory_modules.{handle_index}");
+
+    if let Some(property) = property {
+        let size_bytes = if property.physical_size > 0 {
+            Some(property.physical_size)
+        } else {
+            state.map(|value| value.size).filter(|value| *value > 0)
+        };
+        if let Some(size_bytes) = size_bytes {
+            facts.push(number_fact_u64(
+                format!("{base_key}.size_bytes"),
+                property_source_api,
+                size_bytes,
+                Some("bytes"),
+            ));
+        }
+    }
+
+    if let Some(state) = state {
+        facts.push(number_fact_u64(
+            format!("{base_key}.free_bytes"),
+            state_source_api,
+            state.free,
+            Some("bytes"),
+        ));
+
+        let size_for_used = property
+            .map(|value| value.physical_size)
+            .filter(|value| *value > 0)
+            .or_else(|| (state.size > 0).then_some(state.size));
+        if let Some(size_bytes) = size_for_used.filter(|value| state.free <= *value) {
+            facts.push(number_fact_u64(
+                format!("{base_key}.used_bytes"),
+                state_source_api,
+                size_bytes.saturating_sub(state.free),
+                Some("bytes"),
+            ));
+        }
+
+        if let Some(health) = mem_health_name(state.health) {
+            facts.push(ok_fact(
+                format!("{base_key}.health"),
+                state_source_api,
+                json!(health),
+            ));
+        }
+    }
+}
+
+fn extend_frequency_typed_facts(
+    handle_index: usize,
+    property_source_api: &'static str,
+    property_buffer: Option<&SysmanBuffer>,
+    state_source_api: &'static str,
+    state_buffer: Option<&SysmanBuffer>,
+    facts: &mut Vec<IntelFact>,
+) {
+    let base_key = format!("sysman.frequency_domains.{handle_index}");
+
+    if let Some(property) = property_buffer.and_then(decode_sysman_struct::<ZesFreqProperties>) {
+        push_non_negative_f64_fact(
+            facts,
+            format!("{base_key}.min_mhz"),
+            property_source_api,
+            property.min,
+            Some("mhz"),
+        );
+        push_non_negative_f64_fact(
+            facts,
+            format!("{base_key}.max_mhz"),
+            property_source_api,
+            property.max,
+            Some("mhz"),
+        );
+    }
+
+    if let Some(state) = state_buffer.and_then(decode_sysman_struct::<ZesFreqState>) {
+        push_non_negative_f64_fact(
+            facts,
+            format!("{base_key}.request_mhz"),
+            state_source_api,
+            state.request,
+            Some("mhz"),
+        );
+        push_non_negative_f64_fact(
+            facts,
+            format!("{base_key}.actual_mhz"),
+            state_source_api,
+            state.actual,
+            Some("mhz"),
+        );
+    }
+}
+
+fn extend_power_typed_facts(
+    _sample_seq: u64,
+    device_key: &str,
+    handle_index: usize,
+    state_source_api: &'static str,
+    state_buffer: Option<&SysmanBuffer>,
+    facts: &mut Vec<IntelFact>,
+) {
+    let Some(state) = state_buffer.and_then(decode_sysman_struct::<ZesPowerEnergyCounter>) else {
+        return;
+    };
+
+    let base_key = format!("sysman.power_domains.{handle_index}");
+    facts.push(number_fact_f64(
+        format!("{base_key}.energy_j"),
+        state_source_api,
+        state.energy as f64 / 1_000_000.0,
+        Some("joules"),
+    ));
+    facts.push(number_fact_u64(
+        format!("{base_key}.timestamp_ns"),
+        state_source_api,
+        state.timestamp.saturating_mul(1_000),
+        Some("ns"),
+    ));
+
+    let delta_key = format!("{device_key}::{base_key}");
+    match update_power_delta(delta_key, state) {
+        DeltaValue::Ok(watts) => facts.push(number_fact_f64(
+            format!("{base_key}.watts_delta"),
+            state_source_api,
+            watts,
+            Some("watts"),
+        )),
+        DeltaValue::NotAvailable(error_message) => facts.push(not_available_fact(
+            format!("{base_key}.watts_delta"),
+            state_source_api,
+            error_message,
+        )),
+    }
+}
+
+fn extend_engine_typed_facts(
+    _sample_seq: u64,
+    device_key: &str,
+    handle_index: usize,
+    state_source_api: &'static str,
+    state_buffer: Option<&SysmanBuffer>,
+    facts: &mut Vec<IntelFact>,
+) {
+    let Some(state) = state_buffer.and_then(decode_sysman_struct::<ZesEngineStats>) else {
+        return;
+    };
+
+    let base_key = format!("sysman.engine_groups.{handle_index}");
+    facts.push(number_fact_u64(
+        format!("{base_key}.active_time_ns"),
+        state_source_api,
+        state.active_time,
+        Some("ns"),
+    ));
+    facts.push(number_fact_u64(
+        format!("{base_key}.timestamp_ns"),
+        state_source_api,
+        state.timestamp,
+        Some("ns"),
+    ));
+
+    let delta_key = format!("{device_key}::{base_key}");
+    match update_engine_delta(delta_key, state) {
+        DeltaValue::Ok(utilization_pct) => facts.push(number_fact_f64(
+            format!("{base_key}.utilization_pct_delta"),
+            state_source_api,
+            utilization_pct,
+            Some("pct"),
+        )),
+        DeltaValue::NotAvailable(error_message) => facts.push(not_available_fact(
+            format!("{base_key}.utilization_pct_delta"),
+            state_source_api,
+            error_message,
+        )),
+    }
+}
+
+fn update_power_delta(key: String, current: ZesPowerEnergyCounter) -> DeltaValue {
+    let cache = POWER_DELTA_BASELINES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache.lock().expect("power delta cache should lock");
+    let previous = cache.insert(
+        key,
+        PowerDeltaBaseline {
+            energy_uj: current.energy,
+            timestamp_us: current.timestamp,
+        },
+    );
+
+    let Some(previous) = previous else {
+        return DeltaValue::NotAvailable("requires previous sample.".to_string());
+    };
+    let delta_time_us = current.timestamp.saturating_sub(previous.timestamp_us);
+    if delta_time_us == 0 {
+        return DeltaValue::NotAvailable("requires positive timestamp delta.".to_string());
+    }
+    let delta_energy_uj = current.energy.saturating_sub(previous.energy_uj);
+    DeltaValue::Ok(delta_energy_uj as f64 / delta_time_us as f64)
+}
+
+fn update_engine_delta(key: String, current: ZesEngineStats) -> DeltaValue {
+    let cache = ENGINE_DELTA_BASELINES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache.lock().expect("engine delta cache should lock");
+    let previous = cache.insert(
+        key,
+        EngineDeltaBaseline {
+            active_time: current.active_time,
+            timestamp: current.timestamp,
+        },
+    );
+
+    let Some(previous) = previous else {
+        return DeltaValue::NotAvailable("requires previous sample.".to_string());
+    };
+    let delta_timestamp = current.timestamp.saturating_sub(previous.timestamp);
+    if delta_timestamp == 0 {
+        return DeltaValue::NotAvailable("requires positive timestamp delta.".to_string());
+    }
+    let delta_active_time = current.active_time.saturating_sub(previous.active_time);
+    DeltaValue::Ok((delta_active_time as f64 * 100.0) / delta_timestamp as f64)
+}
+
+enum DeltaValue {
+    Ok(f64),
+    NotAvailable(String),
+}
+
+fn decode_sysman_struct<T: Copy>(buffer: &SysmanBuffer) -> Option<T> {
+    if size_of::<T>() > size_of::<SysmanBuffer>() {
+        return None;
+    }
+    Some(unsafe { ptr::read_unaligned((buffer as *const SysmanBuffer).cast::<T>()) })
+}
+
+fn mem_health_name(value: u32) -> Option<&'static str> {
+    match value {
+        0 => Some("unknown"),
+        1 => Some("ok"),
+        2 => Some("degraded"),
+        3 => Some("critical"),
+        4 => Some("replace"),
+        _ => None,
+    }
+}
+
+fn push_non_negative_f64_fact(
+    facts: &mut Vec<IntelFact>,
+    metric_key: String,
+    source_api: &'static str,
+    value: f64,
+    unit: Option<&'static str>,
+) {
+    if value >= 0.0 {
+        facts.push(number_fact_f64(metric_key, source_api, value, unit));
+    }
 }
 
 fn push_snapshot_device_lines(lines: &mut Vec<String>, device: &DeviceRecord) {
@@ -1411,6 +1855,38 @@ fn ok_fact(metric_key: impl Into<String>, source_api: &'static str, raw: Value) 
         state: "ok",
         raw,
         unit: None,
+        error_message: None,
+    }
+}
+
+fn number_fact_u64(
+    metric_key: impl Into<String>,
+    source_api: &'static str,
+    raw: u64,
+    unit: Option<&'static str>,
+) -> IntelFact {
+    IntelFact {
+        metric_key: metric_key.into(),
+        source_api,
+        state: "ok",
+        raw: json!(raw),
+        unit,
+        error_message: None,
+    }
+}
+
+fn number_fact_f64(
+    metric_key: impl Into<String>,
+    source_api: &'static str,
+    raw: f64,
+    unit: Option<&'static str>,
+) -> IntelFact {
+    IntelFact {
+        metric_key: metric_key.into(),
+        source_api,
+        state: "ok",
+        raw: json!(raw),
+        unit,
         error_message: None,
     }
 }
@@ -1623,6 +2099,19 @@ fn now_unix_ms() -> u128 {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
+fn clear_delta_caches_for_tests() {
+    if let Some(cache) = POWER_DELTA_BASELINES.get() {
+        cache.lock().expect("power delta cache should lock").clear();
+    }
+    if let Some(cache) = ENGINE_DELTA_BASELINES.get() {
+        cache
+            .lock()
+            .expect("engine delta cache should lock")
+            .clear();
+    }
+}
+
 fn to_wide(value: &str) -> Vec<u16> {
     OsStr::new(value)
         .encode_wide()
@@ -1641,16 +2130,18 @@ extern "system" {
 #[cfg(test)]
 mod tests {
     use std::ffi::c_void;
-    use std::mem::{ManuallyDrop, MaybeUninit};
+    use std::mem::{size_of, ManuallyDrop, MaybeUninit};
     use std::ptr::NonNull;
 
     use serde_json::json;
 
     use super::{
-        build_device_record, format_probe_snapshot, format_snapshot, format_stats_snapshot_json,
-        not_available_fact, ok_fact, sample_status, DeviceRecord, IntelFact, LevelZeroLibrary,
-        ProviderSample, SysmanBuffer, ZeDeviceProperties, PROVIDER, PROVIDER_AUTHORITY, SOURCE,
-        STATS_SCHEMA, TELEMETRY_CLASS, ZE_RESULT_SUCCESS,
+        build_device_record, clear_delta_caches_for_tests, extend_typed_sysman_facts,
+        format_probe_snapshot, format_snapshot, format_stats_snapshot_json, not_available_fact,
+        ok_fact, sample_status, DeviceRecord, IntelFact, LevelZeroLibrary, ProviderSample,
+        SysmanBuffer, ZeDeviceProperties, ZesEngineStats, ZesFreqProperties, ZesFreqState,
+        ZesMemProperties, ZesMemState, ZesPowerEnergyCounter, PROVIDER, PROVIDER_AUTHORITY, SOURCE,
+        STATS_SCHEMA, SYSMAN_BUFFER_BYTES, TELEMETRY_CLASS, ZE_RESULT_SUCCESS,
     };
 
     unsafe extern "C" fn stub_init(_: u32) -> i32 {
@@ -1740,6 +2231,7 @@ mod tests {
         let library = stub_library();
         let device = build_device_record(
             &library,
+            0,
             0,
             0,
             std::ptr::null_mut(),
@@ -1943,6 +2435,268 @@ mod tests {
         assert!(probe.contains("device.sysman.temperature_sensors.count: ok (raw=0)"));
         assert!(
             probe.contains("device.sysman.temperature_sensors.status: not_available (raw=null)")
+        );
+    }
+
+    fn sysman_buffer_from_struct<T: Copy>(value: T) -> SysmanBuffer {
+        assert!(size_of::<T>() <= size_of::<SysmanBuffer>());
+        let mut buffer = SysmanBuffer {
+            stype: 0,
+            p_next: std::ptr::null_mut(),
+            bytes: [0u8; SYSMAN_BUFFER_BYTES],
+        };
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                (&value as *const T).cast::<u8>(),
+                (&mut buffer as *mut SysmanBuffer).cast::<u8>(),
+                size_of::<T>(),
+            );
+        }
+        buffer
+    }
+
+    fn find_fact<'a>(facts: &'a [IntelFact], metric_key: &str) -> &'a IntelFact {
+        facts
+            .iter()
+            .find(|fact| fact.metric_key == metric_key)
+            .unwrap_or_else(|| panic!("missing fact {metric_key}"))
+    }
+
+    #[test]
+    fn typed_sysman_facts_are_provider_scoped_and_first_sample_deltas_are_not_available() {
+        clear_delta_caches_for_tests();
+        let mem_props = sysman_buffer_from_struct(ZesMemProperties {
+            stype: 0,
+            p_next: std::ptr::null_mut(),
+            mem_type: 0,
+            on_subdevice: 0,
+            subdevice_id: 0,
+            location: 0,
+            physical_size: 1024,
+            bus_width: 128,
+            num_channels: 2,
+        });
+        let mem_state = sysman_buffer_from_struct(ZesMemState {
+            stype: 0,
+            p_next: std::ptr::null(),
+            health: 1,
+            free: 384,
+            size: 1024,
+        });
+        let freq_props = sysman_buffer_from_struct(ZesFreqProperties {
+            stype: 0,
+            p_next: std::ptr::null_mut(),
+            domain_type: 0,
+            on_subdevice: 0,
+            subdevice_id: 0,
+            can_control: 1,
+            is_throttle_event_supported: 0,
+            min: 300.0,
+            max: 1300.0,
+        });
+        let freq_state = sysman_buffer_from_struct(ZesFreqState {
+            stype: 0,
+            p_next: std::ptr::null(),
+            current_voltage: 0.9,
+            request: 1100.0,
+            tdp: 1200.0,
+            efficient: 600.0,
+            actual: 1050.0,
+            throttle_reasons: 0,
+        });
+        let power_state = sysman_buffer_from_struct(ZesPowerEnergyCounter {
+            energy: 2_500_000,
+            timestamp: 50_000,
+        });
+        let engine_state = sysman_buffer_from_struct(ZesEngineStats {
+            active_time: 4_000,
+            timestamp: 10_000,
+        });
+
+        let mut facts = Vec::new();
+        extend_typed_sysman_facts(
+            1,
+            "driver=0,device=0,vendor=0x8086,device=0x4c8b",
+            "memory_modules",
+            0,
+            "zesMemoryGetProperties",
+            Some(&mem_props),
+            "zesMemoryGetState",
+            Some(&mem_state),
+            &mut facts,
+        );
+        extend_typed_sysman_facts(
+            1,
+            "driver=0,device=0,vendor=0x8086,device=0x4c8b",
+            "frequency_domains",
+            0,
+            "zesFrequencyGetProperties",
+            Some(&freq_props),
+            "zesFrequencyGetState",
+            Some(&freq_state),
+            &mut facts,
+        );
+        extend_typed_sysman_facts(
+            1,
+            "driver=0,device=0,vendor=0x8086,device=0x4c8b",
+            "power_domains",
+            0,
+            "zesPowerGetProperties",
+            None,
+            "zesPowerGetEnergyCounter",
+            Some(&power_state),
+            &mut facts,
+        );
+        extend_typed_sysman_facts(
+            1,
+            "driver=0,device=0,vendor=0x8086,device=0x4c8b",
+            "engine_groups",
+            0,
+            "zesEngineGetProperties",
+            None,
+            "zesEngineGetActivity",
+            Some(&engine_state),
+            &mut facts,
+        );
+
+        assert_eq!(
+            find_fact(&facts, "sysman.memory_modules.0.size_bytes").raw,
+            json!(1024)
+        );
+        assert_eq!(
+            find_fact(&facts, "sysman.memory_modules.0.free_bytes").raw,
+            json!(384)
+        );
+        assert_eq!(
+            find_fact(&facts, "sysman.memory_modules.0.used_bytes").raw,
+            json!(640)
+        );
+        assert_eq!(
+            find_fact(&facts, "sysman.memory_modules.0.health").raw,
+            json!("ok")
+        );
+        assert_eq!(
+            find_fact(&facts, "sysman.frequency_domains.0.min_mhz").raw,
+            json!(300.0)
+        );
+        assert_eq!(
+            find_fact(&facts, "sysman.frequency_domains.0.max_mhz").raw,
+            json!(1300.0)
+        );
+        assert_eq!(
+            find_fact(&facts, "sysman.frequency_domains.0.request_mhz").raw,
+            json!(1100.0)
+        );
+        assert_eq!(
+            find_fact(&facts, "sysman.frequency_domains.0.actual_mhz").raw,
+            json!(1050.0)
+        );
+        assert_eq!(
+            find_fact(&facts, "sysman.power_domains.0.energy_j").raw,
+            json!(2.5)
+        );
+        assert_eq!(
+            find_fact(&facts, "sysman.power_domains.0.timestamp_ns").raw,
+            json!(50_000_000u64)
+        );
+        assert_eq!(
+            find_fact(&facts, "sysman.engine_groups.0.active_time_ns").raw,
+            json!(4_000u64)
+        );
+        assert_eq!(
+            find_fact(&facts, "sysman.engine_groups.0.timestamp_ns").raw,
+            json!(10_000u64)
+        );
+
+        let watts_delta = find_fact(&facts, "sysman.power_domains.0.watts_delta");
+        assert_eq!(watts_delta.state, "not_available");
+        assert_eq!(
+            watts_delta.error_message.as_deref(),
+            Some("requires previous sample.")
+        );
+        let utilization_delta = find_fact(&facts, "sysman.engine_groups.0.utilization_pct_delta");
+        assert_eq!(utilization_delta.state, "not_available");
+        assert_eq!(
+            utilization_delta.error_message.as_deref(),
+            Some("requires previous sample.")
+        );
+    }
+
+    #[test]
+    fn watch_style_second_sample_produces_power_and_engine_deltas() {
+        clear_delta_caches_for_tests();
+        let device_key = "driver=0,device=0,vendor=0x8086,device=0x4c8b";
+        let mut first_facts = Vec::new();
+        let mut second_facts = Vec::new();
+
+        extend_typed_sysman_facts(
+            1,
+            device_key,
+            "power_domains",
+            0,
+            "zesPowerGetProperties",
+            None,
+            "zesPowerGetEnergyCounter",
+            Some(&sysman_buffer_from_struct(ZesPowerEnergyCounter {
+                energy: 1_000_000,
+                timestamp: 10_000,
+            })),
+            &mut first_facts,
+        );
+        extend_typed_sysman_facts(
+            2,
+            device_key,
+            "power_domains",
+            0,
+            "zesPowerGetProperties",
+            None,
+            "zesPowerGetEnergyCounter",
+            Some(&sysman_buffer_from_struct(ZesPowerEnergyCounter {
+                energy: 2_000_000,
+                timestamp: 20_000,
+            })),
+            &mut second_facts,
+        );
+        extend_typed_sysman_facts(
+            1,
+            device_key,
+            "engine_groups",
+            0,
+            "zesEngineGetProperties",
+            None,
+            "zesEngineGetActivity",
+            Some(&sysman_buffer_from_struct(ZesEngineStats {
+                active_time: 1_000,
+                timestamp: 10_000,
+            })),
+            &mut first_facts,
+        );
+        extend_typed_sysman_facts(
+            2,
+            device_key,
+            "engine_groups",
+            0,
+            "zesEngineGetProperties",
+            None,
+            "zesEngineGetActivity",
+            Some(&sysman_buffer_from_struct(ZesEngineStats {
+                active_time: 4_000,
+                timestamp: 20_000,
+            })),
+            &mut second_facts,
+        );
+
+        assert_eq!(
+            find_fact(&second_facts, "sysman.power_domains.0.watts_delta").raw,
+            json!(100.0)
+        );
+        assert_eq!(
+            find_fact(
+                &second_facts,
+                "sysman.engine_groups.0.utilization_pct_delta"
+            )
+            .raw,
+            json!(30.0)
         );
     }
 }
