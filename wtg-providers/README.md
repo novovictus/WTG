@@ -5,10 +5,10 @@ This crate contains experimental provider-boundary work for vendor-native teleme
 WTG provider priority remains:
 
 1. NVIDIA / NVML as the primary provider.
-2. AMD / ADL as a secondary experimental provider.
-3. Intel later.
+2. AMD / ADL as a completed secondary experimental provider foundation.
+3. Intel / Level Zero as the active 0.2.9 experimental provider path.
 
-The AMD ADL path introduced in 0.2.6 is a foundation, not a complete AMD telemetry implementation. It is included in the workspace for build and version alignment, and it is invoked from `wtg-app` only when explicitly requested with `--provider amd`.
+The AMD ADL path was expanded through 0.2.8 as a provider-scoped telemetry foundation. The Intel Level Zero path is active in 0.2.9. It is included in the workspace for build and version alignment, and it is invoked from `wtg-app` only when explicitly requested with `--provider amd`.
 
 The provider boundary preserves source semantics. ADL adapter records are exposed as ADL adapter records. They are not translated into NVML devices, Task Manager GPU numbers, or cross-provider parity fields.
 
@@ -28,7 +28,7 @@ cargo run --manifest-path .\wtg-providers\Cargo.toml --bin wtg-provider-probe --
 
 ## Current validation status
 
-Validated during the 0.2.6 development cycle.
+Validated across the 0.2.6 through 0.2.9 provider development cycles.
 
 Local proof-of-life status:
 
@@ -42,7 +42,7 @@ Local proof-of-life status:
 
 ## Scope boundary
 
-The 0.2.6 ADL work establishes a secondary provider foundation only.
+The provider work keeps AMD ADL and Intel Level Zero isolated from the primary NVIDIA/NVML path.
 
 It does not change:
 
@@ -53,4 +53,4 @@ It does not change:
 - Home Assistant discovery behavior.
 - Redline semantics.
 
-Further ADL telemetry expansion is intentionally shelved until NVML provenance and expanded NVML stats are implemented in the 0.2.7 cycle.
+Further provider telemetry expansion should remain provider-scoped and must not change NVIDIA/NVML truth semantics.

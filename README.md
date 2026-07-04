@@ -9,11 +9,11 @@ WTG is a Windows-native GPU telemetry and validation tool focused on NVIDIA/NVML
 
 ## Current Status
 
-Current branch: `dev/0.2.8-amd-adl-discovery`
+Current branch: `dev/0.2.9-intel-level-zero-provider`
 
-WTG 0.2.8 is the AMD ADL discovery sandbox cycle. WTG remains NVIDIA/NVML-centric; NVIDIA/NVML is still the primary truth provider and the only provider with the stable expanded `--once --stats` JSON surface.
+WTG 0.2.9 is the Intel Level Zero/Sysman provider exploration cycle. WTG remains NVIDIA/NVML-centric; NVIDIA/NVML is still the primary truth provider and the only provider with the stable expanded `--once --stats` JSON surface.
 
-AMD ADL is an explicit experimental provider selected with `--provider amd`. AMD output is provider-scoped, read-only, and intentionally not translated into NVML field names or cross-vendor equivalence claims. The AMD path currently supports compact snapshot and watch output only.
+AMD ADL is the completed 0.2.8 experimental provider path selected with `--provider amd`. Intel Level Zero is the active 0.2.9 experimental provider path selected with `--provider intel`. AMD output is provider-scoped, read-only, and intentionally not translated into NVML field names or cross-vendor equivalence claims. The AMD path currently supports compact snapshot and watch output only.
 
 Current development builds include:
 
@@ -134,7 +134,7 @@ Run the experimental UI:
   Set the watch polling interval in milliseconds.
 
 - `--stats`  
-  With NVIDIA/NVML `--once`, emit expanded provider-truth JSON using schema `wtg.nvml.stats.v1`. With NVIDIA/NVML `--watch`, stats remains on the existing legacy path for this release. AMD ADL `--stats` is intentionally rejected.
+  With NVIDIA/NVML `--once`, emit expanded provider-truth JSON using schema `wtg.nvml.stats.v1`. With NVIDIA/NVML `--watch`, stats remains on the existing legacy path for this release. AMD and Intel provider `--stats` output is provider-scoped and not NVML-equivalent.
 
 - `--probe`  
   Capture one compact NVIDIA/NVML probe block for driver and field validation.
@@ -158,7 +158,7 @@ Run the experimental UI:
   Load an explicit WTG TOML configuration file.
 
 - `--provider amd`  
-  Select the experimental AMD ADL provider for compact `--once` or `--watch` output. AMD output has no stable schema field and uses telemetry class `provider_telemetry`.
+  Select the experimental AMD ADL provider for compact `--once` or `--watch` output. AMD and Intel output use provider-scoped schemas and telemetry class `provider_telemetry`.
 
 ## AMD ADL Discovery
 
@@ -394,7 +394,7 @@ For automated watch checks, avoid `Select-Object -First ...` as final evidence b
 
 ## Next Immediate Step
 
-- Keep 0.2.8 scoped to AMD ADL discovery and provider-boundary evidence.
+- Keep 0.2.9 scoped to Intel Level Zero/Sysman provider-boundary evidence.
 - Capture full-power AC versus reduced USB-C behavior as a later validation cycle.
 - Keep NVIDIA/NVML as the primary truth provider while ADL remains provider-scoped experimental telemetry.
 - Keep README as a project entry point and maintain detailed operational docs under `docs/` and `artifacts/dev/`.
