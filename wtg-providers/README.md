@@ -20,11 +20,6 @@ Run the provider crate check from the repository root:
 cargo check --manifest-path .\wtg-providers\Cargo.toml
 ```
 
-Run the AMD ADL proof-of-life probe from the repository root:
-
-```powershell
-cargo run --manifest-path .\wtg-providers\Cargo.toml --bin wtg-provider-probe -- amd-adl --once
-```
 
 ## Current validation status
 
@@ -33,7 +28,7 @@ Validated across the 0.2.6 through 0.2.9 provider development cycles.
 Local proof-of-life status:
 
 - The provider crate check passes.
-- The AMD ADL proof-of-life probe emits structured JSON samples.
+- The AMD ADL provider path emits structured JSON samples through `wtg.exe --provider amd --stats`.
 - ADL loads from the installed Windows AMD driver library.
 - ADL initialization succeeds.
 - ADL enumerates AMD Radeon integrated graphics display records.
@@ -54,3 +49,4 @@ It does not change:
 - Redline semantics.
 
 Further provider telemetry expansion should remain provider-scoped and must not change NVIDIA/NVML truth semantics.
+
