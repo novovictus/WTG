@@ -1,4 +1,4 @@
-﻿# Intel Level Zero / Sysman Provider Discovery
+# Intel Level Zero / Sysman Provider Discovery
 
 This branch adds an explicit Intel provider-scoped discovery path selected with `--provider intel`.
 
@@ -6,7 +6,7 @@ The Intel path is a supporting provider witness. It does not change the NVIDIA/N
 
 ## Current Status
 
-Current branch: `dev/0.2.9-intel-level-zero-provider`
+Current branch: `dev/0.3.0-provider-discovery`
 
 Current version: `0.2.9`
 
@@ -357,6 +357,21 @@ Promising next areas, still provider-scoped if added:
 - validate on additional Intel hardware and driver/runtime combinations
 - compare behavior across integrated Intel graphics and discrete Intel Arc hardware
 - decide whether selected Sysman facts should remain raw-only or gain typed provider-native wrappers
+
+
+## 0.2.9 Closure
+
+This document records the closed 0.2.9 Intel Level Zero/Sysman discovery milestone.
+
+The 0.2.9 checkpoint is:
+
+```text
+checkpoint/0.2.9-intel-sysman-m2
+```
+
+0.2.9 proves that WTG can safely load Intel Level Zero/Sysman, enumerate Intel devices and Sysman domains, and emit provider-scoped raw facts through normal WTG CLI paths.
+
+0.2.9 does not claim Intel usable telemetry parity with NVML. Usable AMD/Intel provider-native telemetry moves to the 0.3.x provider discovery-to-usable-telemetry cycle.
 
 ## Documentation Rule
 

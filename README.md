@@ -9,11 +9,11 @@ WTG is a Windows-native GPU telemetry and validation tool focused on NVIDIA/NVML
 
 ## Current Status
 
-Current branch: `dev/0.2.9-intel-level-zero-provider`
+Current branch: `dev/0.3.0-provider-discovery`
 
-WTG 0.2.9 is the Intel Level Zero/Sysman provider exploration cycle. WTG remains NVIDIA/NVML-centric; NVIDIA/NVML is still the primary truth provider and the only provider with the stable expanded `--once --stats` JSON surface.
+WTG 0.3.0 starts the provider discovery-to-usable-telemetry cycle for AMD ADL and Intel Level Zero/Sysman. WTG remains NVIDIA/NVML-centric; NVIDIA/NVML is still the primary truth provider and the only provider with the stable expanded `--once --stats` JSON surface.
 
-AMD ADL is the completed 0.2.8 experimental provider path selected with `--provider amd`. Intel Level Zero is the active 0.2.9 experimental provider path selected with `--provider intel`. AMD and Intel output are provider-scoped, read-only, and intentionally not translated into NVML field names or cross-vendor equivalence claims. The AMD path supports compact snapshot/watch output plus provider-scoped stats/probe output.
+AMD ADL and Intel Level Zero/Sysman are provider-scoped discovery paths selected with `--provider amd` and `--provider intel`. In 0.3.x, their focus moves from discovery-grade provider evidence toward usable provider-native telemetry. AMD and Intel output remains read-only and intentionally not translated into NVML field names or cross-vendor equivalence claims.
 
 Current development builds include:
 
@@ -394,8 +394,13 @@ For automated watch checks, avoid `Select-Object -First ...` as final evidence b
 
 ## Next Immediate Step
 
-- Keep 0.2.9 scoped to Intel Level Zero/Sysman provider-boundary evidence.
+- Keep 0.3.x scoped to AMD/Intel provider-native usable telemetry without NVML parity claims.
 - Capture full-power AC versus reduced USB-C behavior as a later validation cycle.
 - Keep NVIDIA/NVML as the primary truth provider while ADL remains provider-scoped experimental telemetry.
 - Keep README as a project entry point and maintain detailed operational docs under `docs/` and `artifacts/dev/`.
 
+## WTG 0.3.x Provider Discovery
+
+WTG 0.3.x moves AMD ADL and Intel Level Zero/Sysman from discovery-grade provider evidence toward usable provider-native telemetry.
+
+See `docs/provider-discovery-0.3.md`.

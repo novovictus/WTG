@@ -6,7 +6,7 @@ WTG provider priority remains:
 
 1. NVIDIA / NVML as the primary provider.
 2. AMD / ADL as a completed secondary experimental provider foundation.
-3. Intel / Level Zero as the active 0.2.9 experimental provider path.
+3. Intel / Level Zero as the completed 0.2.9 discovery provider path and active 0.3.x usable-telemetry target.
 
 The AMD ADL path was expanded through 0.2.8 as a provider-scoped telemetry foundation. The Intel Level Zero path is active in 0.2.9. It is included in the workspace for build and version alignment, and AMD ADL is invoked with `--provider amd`; Intel Level Zero is invoked with `--provider intel`.
 
