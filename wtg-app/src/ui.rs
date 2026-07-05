@@ -7,11 +7,13 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
+use serde_json::Value;
 use std::os::windows::process::CommandExt;
 use wtg_core::nvml::{
     probe_context::{query_probe_context_for_gpu_with_ctx, GpuProbeContext},
     GpuSnapshot, NvmlContext,
 };
+use wtg_providers::{amd_adl, intel_level_zero};
 
 use crate::config;
 use crate::mqtt::MqttSink;
@@ -81,46 +83,50 @@ impl WtgUiApp {
     }
 
     fn refresh(&mut self) {
+        let mut devices = Vec::new();
+        let mut errors = Vec::new();
+
         if self.nvml_ctx.is_none() {
             match wtg_core::nvml::init_context() {
                 Ok(ctx) => {
                     self.nvml_ctx = Some(ctx);
-                    self.last_error = None;
                 }
                 Err(err) => {
-                    self.last_error = Some(format!("NVML init failed: {err}"));
-                    self.mark_refreshed();
-                    return;
+                    errors.push(format!("NVML init failed: {err}"));
                 }
             }
         }
 
-        let Some(ctx) = self.nvml_ctx.as_ref() else {
-            return;
-        };
-
-        match wtg_core::nvml::snapshot_all_with_ctx(ctx) {
-            Ok(snaps) => {
-                self.devices = snaps
-                    .iter()
-                    .map(|snapshot| {
+        if let Some(ctx) = self.nvml_ctx.as_ref() {
+            match wtg_core::nvml::snapshot_all_with_ctx(ctx) {
+                Ok(snaps) => {
+                    devices.extend(snaps.iter().map(|snapshot| {
                         let context = query_probe_context_for_gpu_with_ctx(ctx, snapshot.index);
-                        DeviceView::from_snapshot(snapshot, context)
-                    })
-                    .collect();
-
-                if self.selected_device >= self.devices.len() {
-                    self.selected_device = self.devices.len().saturating_sub(1);
+                        DeviceView::Nvidia(NvidiaDeviceView::from_snapshot(snapshot, context))
+                    }));
                 }
-
-                self.last_error = None;
-            }
-            Err(err) => {
-                self.last_error = Some(format!("Telemetry refresh failed: {err}"));
-                self.nvml_ctx = None;
+                Err(err) => {
+                    errors.push(format!("NVIDIA telemetry refresh failed: {err}"));
+                    self.nvml_ctx = None;
+                }
             }
         }
 
+        match collect_amd_device_views() {
+            Ok(amd_devices) => devices.extend(amd_devices.into_iter().map(DeviceView::Amd)),
+            Err(err) => errors.push(format!("AMD ADL refresh failed: {err}")),
+        }
+
+        match collect_intel_device_views() {
+            Ok(intel_devices) => devices.extend(intel_devices.into_iter().map(DeviceView::Intel)),
+            Err(err) => errors.push(format!("Intel Level Zero refresh failed: {err}")),
+        }
+
+        self.devices = devices;
+        if self.selected_device >= self.devices.len() {
+            self.selected_device = self.devices.len().saturating_sub(1);
+        }
+        self.last_error = (!errors.is_empty()).then(|| errors.join(" | "));
         self.mark_refreshed();
     }
 
@@ -465,7 +471,7 @@ impl eframe::App for WtgUiApp {
                         ui.label("No GPU telemetry available");
                     } else {
                         for (idx, device) in self.devices.iter().enumerate() {
-                            let label = format!("GPU {}: {}", device.index, device.name);
+                            let label = device.list_label();
                             if ui
                                 .selectable_label(self.selected_device == idx, label)
                                 .clicked()
@@ -497,7 +503,23 @@ impl eframe::App for WtgUiApp {
     }
 }
 
-struct DeviceView {
+enum DeviceView {
+    Nvidia(NvidiaDeviceView),
+    Amd(AmdDeviceView),
+    Intel(IntelDeviceView),
+}
+
+impl DeviceView {
+    fn list_label(&self) -> String {
+        match self {
+            DeviceView::Nvidia(device) => format!("GPU {}: {}", device.index, device.name),
+            DeviceView::Amd(device) => device.name.clone(),
+            DeviceView::Intel(device) => device.list_label(),
+        }
+    }
+}
+
+struct NvidiaDeviceView {
     index: u32,
     name: String,
     uuid: String,
@@ -513,6 +535,38 @@ struct DeviceView {
     temp_c: Option<u32>,
     power_w: Option<f32>,
     power_limit_w: Option<f32>,
+}
+
+struct AmdDeviceView {
+    name: String,
+    provider_authority: String,
+    provider_source: String,
+    physical_key: String,
+    activity_pct: Option<u32>,
+    temperature_c: Option<f64>,
+    engine_clock_mhz: Option<f64>,
+    memory_clock_mhz: Option<f64>,
+    observed_core_clock_mhz: Option<f64>,
+    observed_memory_clock_mhz: Option<f64>,
+    vbios_version: Option<String>,
+    active: Option<bool>,
+}
+
+struct IntelDeviceView {
+    device_index: usize,
+    name: Option<String>,
+    provider_authority: String,
+    provider_source: String,
+    device_key: String,
+    uuid: Option<String>,
+    core_clock_mhz: Option<f64>,
+    actual_mhz: Option<f64>,
+    request_mhz: Option<f64>,
+    memory_used_mib: Option<u64>,
+    memory_total_mib: Option<u64>,
+    power_w: Option<f64>,
+    temperature_c: Option<f64>,
+    engine_utilizations: Vec<(usize, f64)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -576,7 +630,7 @@ impl MqttStatus {
     }
 }
 
-impl DeviceView {
+impl NvidiaDeviceView {
     fn from_snapshot(snapshot: &GpuSnapshot, context: GpuProbeContext) -> Self {
         Self {
             index: snapshot.index,
@@ -599,6 +653,14 @@ impl DeviceView {
 }
 
 fn render_device(ui: &mut egui::Ui, device: &DeviceView) {
+    match device {
+        DeviceView::Nvidia(device) => render_nvidia_device(ui, device),
+        DeviceView::Amd(device) => render_amd_device(ui, device),
+        DeviceView::Intel(device) => render_intel_device(ui, device),
+    }
+}
+
+fn render_nvidia_device(ui: &mut egui::Ui, device: &NvidiaDeviceView) {
     ui.heading(format!("GPU {}: {}", device.index, device.name));
     ui.add_space(8.0);
 
@@ -607,6 +669,8 @@ fn render_device(ui: &mut egui::Ui, device: &DeviceView) {
         .spacing([20.0, 8.0])
         .striped(true)
         .show(ui, |ui| {
+            row(ui, "Provider", "NVIDIA NVML");
+            row(ui, "Source", "nvidia.nvml");
             row(ui, "UUID", &device.uuid);
             row(ui, "Driver", &device.driver_version);
             row(ui, "CUDA driver", &device.cuda_driver_version);
@@ -645,6 +709,114 @@ fn render_device(ui: &mut egui::Ui, device: &DeviceView) {
     ui.add(vram_bar(device.vram_used_mib, device.vram_total_mib));
 }
 
+fn render_amd_device(ui: &mut egui::Ui, device: &AmdDeviceView) {
+    ui.heading(&device.name);
+    ui.add_space(8.0);
+
+    egui::Grid::new("amd_device_summary")
+        .num_columns(2)
+        .spacing([20.0, 8.0])
+        .striped(true)
+        .show(ui, |ui| {
+            row(ui, "Provider", &device.provider_authority);
+            row(ui, "Source", &device.provider_source);
+            row(ui, "Physical key", &device.physical_key);
+            row(ui, "Active", &format_bool(device.active));
+            row(
+                ui,
+                "Activity",
+                &format_optional_percent(device.activity_pct),
+            );
+            row(
+                ui,
+                "Engine clock",
+                &format_optional_mhz(device.engine_clock_mhz),
+            );
+            row(
+                ui,
+                "Memory clock",
+                &format_optional_mhz(device.memory_clock_mhz),
+            );
+            row(
+                ui,
+                "Observed core clock",
+                &format_optional_mhz(device.observed_core_clock_mhz),
+            );
+            row(
+                ui,
+                "Observed memory clock",
+                &format_optional_mhz(device.observed_memory_clock_mhz),
+            );
+            row(
+                ui,
+                "Temperature",
+                &format_optional_temperature_f64(device.temperature_c),
+            );
+            row(
+                ui,
+                "VBIOS",
+                device.vbios_version.as_deref().unwrap_or("Unavailable"),
+            );
+        });
+
+    if let Some(activity_pct) = device.activity_pct {
+        ui.add_space(14.0);
+        ui.label("Activity");
+        ui.add(progress_bar(activity_pct, "Activity"));
+    }
+}
+
+fn render_intel_device(ui: &mut egui::Ui, device: &IntelDeviceView) {
+    ui.heading(device.heading());
+    ui.add_space(8.0);
+
+    egui::Grid::new("intel_device_summary")
+        .num_columns(2)
+        .spacing([20.0, 8.0])
+        .striped(true)
+        .show(ui, |ui| {
+            row(ui, "Provider", &device.provider_authority);
+            row(ui, "Source", &device.provider_source);
+            row(ui, "Device key", &device.device_key);
+            row(ui, "UUID", device.uuid.as_deref().unwrap_or("Unavailable"));
+            row(
+                ui,
+                "Core clock",
+                &format_optional_mhz(device.core_clock_mhz),
+            );
+            row(
+                ui,
+                "Frequency",
+                &format_intel_frequency(device.actual_mhz, device.request_mhz),
+            );
+            row(
+                ui,
+                "Memory",
+                &format_optional_memory_pair(device.memory_used_mib, device.memory_total_mib),
+            );
+            row(ui, "Power", &format_optional_watts_f64(device.power_w));
+            row(
+                ui,
+                "Temperature",
+                &format_optional_temperature_f64(device.temperature_c),
+            );
+        });
+
+    if !device.engine_utilizations.is_empty() {
+        ui.add_space(14.0);
+        ui.label("Engine utilization");
+        for (index, pct) in device.engine_utilizations.iter() {
+            ui.add(progress_bar_f64(*pct, &format!("Engine {index}")));
+        }
+    }
+
+    if let (Some(used_mib), Some(total_mib)) = (device.memory_used_mib, device.memory_total_mib) {
+        ui.add_space(10.0);
+        ui.label("Memory");
+        ui.add(vram_bar(used_mib, total_mib));
+    }
+}
+
 fn row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.label(label);
     ui.monospace(value);
@@ -654,6 +826,11 @@ fn row(ui: &mut egui::Ui, label: &str, value: &str) {
 fn progress_bar(percent: u32, label: &str) -> egui::ProgressBar {
     let clamped = percent.min(100);
     egui::ProgressBar::new(clamped as f32 / 100.0).text(format!("{label}: {percent}%"))
+}
+
+fn progress_bar_f64(percent: f64, label: &str) -> egui::ProgressBar {
+    let clamped = percent.clamp(0.0, 100.0);
+    egui::ProgressBar::new((clamped / 100.0) as f32).text(format!("{label}: {percent:.2}%"))
 }
 
 fn vram_bar(used_mib: u64, total_mib: u64) -> egui::ProgressBar {
@@ -672,6 +849,12 @@ fn format_temperature(temp_c: Option<u32>) -> String {
         .unwrap_or_else(unavailable)
 }
 
+fn format_optional_temperature_f64(temp_c: Option<f64>) -> String {
+    temp_c
+        .map(|temp_c| format!("{temp_c:.1} C"))
+        .unwrap_or_else(unavailable)
+}
+
 fn format_power(power_w: Option<f32>, power_limit_w: Option<f32>) -> String {
     match (power_w, power_limit_w) {
         (Some(power_w), Some(power_limit_w)) => format!("{power_w:.1} W / {power_limit_w:.1} W"),
@@ -679,6 +862,233 @@ fn format_power(power_w: Option<f32>, power_limit_w: Option<f32>) -> String {
         (None, Some(power_limit_w)) => format!("N/A / {power_limit_w:.1} W"),
         (None, None) => unavailable(),
     }
+}
+
+fn format_optional_watts_f64(power_w: Option<f64>) -> String {
+    power_w
+        .map(|power_w| format!("{power_w:.1} W"))
+        .unwrap_or_else(unavailable)
+}
+
+fn format_optional_percent(percent: Option<u32>) -> String {
+    percent
+        .map(|percent| format!("{percent}%"))
+        .unwrap_or_else(unavailable)
+}
+
+fn format_optional_mhz(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{value:.1} MHz"))
+        .unwrap_or_else(unavailable)
+}
+
+fn format_optional_memory_pair(used_mib: Option<u64>, total_mib: Option<u64>) -> String {
+    match (used_mib, total_mib) {
+        (Some(used_mib), Some(total_mib)) => format!("{used_mib} MiB / {total_mib} MiB"),
+        _ => unavailable(),
+    }
+}
+
+fn format_intel_frequency(actual_mhz: Option<f64>, request_mhz: Option<f64>) -> String {
+    match (actual_mhz, request_mhz) {
+        (Some(actual_mhz), Some(request_mhz)) => {
+            format!("actual {actual_mhz:.1} MHz, requested {request_mhz:.1} MHz")
+        }
+        (Some(actual_mhz), None) => format!("actual {actual_mhz:.1} MHz"),
+        (None, Some(request_mhz)) => format!("requested {request_mhz:.1} MHz"),
+        (None, None) => unavailable(),
+    }
+}
+
+fn format_bool(value: Option<bool>) -> String {
+    match value {
+        Some(true) => "yes".to_string(),
+        Some(false) => "no".to_string(),
+        None => unavailable(),
+    }
+}
+
+impl IntelDeviceView {
+    fn list_label(&self) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| format!("Intel device {}", self.device_index))
+    }
+
+    fn heading(&self) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| format!("Intel device {}", self.device_index))
+    }
+}
+
+fn collect_amd_device_views() -> Result<Vec<AmdDeviceView>, String> {
+    let sample = amd_adl::collect_once(0);
+    let tick_ts = now_ts();
+    let stats = amd_adl::format_stats_snapshot_json(&sample, 0, &tick_ts);
+    let parsed: Value = serde_json::from_str(&stats)
+        .map_err(|err| format!("AMD stats JSON parse failed: {err}"))?;
+
+    let provider_authority = parsed
+        .get("provider_authority")
+        .and_then(Value::as_str)
+        .unwrap_or("AMD ADL")
+        .to_string();
+    let provider_source = parsed
+        .get("provider_source")
+        .and_then(Value::as_str)
+        .unwrap_or("wtg.provider.amd.adl")
+        .to_string();
+
+    let mut devices = Vec::new();
+    for adapter in parsed
+        .get("adapters")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if field_raw_string(adapter, "vendor_kind") != Some("AMD") {
+            continue;
+        }
+
+        let name = field_raw_string(adapter, "name")
+            .map(str::to_string)
+            .unwrap_or_else(|| "AMD adapter".to_string());
+        let physical_key = field_raw_string(adapter, "physical_key")
+            .map(str::to_string)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        devices.push(AmdDeviceView {
+            name,
+            provider_authority: provider_authority.clone(),
+            provider_source: provider_source.clone(),
+            physical_key,
+            activity_pct: field_raw_u64(adapter, "activity_pct").map(|value| value as u32),
+            temperature_c: field_raw_f64(adapter, "temperature_c"),
+            engine_clock_mhz: field_raw_f64(adapter, "engine_clock_mhz"),
+            memory_clock_mhz: field_raw_f64(adapter, "memory_clock_mhz"),
+            observed_core_clock_mhz: field_raw_f64(adapter, "observed_core_clock_mhz"),
+            observed_memory_clock_mhz: field_raw_f64(adapter, "observed_memory_clock_mhz"),
+            vbios_version: field_raw_string(adapter, "vbios_version").map(str::to_string),
+            active: field_raw_bool(adapter, "active"),
+        });
+    }
+
+    Ok(devices)
+}
+
+fn collect_intel_device_views() -> Result<Vec<IntelDeviceView>, String> {
+    let sample = intel_level_zero::collect_visible_sample(0);
+    let tick_ts = now_ts();
+    let stats = intel_level_zero::format_stats_snapshot_json(&sample, 0, &tick_ts);
+    let parsed: Value = serde_json::from_str(&stats)
+        .map_err(|err| format!("Intel stats JSON parse failed: {err}"))?;
+
+    let provider_authority = parsed
+        .get("provider_authority")
+        .and_then(Value::as_str)
+        .unwrap_or("Intel Level Zero")
+        .to_string();
+    let provider_source = parsed
+        .get("provider_source")
+        .and_then(Value::as_str)
+        .unwrap_or("wtg.provider.intel.level_zero")
+        .to_string();
+
+    let mut devices = Vec::new();
+    for (device_index, device) in parsed
+        .get("devices")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let memory_used_mib =
+            field_raw_u64(device, "sysman.memory_modules.0.used_bytes").map(bytes_to_mib);
+        let memory_total_mib =
+            field_raw_u64(device, "sysman.memory_modules.0.size_bytes").map(bytes_to_mib);
+
+        let mut engine_utilizations = device
+            .as_object()
+            .map(|object| {
+                object
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        let index_text = key
+                            .strip_prefix("sysman.engine_groups.")?
+                            .strip_suffix(".utilization_pct_delta")?;
+                        let index = index_text.parse::<usize>().ok()?;
+                        let raw = value.get("raw")?.as_f64()?;
+                        Some((index, raw))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        engine_utilizations.sort_by_key(|(index, _)| *index);
+
+        devices.push(IntelDeviceView {
+            device_index,
+            name: field_raw_string(device, "device_name").map(str::to_string),
+            provider_authority: provider_authority.clone(),
+            provider_source: provider_source.clone(),
+            device_key: field_raw_string(device, "device_key")
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("device={device_index}")),
+            uuid: field_raw_string(device, "uuid").map(str::to_string),
+            core_clock_mhz: field_raw_f64(device, "core_clock_mhz"),
+            actual_mhz: field_raw_f64(device, "sysman.frequency_domains.0.actual_mhz"),
+            request_mhz: field_raw_f64(device, "sysman.frequency_domains.0.request_mhz"),
+            memory_used_mib,
+            memory_total_mib,
+            power_w: field_raw_f64(device, "sysman.power_domains.0.watts_delta"),
+            temperature_c: temperature_reading(device),
+            engine_utilizations,
+        });
+    }
+
+    Ok(devices)
+}
+
+fn field_object<'a>(object: &'a Value, key: &str) -> Option<&'a Value> {
+    object.get(key)
+}
+
+fn field_raw<'a>(object: &'a Value, key: &str) -> Option<&'a Value> {
+    field_object(object, key)?.get("raw")
+}
+
+fn field_raw_string<'a>(object: &'a Value, key: &str) -> Option<&'a str> {
+    field_raw(object, key)?.as_str()
+}
+
+fn field_raw_u64(object: &Value, key: &str) -> Option<u64> {
+    field_raw(object, key)?.as_u64()
+}
+
+fn field_raw_f64(object: &Value, key: &str) -> Option<f64> {
+    field_raw(object, key)?.as_f64()
+}
+
+fn field_raw_bool(object: &Value, key: &str) -> Option<bool> {
+    field_raw(object, key)?.as_bool()
+}
+
+fn temperature_reading(device: &Value) -> Option<f64> {
+    let object = device.as_object()?;
+    for (key, value) in object.iter() {
+        if !key.starts_with("sysman.temperature_sensors.") || !key.ends_with(".state") {
+            continue;
+        }
+        if let Some(temp_c) = value
+            .get("raw")
+            .and_then(Value::as_object)
+            .and_then(|raw| raw.get("temperature_c"))
+            .and_then(Value::as_f64)
+        {
+            return Some(temp_c);
+        }
+    }
+    None
 }
 
 fn bytes_to_mib(bytes: u64) -> u64 {
