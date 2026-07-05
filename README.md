@@ -390,14 +390,15 @@ For automated watch checks, avoid `Select-Object -First ...` as final evidence b
 | dev/0.2.6 | Experimental AMD ADL provider foundation |
 | dev/0.2.7 | NVML provenance and expanded NVIDIA stats |
 | dev/0.2.8 | AMD ADL discovery routed through `wtg.exe --provider amd` |
+| dev/0.2.9 | Intel Level Zero/Sysman provider-boundary evidence routed through `wtg.exe --provider intel` |
 | v0.3+ | Optional UI and distribution hardening |
 
 ## Next Immediate Step
 
-- Keep 0.3.x scoped to AMD/Intel provider-native usable telemetry without NVML parity claims.
-- Capture full-power AC versus reduced USB-C behavior as a later validation cycle.
-- Keep NVIDIA/NVML as the primary truth provider while ADL remains provider-scoped experimental telemetry.
-- Keep README as a project entry point and maintain detailed operational docs under `docs/` and `artifacts/dev/`.
+- Keep 0.3.0 scoped to the eGUI provider-backed adapter/device view.
+- Preserve the existing Devices pane and right-side detail model.
+- Show telemetry-capable devices only: NVIDIA NVML devices, AMD ADL AMD adapters, and Intel Level Zero devices.
+- Do not add topology-only duplicate rows, provider dropdowns, provider trees, or fake cross-vendor normalization.
 
 ## WTG 0.3.x Provider Discovery
 
