@@ -1,4 +1,4 @@
-﻿# WTG Bench v1.1 Hardware and Software Baseline
+# WTG Bench v1.1 Hardware and Software Baseline
 
 ## Status
 
@@ -116,7 +116,7 @@ Current intended provider roles:
 
 ### Riser Kit
 
-Rosewill RCRC-18001 powered PCIe riser adapter.
+Rosewill RCRC-17001 powered PCIe riser adapter.
 
 
 Package contents:
