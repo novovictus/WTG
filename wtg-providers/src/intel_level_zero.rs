@@ -1655,11 +1655,14 @@ fn update_power_delta(key: String, current: ZesPowerEnergyCounter) -> DeltaValue
     let Some(previous) = previous else {
         return DeltaValue::NotAvailable("requires previous sample.".to_string());
     };
-    let delta_time_us = current.timestamp.saturating_sub(previous.timestamp_us);
-    if delta_time_us == 0 {
+    if current.timestamp <= previous.timestamp_us {
         return DeltaValue::NotAvailable("requires positive timestamp delta.".to_string());
     }
-    let delta_energy_uj = current.energy.saturating_sub(previous.energy_uj);
+    if current.energy < previous.energy_uj {
+        return DeltaValue::NotAvailable("counter reset detected.".to_string());
+    }
+    let delta_time_us = current.timestamp - previous.timestamp_us;
+    let delta_energy_uj = current.energy - previous.energy_uj;
     DeltaValue::Ok(delta_energy_uj as f64 / delta_time_us as f64)
 }
 
@@ -1677,11 +1680,14 @@ fn update_engine_delta(key: String, current: ZesEngineStats) -> DeltaValue {
     let Some(previous) = previous else {
         return DeltaValue::NotAvailable("requires previous sample.".to_string());
     };
-    let delta_timestamp = current.timestamp.saturating_sub(previous.timestamp);
-    if delta_timestamp == 0 {
+    if current.timestamp <= previous.timestamp {
         return DeltaValue::NotAvailable("requires positive timestamp delta.".to_string());
     }
-    let delta_active_time = current.active_time.saturating_sub(previous.active_time);
+    if current.active_time < previous.active_time {
+        return DeltaValue::NotAvailable("counter reset detected.".to_string());
+    }
+    let delta_timestamp = current.timestamp - previous.timestamp;
+    let delta_active_time = current.active_time - previous.active_time;
     DeltaValue::Ok((delta_active_time as f64 * 100.0) / delta_timestamp as f64)
 }
 
@@ -3107,6 +3113,190 @@ mod tests {
             .raw,
             json!(30.0)
         );
+    }
+
+    #[test]
+    fn power_delta_requires_positive_timestamp_delta() {
+        clear_delta_caches_for_tests();
+        let device_key = "driver=0,device=0,vendor=0x8086,device=0x4c8b";
+        let mut first_facts = Vec::new();
+        let mut second_facts = Vec::new();
+
+        extend_typed_sysman_facts(
+            1,
+            device_key,
+            "power_domains",
+            0,
+            "zesPowerGetProperties",
+            None,
+            "zesPowerGetEnergyCounter",
+            Some(&sysman_buffer_from_struct(ZesPowerEnergyCounter {
+                energy: 1_000_000,
+                timestamp: 10_000,
+            })),
+            &mut first_facts,
+        );
+        extend_typed_sysman_facts(
+            2,
+            device_key,
+            "power_domains",
+            0,
+            "zesPowerGetProperties",
+            None,
+            "zesPowerGetEnergyCounter",
+            Some(&sysman_buffer_from_struct(ZesPowerEnergyCounter {
+                energy: 2_000_000,
+                timestamp: 10_000,
+            })),
+            &mut second_facts,
+        );
+
+        let watts_delta = find_fact(&second_facts, "sysman.power_domains.0.watts_delta");
+        assert_eq!(watts_delta.state, "not_available");
+        assert_eq!(
+            watts_delta.error_message.as_deref(),
+            Some("requires positive timestamp delta.")
+        );
+    }
+
+    #[test]
+    fn power_delta_marks_counter_reset_as_not_available() {
+        clear_delta_caches_for_tests();
+        let device_key = "driver=0,device=0,vendor=0x8086,device=0x4c8b";
+        let mut first_facts = Vec::new();
+        let mut second_facts = Vec::new();
+
+        extend_typed_sysman_facts(
+            1,
+            device_key,
+            "power_domains",
+            0,
+            "zesPowerGetProperties",
+            None,
+            "zesPowerGetEnergyCounter",
+            Some(&sysman_buffer_from_struct(ZesPowerEnergyCounter {
+                energy: 900_000,
+                timestamp: 10_000,
+            })),
+            &mut first_facts,
+        );
+        extend_typed_sysman_facts(
+            2,
+            device_key,
+            "power_domains",
+            0,
+            "zesPowerGetProperties",
+            None,
+            "zesPowerGetEnergyCounter",
+            Some(&sysman_buffer_from_struct(ZesPowerEnergyCounter {
+                energy: 1_000,
+                timestamp: 20_000,
+            })),
+            &mut second_facts,
+        );
+
+        let watts_delta = find_fact(&second_facts, "sysman.power_domains.0.watts_delta");
+        assert_eq!(watts_delta.state, "not_available");
+        assert_eq!(
+            watts_delta.error_message.as_deref(),
+            Some("counter reset detected.")
+        );
+        assert_eq!(watts_delta.raw, json!(null));
+    }
+
+    #[test]
+    fn engine_delta_requires_positive_timestamp_delta() {
+        clear_delta_caches_for_tests();
+        let device_key = "driver=0,device=0,vendor=0x8086,device=0x4c8b";
+        let mut first_facts = Vec::new();
+        let mut second_facts = Vec::new();
+
+        extend_typed_sysman_facts(
+            1,
+            device_key,
+            "engine_groups",
+            0,
+            "zesEngineGetProperties",
+            None,
+            "zesEngineGetActivity",
+            Some(&sysman_buffer_from_struct(ZesEngineStats {
+                active_time: 1_000,
+                timestamp: 10_000,
+            })),
+            &mut first_facts,
+        );
+        extend_typed_sysman_facts(
+            2,
+            device_key,
+            "engine_groups",
+            0,
+            "zesEngineGetProperties",
+            None,
+            "zesEngineGetActivity",
+            Some(&sysman_buffer_from_struct(ZesEngineStats {
+                active_time: 4_000,
+                timestamp: 10_000,
+            })),
+            &mut second_facts,
+        );
+
+        let utilization_delta = find_fact(
+            &second_facts,
+            "sysman.engine_groups.0.utilization_pct_delta",
+        );
+        assert_eq!(utilization_delta.state, "not_available");
+        assert_eq!(
+            utilization_delta.error_message.as_deref(),
+            Some("requires positive timestamp delta.")
+        );
+    }
+
+    #[test]
+    fn engine_delta_marks_counter_reset_as_not_available() {
+        clear_delta_caches_for_tests();
+        let device_key = "driver=0,device=0,vendor=0x8086,device=0x4c8b";
+        let mut first_facts = Vec::new();
+        let mut second_facts = Vec::new();
+
+        extend_typed_sysman_facts(
+            1,
+            device_key,
+            "engine_groups",
+            0,
+            "zesEngineGetProperties",
+            None,
+            "zesEngineGetActivity",
+            Some(&sysman_buffer_from_struct(ZesEngineStats {
+                active_time: 9_000,
+                timestamp: 10_000,
+            })),
+            &mut first_facts,
+        );
+        extend_typed_sysman_facts(
+            2,
+            device_key,
+            "engine_groups",
+            0,
+            "zesEngineGetProperties",
+            None,
+            "zesEngineGetActivity",
+            Some(&sysman_buffer_from_struct(ZesEngineStats {
+                active_time: 1_000,
+                timestamp: 20_000,
+            })),
+            &mut second_facts,
+        );
+
+        let utilization_delta = find_fact(
+            &second_facts,
+            "sysman.engine_groups.0.utilization_pct_delta",
+        );
+        assert_eq!(utilization_delta.state, "not_available");
+        assert_eq!(
+            utilization_delta.error_message.as_deref(),
+            Some("counter reset detected.")
+        );
+        assert_eq!(utilization_delta.raw, json!(null));
     }
 
     #[test]
