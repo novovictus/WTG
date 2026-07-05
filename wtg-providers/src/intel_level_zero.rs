@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::{c_char, c_void, CStr, OsStr};
 use std::iter;
 use std::mem::{size_of, MaybeUninit};
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{self, NonNull};
 use std::sync::{Mutex, OnceLock};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -18,6 +19,7 @@ const STATS_SCHEMA: &str = "wtg.intel_level_zero.stats.v3";
 const ZE_RESULT_SUCCESS: i32 = 0;
 const ZE_MAX_DEVICE_NAME: usize = 256;
 const SYSMAN_BUFFER_BYTES: usize = 512;
+const FIRST_VISIBLE_SAMPLE_PRIMING_DELAY_MS: u64 = 250;
 
 type ZeInit = unsafe extern "C" fn(u32) -> i32;
 type ZeDriverGet = unsafe extern "C" fn(*mut u32, *mut *mut c_void) -> i32;
@@ -363,6 +365,34 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
     }
 }
 
+fn collect_visible_sample_with_priming_impl<F, S>(
+    sample_seq: u64,
+    priming_delay_ms: u64,
+    mut collect: F,
+    sleep: S,
+) -> ProviderSample
+where
+    F: FnMut(u64) -> ProviderSample,
+    S: FnOnce(std::time::Duration),
+{
+    let priming_sample = collect(sample_seq);
+    if sample_status(&priming_sample) != "ok" {
+        return priming_sample;
+    }
+
+    sleep(std::time::Duration::from_millis(priming_delay_ms));
+    collect(sample_seq)
+}
+
+pub fn collect_visible_sample(sample_seq: u64) -> ProviderSample {
+    collect_visible_sample_with_priming_impl(
+        sample_seq,
+        FIRST_VISIBLE_SAMPLE_PRIMING_DELAY_MS,
+        collect_once,
+        thread::sleep,
+    )
+}
+
 pub fn format_snapshot(sample: &ProviderSample) -> String {
     let mut lines = Vec::new();
     if sample.status != "ok" {
@@ -372,16 +402,6 @@ pub fn format_snapshot(sample: &ProviderSample) -> String {
         }
         return lines.join("\n");
     }
-
-    lines.push(format!(
-        "Intel driver records returned: {}",
-        sample.driver_record_count
-    ));
-    lines.push(format!(
-        "Intel device records returned: {}",
-        sample.device_record_count
-    ));
-    lines.push(String::new());
 
     for device in sample.devices.iter() {
         push_snapshot_device_lines(&mut lines, device);
@@ -402,10 +422,6 @@ pub fn format_watch_sample(sample: &ProviderSample) -> String {
         return lines.join("\n");
     }
 
-    lines.push(format!(
-        "Intel drivers: {} | devices: {}",
-        sample.driver_record_count, sample.device_record_count
-    ));
     lines.push(String::new());
     for (index, device) in sample.devices.iter().enumerate() {
         push_watch_device_lines(&mut lines, device);
@@ -1704,57 +1720,259 @@ fn push_non_negative_f64_fact(
     }
 }
 
-fn push_snapshot_device_lines(lines: &mut Vec<String>, device: &DeviceRecord) {
+fn find_fact_any<'a>(device: &'a DeviceRecord, metric_key: &str) -> Option<&'a IntelFact> {
+    device
+        .facts
+        .iter()
+        .find(|fact| fact.metric_key == metric_key)
+}
+
+fn fact_reason(device: &DeviceRecord, metric_key: &str) -> Option<String> {
+    let fact = find_fact_any(device, metric_key)?;
+    match fact.state {
+        "not_available" | "error" => fact
+            .error_message
+            .as_deref()
+            .map(concise_unavailable_reason),
+        _ => None,
+    }
+}
+
+fn concise_unavailable_reason(message: &str) -> String {
+    let message = message.trim().trim_end_matches('.');
+    if message.ends_with("returned zero handles") {
+        return "zero handles".to_string();
+    }
+    if message.starts_with("missing optional Sysman symbol ") {
+        return "missing optional symbol".to_string();
+    }
+    if message == "Intel Sysman is unavailable because zesInit did not complete successfully" {
+        return "Sysman unavailable".to_string();
+    }
+    message.to_string()
+}
+
+fn format_human_unavailable(label: &str, reason: Option<String>) -> String {
+    match reason {
+        Some(reason) if !reason.is_empty() => format!("{label}: unavailable, {reason}"),
+        _ => format!("{label}: unavailable"),
+    }
+}
+
+fn format_decimal(value: f64, decimals: usize) -> String {
+    let rendered = format!("{value:.decimals$}");
+    if let Some(trimmed) = rendered.strip_suffix(".0") {
+        trimmed.to_string()
+    } else {
+        rendered
+    }
+}
+
+fn format_mhz(value: f64) -> String {
+    format_decimal(value, 1)
+}
+
+fn format_mib(bytes: u64) -> String {
+    format_decimal(bytes as f64 / 1024.0 / 1024.0, 1)
+}
+
+fn format_watts(value: f64) -> String {
+    format_decimal(value, 1)
+}
+
+fn format_pct_delta(value: f64) -> String {
+    format!("{value:.2}")
+}
+
+fn indexed_metric_indexes(device: &DeviceRecord, prefix: &str, suffix: &str) -> Vec<usize> {
+    let mut indexes = BTreeSet::new();
+    for fact in device.facts.iter() {
+        let Some(index_text) = fact
+            .metric_key
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(suffix))
+        else {
+            continue;
+        };
+        if let Ok(index) = index_text.parse::<usize>() {
+            indexes.insert(index);
+        }
+    }
+    indexes.into_iter().collect()
+}
+
+fn sum_indexed_u64_facts(device: &DeviceRecord, prefix: &str, suffix: &str) -> Option<u64> {
+    let mut total = 0u64;
+    let mut saw_any = false;
+    for index in indexed_metric_indexes(device, prefix, suffix) {
+        if let Some(value) = fact_u64(device, &format!("{prefix}{index}{suffix}")) {
+            total = total.saturating_add(value);
+            saw_any = true;
+        }
+    }
+    saw_any.then_some(total)
+}
+
+fn push_memory_line(lines: &mut Vec<String>, device: &DeviceRecord) {
+    let prefix = "sysman.memory_modules.";
+    let used = sum_indexed_u64_facts(device, prefix, ".used_bytes");
+    let size = sum_indexed_u64_facts(device, prefix, ".size_bytes");
+    match (used, size) {
+        (Some(used), Some(size)) => lines.push(format!(
+            "  Memory: {} MiB / {} MiB",
+            format_mib(used),
+            format_mib(size)
+        )),
+        _ => lines.push(format_human_unavailable(
+            "  Memory",
+            fact_reason(device, "sysman.memory_modules.status"),
+        )),
+    }
+}
+
+fn push_power_line(lines: &mut Vec<String>, device: &DeviceRecord) {
+    let prefix = "sysman.power_domains.";
+    let indexes = indexed_metric_indexes(device, prefix, ".watts_delta");
+    if let Some(index) = indexes.first().copied() {
+        let metric_key = format!("{prefix}{index}.watts_delta");
+        if let Some(value) = fact_number(device, &metric_key) {
+            lines.push(format!("  Power: {} W", format_watts(value)));
+        } else {
+            lines.push(format_human_unavailable(
+                "  Power",
+                fact_reason(device, &metric_key)
+                    .or_else(|| fact_reason(device, "sysman.power_domains.status")),
+            ));
+        }
+        return;
+    }
+
+    lines.push(format_human_unavailable(
+        "  Power",
+        fact_reason(device, "sysman.power_domains.status"),
+    ));
+}
+
+fn push_engine_lines(lines: &mut Vec<String>, device: &DeviceRecord) {
+    let prefix = "sysman.engine_groups.";
+    let indexes = indexed_metric_indexes(device, prefix, ".utilization_pct_delta");
+    if indexes.is_empty() {
+        lines.push(format_human_unavailable(
+            "  Engine activity",
+            fact_reason(device, "sysman.engine_groups.status"),
+        ));
+        return;
+    }
+
+    for index in indexes {
+        let metric_key = format!("{prefix}{index}.utilization_pct_delta");
+        if let Some(value) = fact_number(device, &metric_key) {
+            lines.push(format!("  Engine {index}: {}%", format_pct_delta(value)));
+        } else {
+            lines.push(format_human_unavailable(
+                &format!("  Engine {index}"),
+                fact_reason(device, &metric_key)
+                    .or_else(|| fact_reason(device, "sysman.engine_groups.status")),
+            ));
+        }
+    }
+}
+
+fn push_frequency_line(lines: &mut Vec<String>, device: &DeviceRecord) {
+    let prefix = "sysman.frequency_domains.";
+    let mut indexes = indexed_metric_indexes(device, prefix, ".actual_mhz");
+    indexes.extend(indexed_metric_indexes(device, prefix, ".request_mhz"));
+    indexes.sort_unstable();
+    indexes.dedup();
+    for index in indexes {
+        let actual = fact_number(device, &format!("{prefix}{index}.actual_mhz"));
+        let request = fact_number(device, &format!("{prefix}{index}.request_mhz"));
+        if actual.is_none() && request.is_none() {
+            continue;
+        }
+
+        let mut parts = Vec::new();
+        if let Some(actual) = actual {
+            parts.push(format!("actual {} MHz", format_mhz(actual)));
+        }
+        if let Some(request) = request {
+            parts.push(format!("requested {} MHz", format_mhz(request)));
+        }
+        lines.push(format!("  Frequency: {}", parts.join(", ")));
+        return;
+    }
+
+    lines.push(format_human_unavailable(
+        "  Frequency",
+        fact_reason(device, "sysman.frequency_domains.status"),
+    ));
+}
+
+fn temperature_reading_c(device: &DeviceRecord) -> Option<f64> {
+    let prefix = "sysman.temperature_sensors.";
+    for index in indexed_metric_indexes(device, prefix, ".state") {
+        let Some(fact) = find_fact_any(device, &format!("{prefix}{index}.state")) else {
+            continue;
+        };
+        let Some(raw) = fact.raw.as_object() else {
+            continue;
+        };
+        if let Some(value) = raw.get("temperature_c").and_then(Value::as_f64) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn push_temperature_line(lines: &mut Vec<String>, device: &DeviceRecord) {
+    if let Some(temperature_c) = temperature_reading_c(device) {
+        lines.push(format!(
+            "  Temperature: {} C",
+            format_decimal(temperature_c, 1)
+        ));
+        return;
+    }
+
+    lines.push(format_human_unavailable(
+        "  Temperature",
+        fact_reason(device, "sysman.temperature_sensors.status"),
+    ));
+}
+
+fn push_compact_device_lines(lines: &mut Vec<String>, device: &DeviceRecord) {
     if let Some(device_name) = fact_string(device, "device_name") {
         lines.push(format!(
             "Intel device {}: {device_name}",
             device.device_index
         ));
-        lines.push(format!("  Device key: {}", device.key));
     } else {
         lines.push(format!(
             "Intel device {} [{}]",
             device.device_index, device.key
         ));
     }
-    if let Some(device_type) = fact_string(device, "device_type") {
-        lines.push(format!("  Device type: {device_type}"));
-    }
-    if let Some(vendor_id) = fact_u64(device, "vendor_id") {
-        lines.push(format!("  Vendor ID: 0x{vendor_id:04x} ({vendor_id})"));
-    }
-    if let Some(device_id) = fact_u64(device, "device_id") {
-        lines.push(format!("  Device ID: 0x{device_id:04x} ({device_id})"));
-    }
+    lines.push(format!("  Device key: {}", device.key));
+
     if let Some(uuid) = fact_string(device, "uuid") {
         lines.push(format!("  UUID: {uuid}"));
     }
     if let Some(core_clock_mhz) = fact_number(device, "core_clock_mhz") {
-        lines.push(format!("  Core clock: {core_clock_mhz:.1} MHz"));
+        lines.push(format!("  Core clock: {} MHz", format_mhz(core_clock_mhz)));
     }
-    if !device.unavailable.is_empty() {
-        lines.push(format!("  Unavailable: {}", device.unavailable.join(", ")));
-    }
+
+    push_memory_line(lines, device);
+    push_power_line(lines, device);
+    push_engine_lines(lines, device);
+    push_frequency_line(lines, device);
+    push_temperature_line(lines, device);
+}
+
+fn push_snapshot_device_lines(lines: &mut Vec<String>, device: &DeviceRecord) {
+    push_compact_device_lines(lines, device);
 }
 
 fn push_watch_device_lines(lines: &mut Vec<String>, device: &DeviceRecord) {
-    if let Some(device_name) = fact_string(device, "device_name") {
-        lines.push(format!("{device_name} [{}]", device.key));
-    } else {
-        lines.push(format!(
-            "Intel device {} [{}]",
-            device.device_index, device.key
-        ));
-    }
-    if let Some(device_type) = fact_string(device, "device_type") {
-        lines.push(format!("  device type: {device_type}"));
-    }
-    if let Some(core_clock_mhz) = fact_number(device, "core_clock_mhz") {
-        lines.push(format!("  core clock: {core_clock_mhz:.1} MHz"));
-    }
-    if !device.unavailable.is_empty() {
-        lines.push(format!("  unavailable: {}", device.unavailable.join(", ")));
-    }
+    push_compact_device_lines(lines, device);
 }
 
 fn push_probe_device_lines(lines: &mut Vec<String>, device: &DeviceRecord) {
@@ -2136,12 +2354,14 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        build_device_record, clear_delta_caches_for_tests, extend_typed_sysman_facts,
-        format_probe_snapshot, format_snapshot, format_stats_snapshot_json, not_available_fact,
-        ok_fact, sample_status, DeviceRecord, IntelFact, LevelZeroLibrary, ProviderSample,
-        SysmanBuffer, ZeDeviceProperties, ZesEngineStats, ZesFreqProperties, ZesFreqState,
-        ZesMemProperties, ZesMemState, ZesPowerEnergyCounter, PROVIDER, PROVIDER_AUTHORITY, SOURCE,
-        STATS_SCHEMA, SYSMAN_BUFFER_BYTES, TELEMETRY_CLASS, ZE_RESULT_SUCCESS,
+        build_device_record, clear_delta_caches_for_tests,
+        collect_visible_sample_with_priming_impl, extend_typed_sysman_facts, format_probe_snapshot,
+        format_snapshot, format_stats_snapshot_json, format_watch_sample, not_available_fact,
+        number_fact_f64, number_fact_u64, ok_fact, sample_status, DeviceRecord, IntelFact,
+        LevelZeroLibrary, ProviderSample, SysmanBuffer, ZeDeviceProperties, ZesEngineStats,
+        ZesFreqProperties, ZesFreqState, ZesMemProperties, ZesMemState, ZesPowerEnergyCounter,
+        PROVIDER, PROVIDER_AUTHORITY, SOURCE, STATS_SCHEMA, SYSMAN_BUFFER_BYTES, TELEMETRY_CLASS,
+        ZE_RESULT_SUCCESS,
     };
 
     unsafe extern "C" fn stub_init(_: u32) -> i32 {
@@ -2179,6 +2399,33 @@ mod tests {
         0
     }
 
+    fn provider_sample_for_test(status: &'static str, sample_seq: u64) -> ProviderSample {
+        ProviderSample {
+            wtg_version: "0.3.0",
+            provider: PROVIDER,
+            provider_authority: PROVIDER_AUTHORITY,
+            provider_source: SOURCE,
+            telemetry_class: TELEMETRY_CLASS,
+            status,
+            sample_seq,
+            timestamp_unix_ms: 0,
+            dll_name: None,
+            dll_path: None,
+            telemetry_exports_matched: 0,
+            sysman_exports_matched: 0,
+            optional_calls_attempted: 0,
+            optional_calls_ok: 0,
+            optional_calls_unsupported: 0,
+            optional_calls_not_available: 0,
+            optional_calls_error: 0,
+            driver_record_count: 0,
+            device_record_count: 0,
+            sysman_facts: Vec::new(),
+            devices: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+
     fn stub_library() -> ManuallyDrop<LevelZeroLibrary> {
         ManuallyDrop::new(LevelZeroLibrary {
             module: NonNull::dangling(),
@@ -2214,6 +2461,52 @@ mod tests {
         assert_eq!(SOURCE, "wtg.provider.intel.level_zero");
         assert_eq!(TELEMETRY_CLASS, "provider_telemetry");
         assert_eq!(STATS_SCHEMA, "wtg.intel_level_zero.stats.v3");
+    }
+
+    #[test]
+    fn visible_sample_priming_collects_twice_when_priming_succeeds() {
+        let mut collected = Vec::new();
+        let mut slept = Vec::new();
+
+        let sample = collect_visible_sample_with_priming_impl(
+            0,
+            250,
+            |sample_seq| {
+                collected.push(sample_seq);
+                if collected.len() == 1 {
+                    provider_sample_for_test("ok", sample_seq)
+                } else {
+                    provider_sample_for_test("ok", sample_seq + 10)
+                }
+            },
+            |duration| slept.push(duration.as_millis() as u64),
+        );
+
+        assert_eq!(collected, vec![0, 0]);
+        assert_eq!(slept, vec![250]);
+        assert_eq!(sample.sample_seq, 10);
+        assert_eq!(sample.status, "ok");
+    }
+
+    #[test]
+    fn visible_sample_priming_returns_first_sample_when_priming_is_unavailable() {
+        let mut collected = Vec::new();
+        let mut slept = false;
+
+        let sample = collect_visible_sample_with_priming_impl(
+            7,
+            250,
+            |sample_seq| {
+                collected.push(sample_seq);
+                provider_sample_for_test("unavailable", sample_seq)
+            },
+            |_| slept = true,
+        );
+
+        assert_eq!(collected, vec![7]);
+        assert!(!slept);
+        assert_eq!(sample.sample_seq, 7);
+        assert_eq!(sample.status, "unavailable");
     }
 
     #[test]
@@ -2276,11 +2569,14 @@ mod tests {
         assert_eq!(sample_status(&sample), "ok");
         let rendered = format_snapshot(&sample);
         assert!(rendered.contains("Intel device 0 [driver=0,device=0,vendor=0x8086,device=0x4c8b]"));
-        assert!(rendered.contains("Vendor ID: 0x8086 (32902)"));
-        assert!(rendered.contains("Device ID: 0x4c8b (19595)"));
-        assert!(
-            rendered.contains("Unavailable: name, activity, memory, power, temperature, frequency")
-        );
+        assert!(rendered.contains("Device key: driver=0,device=0,vendor=0x8086,device=0x4c8b"));
+        assert!(rendered.contains("UUID: 240000002000000086808b4c04000000"));
+        assert!(rendered.contains("Core clock: 1300 MHz"));
+        assert!(rendered.contains("Memory: unavailable"));
+        assert!(rendered.contains("Power: unavailable"));
+        assert!(rendered.contains("Engine activity: unavailable"));
+        assert!(rendered.contains("Frequency: unavailable"));
+        assert!(rendered.contains("Temperature: unavailable"));
     }
 
     #[test]
@@ -2436,6 +2732,119 @@ mod tests {
         assert!(
             probe.contains("device.sysman.temperature_sensors.status: not_available (raw=null)")
         );
+    }
+
+    #[test]
+    fn compact_human_snapshot_uses_typed_sysman_facts_and_reasons() {
+        clear_delta_caches_for_tests();
+        let device = DeviceRecord {
+            driver_index: 0,
+            device_index: 0,
+            key: "driver=0,device=0,vendor=0x8086,device=0x4c8b".to_string(),
+            facts: vec![
+                ok_fact(
+                    "device_name",
+                    "zeDeviceGetProperties",
+                    json!("Intel UHD 730"),
+                ),
+                ok_fact(
+                    "device_key",
+                    "wtg.intel.level_zero.device_key",
+                    json!("driver=0,device=0,vendor=0x8086,device=0x4c8b"),
+                ),
+                ok_fact(
+                    "uuid",
+                    "zeDeviceGetProperties",
+                    json!("240000002000000086808b4c04000000"),
+                ),
+                number_fact_u64("core_clock_mhz", "zeDeviceGetProperties", 1300, Some("mhz")),
+                number_fact_u64(
+                    "sysman.memory_modules.0.used_bytes",
+                    "zesMemoryGetState",
+                    9_160 * 1024 * 1024,
+                    Some("bytes"),
+                ),
+                number_fact_u64(
+                    "sysman.memory_modules.0.size_bytes",
+                    "zesMemoryGetProperties",
+                    16_384 * 1024 * 1024,
+                    Some("bytes"),
+                ),
+                not_available_fact(
+                    "sysman.power_domains.0.watts_delta",
+                    "zesPowerGetEnergyCounter",
+                    "requires previous sample.".to_string(),
+                ),
+                not_available_fact(
+                    "sysman.engine_groups.0.utilization_pct_delta",
+                    "zesEngineGetActivity",
+                    "requires previous sample.".to_string(),
+                ),
+                number_fact_f64(
+                    "sysman.frequency_domains.0.actual_mhz",
+                    "zesFrequencyGetState",
+                    1300.0,
+                    Some("mhz"),
+                ),
+                number_fact_f64(
+                    "sysman.frequency_domains.0.request_mhz",
+                    "zesFrequencyGetState",
+                    350.0,
+                    Some("mhz"),
+                ),
+                number_fact_f64(
+                    "sysman.frequency_domains.0.max_mhz",
+                    "zesFrequencyGetProperties",
+                    0.0,
+                    Some("mhz"),
+                ),
+                not_available_fact(
+                    "sysman.temperature_sensors.status",
+                    "zesDeviceEnumTemperatureSensors",
+                    "zesDeviceEnumTemperatureSensors returned zero handles.".to_string(),
+                ),
+            ],
+            unavailable: vec!["temperature"],
+        };
+        let sample = ProviderSample {
+            wtg_version: "0.3.0",
+            provider: PROVIDER,
+            provider_authority: PROVIDER_AUTHORITY,
+            provider_source: SOURCE,
+            telemetry_class: TELEMETRY_CLASS,
+            status: "ok",
+            sample_seq: 0,
+            timestamp_unix_ms: 0,
+            dll_name: None,
+            dll_path: None,
+            telemetry_exports_matched: 4,
+            sysman_exports_matched: 16,
+            optional_calls_attempted: 0,
+            optional_calls_ok: 0,
+            optional_calls_unsupported: 0,
+            optional_calls_not_available: 0,
+            optional_calls_error: 0,
+            driver_record_count: 1,
+            device_record_count: 1,
+            sysman_facts: Vec::new(),
+            devices: vec![device],
+            errors: Vec::new(),
+        };
+
+        let rendered = format_snapshot(&sample);
+        assert!(rendered.contains("Intel device 0: Intel UHD 730"));
+        assert!(rendered.contains("Device key: driver=0,device=0,vendor=0x8086,device=0x4c8b"));
+        assert!(rendered.contains("UUID: 240000002000000086808b4c04000000"));
+        assert!(rendered.contains("Core clock: 1300 MHz"));
+        assert!(rendered.contains("Memory: 9160 MiB / 16384 MiB"));
+        assert!(rendered.contains("Power: unavailable, requires previous sample"));
+        assert!(rendered.contains("Engine 0: unavailable, requires previous sample"));
+        assert!(rendered.contains("Frequency: actual 1300 MHz, requested 350 MHz"));
+        assert!(rendered.contains("Temperature: unavailable, zero handles"));
+        assert!(!rendered.contains("source_api"));
+        assert!(!rendered.contains("buffer_hex"));
+        assert!(!rendered.contains("stype"));
+        assert!(!rendered.contains("max_mhz"));
     }
 
     fn sysman_buffer_from_struct<T: Copy>(value: T) -> SysmanBuffer {
@@ -2698,5 +3107,107 @@ mod tests {
             .raw,
             json!(30.0)
         );
+    }
+
+    #[test]
+    fn compact_watch_output_shows_delta_values() {
+        let sample = ProviderSample {
+            wtg_version: "0.3.0",
+            provider: PROVIDER,
+            provider_authority: PROVIDER_AUTHORITY,
+            provider_source: SOURCE,
+            telemetry_class: TELEMETRY_CLASS,
+            status: "ok",
+            sample_seq: 2,
+            timestamp_unix_ms: 0,
+            dll_name: None,
+            dll_path: None,
+            telemetry_exports_matched: 4,
+            sysman_exports_matched: 16,
+            optional_calls_attempted: 0,
+            optional_calls_ok: 0,
+            optional_calls_unsupported: 0,
+            optional_calls_not_available: 0,
+            optional_calls_error: 0,
+            driver_record_count: 1,
+            device_record_count: 1,
+            sysman_facts: Vec::new(),
+            devices: vec![DeviceRecord {
+                driver_index: 0,
+                device_index: 0,
+                key: "driver=0,device=0,vendor=0x8086,device=0x4c8b".to_string(),
+                facts: vec![
+                    ok_fact(
+                        "device_name",
+                        "zeDeviceGetProperties",
+                        json!("Intel UHD 730"),
+                    ),
+                    number_fact_u64(
+                        "sysman.memory_modules.0.used_bytes",
+                        "zesMemoryGetState",
+                        9_160 * 1024 * 1024,
+                        Some("bytes"),
+                    ),
+                    number_fact_u64(
+                        "sysman.memory_modules.0.size_bytes",
+                        "zesMemoryGetProperties",
+                        16_384 * 1024 * 1024,
+                        Some("bytes"),
+                    ),
+                    number_fact_f64(
+                        "sysman.power_domains.0.watts_delta",
+                        "zesPowerGetEnergyCounter",
+                        12.2,
+                        Some("watts"),
+                    ),
+                    number_fact_f64(
+                        "sysman.engine_groups.0.utilization_pct_delta",
+                        "zesEngineGetActivity",
+                        0.04,
+                        Some("pct"),
+                    ),
+                    number_fact_f64(
+                        "sysman.engine_groups.1.utilization_pct_delta",
+                        "zesEngineGetActivity",
+                        0.00,
+                        Some("pct"),
+                    ),
+                    number_fact_f64(
+                        "sysman.engine_groups.2.utilization_pct_delta",
+                        "zesEngineGetActivity",
+                        0.00,
+                        Some("pct"),
+                    ),
+                    number_fact_f64(
+                        "sysman.frequency_domains.0.actual_mhz",
+                        "zesFrequencyGetState",
+                        1300.0,
+                        Some("mhz"),
+                    ),
+                    number_fact_f64(
+                        "sysman.frequency_domains.0.request_mhz",
+                        "zesFrequencyGetState",
+                        350.0,
+                        Some("mhz"),
+                    ),
+                    not_available_fact(
+                        "sysman.temperature_sensors.status",
+                        "zesDeviceEnumTemperatureSensors",
+                        "zesDeviceEnumTemperatureSensors returned zero handles.".to_string(),
+                    ),
+                ],
+                unavailable: vec!["temperature"],
+            }],
+            errors: Vec::new(),
+        };
+
+        let rendered = format_watch_sample(&sample);
+        assert!(rendered.contains("sample_seq: 2"));
+        assert!(rendered.contains("Intel device 0: Intel UHD 730"));
+        assert!(rendered.contains("Power: 12.2 W"));
+        assert!(rendered.contains("Engine 0: 0.04%"));
+        assert!(rendered.contains("Engine 1: 0.00%"));
+        assert!(rendered.contains("Engine 2: 0.00%"));
+        assert!(rendered.contains("Frequency: actual 1300 MHz, requested 350 MHz"));
     }
 }

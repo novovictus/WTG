@@ -418,7 +418,7 @@ fn run_intel_provider(args: &CliArgs) -> ! {
     }
 
     if args.once && args.stats {
-        let sample = intel_level_zero::collect_once(0);
+        let sample = intel_level_zero::collect_visible_sample(0);
         let tick_ts = now_ts();
         println!(
             "{}",
@@ -439,6 +439,16 @@ fn run_intel_provider(args: &CliArgs) -> ! {
 
         let sleep_dur = Duration::from_millis(interval_ms);
         let mut sample_seq = 0u64;
+        let first_sample = intel_level_zero::collect_visible_sample(sample_seq);
+        let first_tick_ts = now_ts();
+        println!(
+            "{}",
+            intel_level_zero::format_stats_snapshot_json(&first_sample, sample_seq, &first_tick_ts)
+        );
+        println!();
+        sample_seq = sample_seq.saturating_add(1);
+        thread::sleep(sleep_dur);
+
         loop {
             let sample = intel_level_zero::collect_once(sample_seq);
             let tick_ts = now_ts();
@@ -454,7 +464,7 @@ fn run_intel_provider(args: &CliArgs) -> ! {
 
     print_product_header();
     if args.once {
-        let sample = intel_level_zero::collect_once(0);
+        let sample = intel_level_zero::collect_visible_sample(0);
         print_mode_header("snapshot", args.provider, None);
         println!("Provider source: {}", intel_level_zero::provider_source());
         println!("Telemetry class: {}", intel_level_zero::telemetry_class());
@@ -479,6 +489,13 @@ fn run_intel_provider(args: &CliArgs) -> ! {
 
     let sleep_dur = Duration::from_millis(interval_ms);
     let mut sample_seq = 0u64;
+    let first_sample = intel_level_zero::collect_visible_sample(sample_seq);
+    println!("--- tick {} ---", now_ts());
+    println!("{}", intel_level_zero::format_watch_sample(&first_sample));
+    println!();
+    sample_seq = sample_seq.saturating_add(1);
+    thread::sleep(sleep_dur);
+
     loop {
         let sample = intel_level_zero::collect_once(sample_seq);
         println!("--- tick {} ---", now_ts());
