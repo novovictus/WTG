@@ -321,6 +321,8 @@ fn emit_sample(sample_seq: u64) {
 }
 
 pub fn collect_once(sample_seq: u64) -> ProviderSample {
+    // TODO: Follow-up: add a long-lived AMD ADL provider session for watch/eGUI to avoid
+    // repeated load/init/free churn on each collect_once call.
     match AdlLibrary::load() {
         Ok(library) => match AdlSession::create(&library) {
             Ok(_session) => match enumerate_adapters(&library) {
@@ -748,6 +750,13 @@ fn yes_no(value: bool) -> &'static str {
     }
 }
 
+fn yes_no_or_unavailable(value: Option<bool>) -> &'static str {
+    match value {
+        Some(value) => yes_no(value),
+        None => "unavailable",
+    }
+}
+
 fn push_snapshot_group_lines(
     lines: &mut Vec<String>,
     sample: &ProviderSample,
@@ -781,7 +790,7 @@ fn push_snapshot_group_lines(
 
     lines.push(format!(
         "  Active: {}",
-        yes_no(adapter_active_value(adapter).unwrap_or(false))
+        yes_no_or_unavailable(adapter_active_value(adapter))
     ));
     if let Some(raw) = call_raw(adapter, "overdrive5_current_activity") {
         if let Some(activity_percent) = raw.get("activity_percent").and_then(Value::as_i64) {
@@ -865,7 +874,7 @@ fn push_probe_group_lines(
 
     lines.push(format!(
         "adapter.active: {}",
-        yes_no(adapter_active_value(adapter).unwrap_or(false))
+        yes_no_or_unavailable(adapter_active_value(adapter))
     ));
     if let Some(raw) = call_raw(adapter, "overdrive5_current_activity") {
         if let Some(activity_percent) = raw.get("activity_percent").and_then(Value::as_i64) {
@@ -974,7 +983,7 @@ fn push_watch_group_lines(
 
     lines.push(format!(
         "  active: {}",
-        yes_no(adapter_active_value(primary_adapter).unwrap_or(false))
+        yes_no_or_unavailable(adapter_active_value(primary_adapter))
     ));
 
     if let Some(raw) = call_raw(primary_adapter, "overdrive5_current_activity") {
@@ -2455,11 +2464,86 @@ extern "system" {
 #[cfg(test)]
 mod tests {
     use super::{
-        call_from_error, duplicate_extended_discovery_call, fan_metric_key, fan_unit, parse_args,
-        physical_adapter_key, AdapterInfo, CliArgs, Mode, ADL_MAX_PATH, DEFAULT_INTERVAL_MS,
-        PROVIDER, SOURCE, TELEMETRY_CLASS,
+        call_from_error, duplicate_extended_discovery_call, fan_metric_key, fan_unit,
+        format_snapshot, format_watch_sample, parse_args, physical_adapter_key, AdapterInfo,
+        AdlAdapterRecord, AdlApiCall, AdlRawIdentity, CliArgs, Mode, PhysicalAdapterGroup,
+        ProviderSample, SampleReturnCodes, ADL_MAX_PATH, DEFAULT_INTERVAL_MS, PROVIDER, SOURCE,
+        TELEMETRY_CLASS,
     };
     use serde_json::json;
+
+    fn amd_sample_with_unavailable_active() -> ProviderSample {
+        ProviderSample {
+            wtg_version: "0.3.0",
+            source: SOURCE,
+            telemetry_class: TELEMETRY_CLASS,
+            provider: PROVIDER,
+            provider_authority: "AMD ADL",
+            status: "ok",
+            sample_seq: 0,
+            timestamp_unix_ms: 0,
+            dll_name: Some("atiadlxx.dll".to_string()),
+            dll_path: Some("C:\\Windows\\System32\\atiadlxx.dll".to_string()),
+            adl_initialized: true,
+            adl_return_codes: SampleReturnCodes {
+                adl_main_control_create: Some(0),
+                adl_adapter_number_of_adapters_get: Some(0),
+                adl_adapter_adapter_info_get: Some(0),
+            },
+            telemetry_exports_matched: 1,
+            physical_adapter_group_count: 1,
+            amd_physical_adapter_count: 1,
+            non_amd_physical_adapter_count: 0,
+            extended_amd_discovery_run_count: 1,
+            physical_adapter_groups: vec![PhysicalAdapterGroup {
+                physical_adapter_key: "vendor=1002,bus=1,device=0,function=0".to_string(),
+                physical_vendor_id: 1002,
+                physical_adapter_primary_index: 7,
+                logical_record_kind: "adl_display_record",
+                logical_adapter_indices: vec![7],
+                logical_record_count: 1,
+                extended_amd_discovery_attempted: true,
+            }],
+            adapters: vec![AdlAdapterRecord {
+                adl_raw_identity: AdlRawIdentity {
+                    adl_adapter_index: 7,
+                    adl_udid: String::new(),
+                    adl_adapter_name: "AMD Radeon Test".to_string(),
+                    adl_display_name: String::new(),
+                    adl_vendor_id: 1002,
+                    adl_present: true,
+                    adl_exists: true,
+                    adl_bus_number: 1,
+                    adl_device_number: 0,
+                    adl_function_number: 0,
+                    adl_driver_path: String::new(),
+                    adl_driver_path_ext: String::new(),
+                    adl_pnp_string: String::new(),
+                    adl_os_display_index: 0,
+                },
+                physical_adapter_key: "vendor=1002,bus=1,device=0,function=0".to_string(),
+                physical_adapter_role: "primary",
+                physical_adapter_primary_index: 7,
+                logical_record_kind: "adl_display_record",
+                adl_calls: vec![AdlApiCall {
+                    metric_key: "adapter_active",
+                    source_api: "ADL_Adapter_Active_Get",
+                    state: "unsupported",
+                    adl_return_code: None,
+                    raw: serde_json::Value::Null,
+                    unit: None,
+                    error_message: Some(
+                        "ADL_Adapter_Active_Get symbol unavailable in loaded ADL DLL.".to_string(),
+                    ),
+                }],
+                provider_warnings: vec![
+                    "ADL_Adapter_Active_Get symbol unavailable in loaded ADL DLL.".to_string(),
+                ],
+                provider_errors: Vec::new(),
+            }],
+            errors: Vec::new(),
+        }
+    }
 
     #[test]
     fn parse_once_args() {
@@ -2562,5 +2646,17 @@ mod tests {
                 "primary_adapter_index": 0
             })
         );
+    }
+
+    #[test]
+    fn human_snapshot_marks_unavailable_active_as_unavailable() {
+        let rendered = format_snapshot(&amd_sample_with_unavailable_active());
+        assert!(rendered.contains("  Active: unavailable"));
+    }
+
+    #[test]
+    fn human_watch_marks_unavailable_active_as_unavailable() {
+        let rendered = format_watch_sample(&amd_sample_with_unavailable_active());
+        assert!(rendered.contains("  active: unavailable"));
     }
 }
