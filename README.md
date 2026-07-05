@@ -9,11 +9,11 @@ WTG is a Windows-native GPU telemetry and validation tool focused on NVIDIA/NVML
 
 ## Current Status
 
-Current branch: `dev/0.3.0-provider-discovery`
+Current branch: `dev/0.3.0-egui-provider-adapters`
 
-WTG 0.3.0 starts the provider discovery-to-usable-telemetry cycle for AMD ADL and Intel Level Zero/Sysman. WTG remains NVIDIA/NVML-centric; NVIDIA/NVML is still the primary truth provider and the only provider with the stable expanded `--once --stats` JSON surface.
+WTG 0.3.0 is the eGUI provider-backed adapter view workstream. WTG remains NVIDIA/NVML-centric; NVIDIA/NVML is still the primary truth provider and the default eGUI device path.
 
-AMD ADL and Intel Level Zero/Sysman are provider-scoped discovery paths selected with `--provider amd` and `--provider intel`. In 0.3.x, their focus moves from discovery-grade provider evidence toward usable provider-native telemetry. AMD and Intel output remains read-only and intentionally not translated into NVML field names or cross-vendor equivalence claims.
+The 0.3.0 eGUI work keeps the existing Devices pane and right-side detail model while allowing telemetry-capable devices from NVIDIA NVML, AMD ADL, and Intel Level Zero to appear in the same selectable device list. AMD and Intel output remain provider-scoped and are intentionally not translated into NVML field names or cross-vendor equivalence claims.
 
 Current development builds include:
 
@@ -391,6 +391,7 @@ For automated watch checks, avoid `Select-Object -First ...` as final evidence b
 | dev/0.2.7 | NVML provenance and expanded NVIDIA stats |
 | dev/0.2.8 | AMD ADL discovery routed through `wtg.exe --provider amd` |
 | dev/0.2.9 | Intel Level Zero/Sysman provider-boundary evidence routed through `wtg.exe --provider intel` |
+| dev/0.3.0 | eGUI provider-backed adapter/device view |
 | v0.3+ | Optional UI and distribution hardening |
 
 ## Next Immediate Step
