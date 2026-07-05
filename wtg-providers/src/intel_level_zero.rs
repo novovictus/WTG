@@ -141,6 +141,9 @@ struct EngineDeltaBaseline {
     timestamp: u64,
 }
 
+// These baselines currently live across one-shot collect_once calls in module-level statics.
+// If Intel moves to a long-lived provider session, rerun the idle-vs-reset delta tests because
+// the lifecycle boundary changes what a backward counter means in practice.
 static POWER_DELTA_BASELINES: OnceLock<Mutex<HashMap<String, PowerDeltaBaseline>>> =
     OnceLock::new();
 static ENGINE_DELTA_BASELINES: OnceLock<Mutex<HashMap<String, EngineDeltaBaseline>>> =
@@ -3160,6 +3163,48 @@ mod tests {
     }
 
     #[test]
+    fn power_delta_keeps_same_counter_value_as_idle_zero() {
+        clear_delta_caches_for_tests();
+        let device_key = "driver=0,device=0,vendor=0x8086,device=0x4c8b";
+        let mut first_facts = Vec::new();
+        let mut second_facts = Vec::new();
+
+        extend_typed_sysman_facts(
+            1,
+            device_key,
+            "power_domains",
+            0,
+            "zesPowerGetProperties",
+            None,
+            "zesPowerGetEnergyCounter",
+            Some(&sysman_buffer_from_struct(ZesPowerEnergyCounter {
+                energy: 1_000_000,
+                timestamp: 10_000,
+            })),
+            &mut first_facts,
+        );
+        extend_typed_sysman_facts(
+            2,
+            device_key,
+            "power_domains",
+            0,
+            "zesPowerGetProperties",
+            None,
+            "zesPowerGetEnergyCounter",
+            Some(&sysman_buffer_from_struct(ZesPowerEnergyCounter {
+                energy: 1_000_000,
+                timestamp: 20_000,
+            })),
+            &mut second_facts,
+        );
+
+        let watts_delta = find_fact(&second_facts, "sysman.power_domains.0.watts_delta");
+        assert_eq!(watts_delta.state, "ok");
+        assert_eq!(watts_delta.raw, json!(0.0));
+        assert_eq!(watts_delta.error_message, None);
+    }
+
+    #[test]
     fn power_delta_marks_counter_reset_as_not_available() {
         clear_delta_caches_for_tests();
         let device_key = "driver=0,device=0,vendor=0x8086,device=0x4c8b";
@@ -3249,6 +3294,51 @@ mod tests {
             utilization_delta.error_message.as_deref(),
             Some("requires positive timestamp delta.")
         );
+    }
+
+    #[test]
+    fn engine_delta_keeps_same_counter_value_as_idle_zero() {
+        clear_delta_caches_for_tests();
+        let device_key = "driver=0,device=0,vendor=0x8086,device=0x4c8b";
+        let mut first_facts = Vec::new();
+        let mut second_facts = Vec::new();
+
+        extend_typed_sysman_facts(
+            1,
+            device_key,
+            "engine_groups",
+            0,
+            "zesEngineGetProperties",
+            None,
+            "zesEngineGetActivity",
+            Some(&sysman_buffer_from_struct(ZesEngineStats {
+                active_time: 1_000,
+                timestamp: 10_000,
+            })),
+            &mut first_facts,
+        );
+        extend_typed_sysman_facts(
+            2,
+            device_key,
+            "engine_groups",
+            0,
+            "zesEngineGetProperties",
+            None,
+            "zesEngineGetActivity",
+            Some(&sysman_buffer_from_struct(ZesEngineStats {
+                active_time: 1_000,
+                timestamp: 20_000,
+            })),
+            &mut second_facts,
+        );
+
+        let utilization_delta = find_fact(
+            &second_facts,
+            "sysman.engine_groups.0.utilization_pct_delta",
+        );
+        assert_eq!(utilization_delta.state, "ok");
+        assert_eq!(utilization_delta.raw, json!(0.0));
+        assert_eq!(utilization_delta.error_message, None);
     }
 
     #[test]
