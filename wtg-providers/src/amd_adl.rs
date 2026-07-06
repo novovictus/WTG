@@ -473,6 +473,10 @@ pub fn telemetry_class() -> &'static str {
     TELEMETRY_CLASS
 }
 
+pub fn sample_status(sample: &ProviderSample) -> &'static str {
+    sample.status
+}
+
 pub fn format_snapshot(sample: &ProviderSample) -> String {
     let reason = sample
         .errors
@@ -517,9 +521,9 @@ pub fn format_snapshot(sample: &ProviderSample) -> String {
 
             lines.join("\n")
         }
-        "unavailable" => format!("Status: unavailable\nReason: {}", reason),
-        "error" => format!("Status: error\nReason: {}", reason),
-        other => format!("Status: {}\nReason: {}", other, reason),
+        "unavailable" => format!("Provider status: unavailable\nReason: {}", reason),
+        "error" => format!("Provider status: error\nReason: {}", reason),
+        other => format!("Provider status: {}\nReason: {}", other, reason),
     }
 }
 
@@ -558,15 +562,15 @@ pub fn format_watch_sample(sample: &ProviderSample) -> String {
             lines.join("\n")
         }
         "unavailable" => format!(
-            "sample_seq: {}\nstatus: unavailable\nreason: {}",
+            "sample_seq: {}\nProvider status: unavailable\nReason: {}",
             sample.sample_seq, reason
         ),
         "error" => format!(
-            "sample_seq: {}\nstatus: error\nreason: {}",
+            "sample_seq: {}\nProvider status: error\nReason: {}",
             sample.sample_seq, reason
         ),
         other => format!(
-            "sample_seq: {}\nstatus: {}\nreason: {}",
+            "sample_seq: {}\nProvider status: {}\nReason: {}",
             sample.sample_seq, other, reason
         ),
     }

@@ -52,6 +52,7 @@ use wtg_providers::{amd_adl, intel_level_zero};
 /// Default sampling interval when `--watch` is enabled.
 /// 1000ms is conservative and matches NVML’s practical update cadence for many metrics.
 const DEFAULT_INTERVAL_MS: u64 = 1000;
+const NVML_ONCE_TIMEOUT_MS: u64 = 5000;
 
 /// Stats output schema version.
 /// This lets us evolve the key set while remaining explicit in artifacts.
@@ -261,6 +262,21 @@ fn print_and_mirror_jsonl(text: &str, sink: &Option<Sink>) {
     }
 }
 
+fn print_provider_status_block(status: &str, reason: &str) {
+    println!("Provider status: {status}");
+    println!("Reason: {reason}");
+}
+
+fn print_nvml_failed_device_blocks(report: &wtg_core::nvml::NvmlSnapshotReport) {
+    for sample in report.device_results.iter() {
+        if let Err(reason) = &sample.result {
+            println!();
+            println!("NVML device {}: unavailable", sample.index);
+            println!("  Reason: {reason}");
+        }
+    }
+}
+
 fn print_help() {
     print!(concat!(
         "WTG - WhatTheGPU v",
@@ -339,7 +355,9 @@ fn run_amd_provider(args: &CliArgs) -> ! {
     if args.probe {
         let sample = amd_adl::collect_once(0);
         println!("{}", amd_adl::format_probe_snapshot(&sample));
-        process::exit(0);
+        process::exit(wtg_core::exit_code_for_status(amd_adl::sample_status(
+            &sample,
+        )));
     }
 
     if args.once && args.stats {
@@ -349,7 +367,9 @@ fn run_amd_provider(args: &CliArgs) -> ! {
             "{}",
             amd_adl::format_stats_snapshot_json(&sample, 0, &tick_ts)
         );
-        process::exit(0);
+        process::exit(wtg_core::exit_code_for_status(amd_adl::sample_status(
+            &sample,
+        )));
     }
 
     if args.watch && args.stats {
@@ -381,7 +401,9 @@ fn run_amd_provider(args: &CliArgs) -> ! {
         println!("Telemetry class: {}", amd_adl::telemetry_class());
         println!();
         println!("{}", amd_adl::format_snapshot(&sample));
-        process::exit(0);
+        process::exit(wtg_core::exit_code_for_status(amd_adl::sample_status(
+            &sample,
+        )));
     }
 
     let interval_ms = args.interval_ms.unwrap_or(DEFAULT_INTERVAL_MS);
@@ -410,11 +432,9 @@ fn run_intel_provider(args: &CliArgs) -> ! {
     if args.probe {
         let sample = intel_level_zero::collect_once(0);
         println!("{}", intel_level_zero::format_probe_snapshot(&sample));
-        process::exit(if intel_level_zero::sample_status(&sample) == "ok" {
-            0
-        } else {
-            2
-        });
+        process::exit(wtg_core::exit_code_for_status(
+            intel_level_zero::sample_status(&sample),
+        ));
     }
 
     if args.once && args.stats {
@@ -424,11 +444,9 @@ fn run_intel_provider(args: &CliArgs) -> ! {
             "{}",
             intel_level_zero::format_stats_snapshot_json(&sample, 0, &tick_ts)
         );
-        process::exit(if intel_level_zero::sample_status(&sample) == "ok" {
-            0
-        } else {
-            2
-        });
+        process::exit(wtg_core::exit_code_for_status(
+            intel_level_zero::sample_status(&sample),
+        ));
     }
 
     if args.watch && args.stats {
@@ -470,11 +488,9 @@ fn run_intel_provider(args: &CliArgs) -> ! {
         println!("Telemetry class: {}", intel_level_zero::telemetry_class());
         println!();
         println!("{}", intel_level_zero::format_snapshot(&sample));
-        process::exit(if intel_level_zero::sample_status(&sample) == "ok" {
-            0
-        } else {
-            2
-        });
+        process::exit(wtg_core::exit_code_for_status(
+            intel_level_zero::sample_status(&sample),
+        ));
     }
 
     let interval_ms = args.interval_ms.unwrap_or(DEFAULT_INTERVAL_MS);
@@ -508,7 +524,7 @@ fn run_intel_provider(args: &CliArgs) -> ! {
 
 fn usage_error(message: &str) -> ! {
     eprintln!("WTG usage error: {message}");
-    process::exit(2);
+    process::exit(1);
 }
 
 fn parse_args() -> CliArgs {
@@ -1107,7 +1123,7 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("WTG config error: {e}");
-                process::exit(2);
+                process::exit(1);
             }
         }
         return;
@@ -1125,7 +1141,7 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("WTG config error: {e}");
-                process::exit(2);
+                process::exit(1);
             }
         }
         return;
@@ -1149,7 +1165,7 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("WTG runtime error: failed to create sink output file: {e}");
-                process::exit(2);
+                process::exit(wtg_core::exit_code_for_status("error"));
             }
         },
         Some(SinkKind::Mqtt) | None => None,
@@ -1163,7 +1179,7 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("WTG MQTT error: {e}");
-                process::exit(2);
+                process::exit(wtg_core::exit_code_for_status("error"));
             }
         },
         None => None,
@@ -1174,23 +1190,28 @@ fn main() {
             Ok(ctx) => ctx,
             Err(e) => {
                 eprintln!("WTG MQTT cleanup init failed: {e}");
-                process::exit(2);
+                process::exit(wtg_core::exit_code_for_status("unavailable"));
             }
         };
         let snapshots = match wtg_core::nvml::snapshot_all_with_ctx(&ctx) {
             Ok(snapshots) => snapshots,
             Err(e) => {
                 eprintln!("WTG MQTT cleanup snapshot failed: {e}");
-                process::exit(2);
+                let status = if e == "all NVIDIA device samples failed" {
+                    "error"
+                } else {
+                    "unavailable"
+                };
+                process::exit(wtg_core::exit_code_for_status(status));
             }
         };
         let Some(mqtt_sink) = mqtt_sink.as_mut() else {
             eprintln!("WTG MQTT cleanup error: --mqtt-ha-remove-discovery requires --sink mqtt.");
-            process::exit(2);
+            process::exit(1);
         };
         if let Err(e) = mqtt_sink.publish_ha_discovery_cleanup_for_snapshots(&snapshots) {
             eprintln!("WTG MQTT cleanup error: {e}");
-            process::exit(2);
+            process::exit(wtg_core::exit_code_for_status("error"));
         }
 
         eprintln!("WTG note: MQTT Home Assistant discovery cleanup published.");
@@ -1202,14 +1223,19 @@ fn main() {
             Ok(ctx) => ctx,
             Err(e) => {
                 eprintln!("WTG --once --stats init failed: {e}");
-                process::exit(2);
+                process::exit(wtg_core::exit_code_for_status("unavailable"));
             }
         };
         let snaps = match wtg_core::nvml::snapshot_all_with_ctx(&probe_context_ctx) {
             Ok(snaps) => snaps,
             Err(e) => {
                 eprintln!("WTG --once --stats failed: {e}");
-                process::exit(2);
+                let status = if e == "all NVIDIA device samples failed" {
+                    "error"
+                } else {
+                    "unavailable"
+                };
+                process::exit(wtg_core::exit_code_for_status(status));
             }
         };
         let tick_seq = 0;
@@ -1265,7 +1291,7 @@ fn main() {
             Ok(ctx) => ctx,
             Err(e) => {
                 eprintln!("WTG --probe-fields init failed: {e}");
-                process::exit(2);
+                process::exit(wtg_core::exit_code_for_status("unavailable"));
             }
         };
 
@@ -1306,7 +1332,12 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("WTG --probe-fields failed: {e}");
-                process::exit(2);
+                let status = if e == "all NVIDIA device samples failed" {
+                    "error"
+                } else {
+                    "unavailable"
+                };
+                process::exit(wtg_core::exit_code_for_status(status));
             }
         }
         return;
@@ -1318,7 +1349,7 @@ fn main() {
             Ok(ctx) => ctx,
             Err(e) => {
                 eprintln!("WTG --probe init failed: {e}");
-                process::exit(2);
+                process::exit(wtg_core::exit_code_for_status("unavailable"));
             }
         };
         match wtg_core::nvml::snapshot_all_with_ctx(&probe_context_ctx) {
@@ -1350,7 +1381,12 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("WTG --probe failed: {e}");
-                process::exit(2);
+                let status = if e == "all NVIDIA device samples failed" {
+                    "error"
+                } else {
+                    "unavailable"
+                };
+                process::exit(wtg_core::exit_code_for_status(status));
             }
         }
         return;
@@ -1359,56 +1395,64 @@ fn main() {
     // Mode: `--once`
     if args.once {
         print_product_header();
-        match wtg_core::nvml::snapshot_all() {
-            Ok(snaps) => {
-                let tick_seq = 0;
-                let tick_ts = now_ts();
-                if args.stats {
-                    let header = format_stats_schema_header();
-                    print_and_mirror_jsonl(&header, &sink);
-                    if let Some(sink) = &sink {
-                        if sink.kind() == SinkKind::Csv {
-                            sink.emit_raw_line(format_stats_csv_header());
-                        }
-                    }
-                    for s in snaps.iter() {
-                        let block = format_stats_block(s);
-                        print_and_mirror_jsonl(&block, &sink);
-                        if let Some(sink) = &sink {
-                            if sink.kind() == SinkKind::Csv {
-                                sink.emit_raw_line(&format_stats_csv_row(s, tick_seq, &tick_ts));
-                            }
-                        }
-                    }
-                } else {
-                    print_mode_header("snapshot", args.provider, None);
-                    println!();
-                    if let Some(sink) = &sink {
-                        if sink.kind() == SinkKind::Csv {
-                            sink.emit_raw_line(format_snapshot_csv_header());
-                        }
-                    }
-                    for s in snaps.iter() {
-                        let line = format!("{s}");
-                        println!("{line}");
-                        if let Some(sink) = &sink {
-                            match sink.kind() {
-                                SinkKind::Jsonl => sink.emit_jsonl_lines(&line),
-                                SinkKind::Csv => {
-                                    sink.emit_raw_line(&format_snapshot_csv_row(
-                                        s, tick_seq, &tick_ts,
-                                    ));
-                                }
-                                SinkKind::Mqtt => {}
-                            }
-                        }
+        let report = wtg_core::nvml::snapshot_report_bounded_once(Duration::from_millis(
+            NVML_ONCE_TIMEOUT_MS,
+        ));
+        let snaps = report.successful_snapshots();
+        let tick_seq = 0;
+        let tick_ts = now_ts();
+
+        if args.stats {
+            let header = format_stats_schema_header();
+            print_and_mirror_jsonl(&header, &sink);
+            if let Some(sink) = &sink {
+                if sink.kind() == SinkKind::Csv {
+                    sink.emit_raw_line(format_stats_csv_header());
+                }
+            }
+            for s in snaps.iter() {
+                let block = format_stats_block(s);
+                print_and_mirror_jsonl(&block, &sink);
+                if let Some(sink) = &sink {
+                    if sink.kind() == SinkKind::Csv {
+                        sink.emit_raw_line(&format_stats_csv_row(s, tick_seq, &tick_ts));
                     }
                 }
             }
-            Err(e) => {
-                eprintln!("WTG --once failed: {e}");
-                process::exit(2);
+        } else {
+            print_mode_header("snapshot", args.provider, None);
+            println!();
+            if report.status != "ok" {
+                print_provider_status_block(
+                    report.status,
+                    report
+                        .reason
+                        .as_deref()
+                        .unwrap_or("provider returned no additional details"),
+                );
+                print_nvml_failed_device_blocks(&report);
+                process::exit(wtg_core::exit_code_for_status(report.status));
             }
+
+            if let Some(sink) = &sink {
+                if sink.kind() == SinkKind::Csv {
+                    sink.emit_raw_line(format_snapshot_csv_header());
+                }
+            }
+            for s in snaps.iter() {
+                let line = format!("{s}");
+                println!("{line}");
+                if let Some(sink) = &sink {
+                    match sink.kind() {
+                        SinkKind::Jsonl => sink.emit_jsonl_lines(&line),
+                        SinkKind::Csv => {
+                            sink.emit_raw_line(&format_snapshot_csv_row(s, tick_seq, &tick_ts));
+                        }
+                        SinkKind::Mqtt => {}
+                    }
+                }
+            }
+            print_nvml_failed_device_blocks(&report);
         }
         return;
     }
@@ -1480,7 +1524,7 @@ fn main() {
                                     mqtt_sink, &args, &snapshots,
                                 ) {
                                     eprintln!("WTG MQTT error: {e}");
-                                    process::exit(2);
+                                    process::exit(wtg_core::exit_code_for_status("error"));
                                 }
                                 mqtt_ha_discovery_published = true;
                             }
@@ -1488,7 +1532,7 @@ fn main() {
                                 mqtt_sink, &args, &ctx, &snapshots, tick_seq, &tick_ts,
                             ) {
                                 eprintln!("WTG MQTT error: {e}");
-                                process::exit(2);
+                                process::exit(wtg_core::exit_code_for_status("error"));
                             }
                         }
                         tick_seq += 1;
@@ -1514,7 +1558,7 @@ fn main() {
                     Ok(ctx) => ctx,
                     Err(e) => {
                         eprintln!("WTG --watch init failed: {e}");
-                        process::exit(2);
+                        process::exit(wtg_core::exit_code_for_status("unavailable"));
                     }
                 })
             } else {
@@ -1557,7 +1601,7 @@ fn main() {
                                     mqtt_sink, &args, &snapshots,
                                 ) {
                                     eprintln!("WTG MQTT error: {e}");
-                                    process::exit(2);
+                                    process::exit(wtg_core::exit_code_for_status("error"));
                                 }
                                 mqtt_ha_discovery_published = true;
                             }
@@ -1565,7 +1609,7 @@ fn main() {
                                 mqtt_sink, &args, ctx, &snapshots, tick_seq, &tick_ts,
                             ) {
                                 eprintln!("WTG MQTT error: {e}");
-                                process::exit(2);
+                                process::exit(wtg_core::exit_code_for_status("error"));
                             }
                         }
                         println!();
@@ -1573,7 +1617,12 @@ fn main() {
                     }
                     Err(e) => {
                         eprintln!("WTG --watch failed: {e}");
-                        process::exit(2);
+                        let status = if e == "all NVIDIA device samples failed" {
+                            "error"
+                        } else {
+                            "unavailable"
+                        };
+                        process::exit(wtg_core::exit_code_for_status(status));
                     }
                 }
 

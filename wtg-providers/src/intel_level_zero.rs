@@ -2366,11 +2366,11 @@ mod tests {
         build_device_record, clear_delta_caches_for_tests,
         collect_visible_sample_with_priming_impl, extend_typed_sysman_facts, format_probe_snapshot,
         format_snapshot, format_stats_snapshot_json, format_watch_sample, not_available_fact,
-        number_fact_f64, number_fact_u64, ok_fact, sample_status, DeviceRecord, IntelFact,
-        LevelZeroLibrary, ProviderSample, SysmanBuffer, ZeDeviceProperties, ZesEngineStats,
-        ZesFreqProperties, ZesFreqState, ZesMemProperties, ZesMemState, ZesPowerEnergyCounter,
-        PROVIDER, PROVIDER_AUTHORITY, SOURCE, STATS_SCHEMA, SYSMAN_BUFFER_BYTES, TELEMETRY_CLASS,
-        ZE_RESULT_SUCCESS,
+        number_fact_f64, number_fact_u64, ok_fact, sample_status, update_engine_delta,
+        update_power_delta, DeltaValue, DeviceRecord, IntelFact, LevelZeroLibrary, ProviderSample,
+        SysmanBuffer, ZeDeviceProperties, ZesEngineStats, ZesFreqProperties, ZesFreqState,
+        ZesMemProperties, ZesMemState, ZesPowerEnergyCounter, PROVIDER, PROVIDER_AUTHORITY, SOURCE,
+        STATS_SCHEMA, SYSMAN_BUFFER_BYTES, TELEMETRY_CLASS, ZE_RESULT_SUCCESS,
     };
 
     unsafe extern "C" fn stub_init(_: u32) -> i32 {
@@ -3165,43 +3165,29 @@ mod tests {
     #[test]
     fn power_delta_keeps_same_counter_value_as_idle_zero() {
         clear_delta_caches_for_tests();
-        let device_key = "driver=0,device=0,vendor=0x8086,device=0x4c8b";
-        let mut first_facts = Vec::new();
-        let mut second_facts = Vec::new();
+        let key = "driver=0,device=0,vendor=0x8086,device=0x4c8b::sysman.power_domains.0";
 
-        extend_typed_sysman_facts(
-            1,
-            device_key,
-            "power_domains",
-            0,
-            "zesPowerGetProperties",
-            None,
-            "zesPowerGetEnergyCounter",
-            Some(&sysman_buffer_from_struct(ZesPowerEnergyCounter {
+        let first = update_power_delta(
+            key.to_string(),
+            ZesPowerEnergyCounter {
                 energy: 1_000_000,
                 timestamp: 10_000,
-            })),
-            &mut first_facts,
+            },
         );
-        extend_typed_sysman_facts(
-            2,
-            device_key,
-            "power_domains",
-            0,
-            "zesPowerGetProperties",
-            None,
-            "zesPowerGetEnergyCounter",
-            Some(&sysman_buffer_from_struct(ZesPowerEnergyCounter {
+        assert!(matches!(first, DeltaValue::NotAvailable(_)));
+
+        let second = update_power_delta(
+            key.to_string(),
+            ZesPowerEnergyCounter {
                 energy: 1_000_000,
                 timestamp: 20_000,
-            })),
-            &mut second_facts,
+            },
         );
 
-        let watts_delta = find_fact(&second_facts, "sysman.power_domains.0.watts_delta");
-        assert_eq!(watts_delta.state, "ok");
-        assert_eq!(watts_delta.raw, json!(0.0));
-        assert_eq!(watts_delta.error_message, None);
+        match second {
+            DeltaValue::Ok(watts) => assert_eq!(watts, 0.0),
+            DeltaValue::NotAvailable(reason) => panic!("expected idle zero, got {reason}"),
+        }
     }
 
     #[test]
@@ -3299,46 +3285,29 @@ mod tests {
     #[test]
     fn engine_delta_keeps_same_counter_value_as_idle_zero() {
         clear_delta_caches_for_tests();
-        let device_key = "driver=0,device=0,vendor=0x8086,device=0x4c8b";
-        let mut first_facts = Vec::new();
-        let mut second_facts = Vec::new();
+        let key = "driver=0,device=0,vendor=0x8086,device=0x4c8b::sysman.engine_groups.0";
 
-        extend_typed_sysman_facts(
-            1,
-            device_key,
-            "engine_groups",
-            0,
-            "zesEngineGetProperties",
-            None,
-            "zesEngineGetActivity",
-            Some(&sysman_buffer_from_struct(ZesEngineStats {
+        let first = update_engine_delta(
+            key.to_string(),
+            ZesEngineStats {
                 active_time: 1_000,
                 timestamp: 10_000,
-            })),
-            &mut first_facts,
+            },
         );
-        extend_typed_sysman_facts(
-            2,
-            device_key,
-            "engine_groups",
-            0,
-            "zesEngineGetProperties",
-            None,
-            "zesEngineGetActivity",
-            Some(&sysman_buffer_from_struct(ZesEngineStats {
+        assert!(matches!(first, DeltaValue::NotAvailable(_)));
+
+        let second = update_engine_delta(
+            key.to_string(),
+            ZesEngineStats {
                 active_time: 1_000,
                 timestamp: 20_000,
-            })),
-            &mut second_facts,
+            },
         );
 
-        let utilization_delta = find_fact(
-            &second_facts,
-            "sysman.engine_groups.0.utilization_pct_delta",
-        );
-        assert_eq!(utilization_delta.state, "ok");
-        assert_eq!(utilization_delta.raw, json!(0.0));
-        assert_eq!(utilization_delta.error_message, None);
+        match second {
+            DeltaValue::Ok(utilization_pct) => assert_eq!(utilization_pct, 0.0),
+            DeltaValue::NotAvailable(reason) => panic!("expected idle zero, got {reason}"),
+        }
     }
 
     #[test]
