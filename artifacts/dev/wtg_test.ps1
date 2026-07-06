@@ -127,7 +127,7 @@ if (-not (Test-Path $wtg)) {
     }
 
     $joined = ($wtgOut -join "`n")
-    $required = @("GPU 0","UUID","Util","VRAM","Power")
+    $required = @("NVML device 0","UUID","Util","VRAM","Power")
 
     foreach ($token in $required) {
         if ($joined -notmatch [regex]::Escape($token)) {
