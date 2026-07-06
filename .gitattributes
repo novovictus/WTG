@@ -1,12 +1,14 @@
+﻿# Text normalization
 * text=auto
 
-*.rs    text eol=lf
-*.toml  text eol=lf
-*.md    text eol=lf
-*.yml   text eol=lf
-*.yaml  text eol=lf
-*.json  text eol=lf
+# Windows scripts
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
 
-*.ps1   text eol=crlf
-*.bat   text eol=crlf
-*.cmd   text eol=crlf
+# Source/docs/config
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

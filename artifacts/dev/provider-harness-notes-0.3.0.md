@@ -1,4 +1,4 @@
-\# WTG 0.3.0 Provider Harness Notes
+﻿# WTG 0.3.0 Provider Harness Notes
 
 
 
@@ -35,4 +35,5 @@ Known source-level follow-up:
 \- The default NVIDIA/NVML path should return a structured unavailable report on no-NVIDIA systems rather than hanging or producing incomplete harness output.
 
 \- Supplemental provider token checks should be hardware-aware so absent AMD/Intel hardware does not require positive provider device telemetry.
+
 
