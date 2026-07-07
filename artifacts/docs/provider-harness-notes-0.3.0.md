@@ -22,16 +22,53 @@ Harness absent-hardware expectations are explicit:
 
 The remote harness is responsible for orchestration only:
 
-- staging the packaged WTG payload on the orchestrator and remote targets
-- purging stale local and remote destination folders before a run
-- running `wtg_test.ps1` and `wtg_providers_test.ps1` locally and over SSH
+- staging the packaged WTG payload from a controller-only workspace
+- purging stale local result mirrors and remote destination folders before a run
+- running `wtg_test.ps1` and `wtg_providers_test.ps1` on every target over SSH
+- treating the controller host as a normal SSH target rather than a special local runner
 - capturing stdout logs separately from evidence files
 - pulling source-of-truth result files back to the orchestrator
+- removing remote transport zip files after result collection
 - writing a run-level `manifest.json`
 
 The remote harness must not rename evidence files. Evidence filenames are owned by the smoke scripts.
 
-Expected run layout:
+## Controller Host as Remote Target
+
+The controller shell may run on ROG, but ROG is still executed through the same SSH/SCP path as every other node.
+
+```text
+ROG controller shell
+  -> builds payload zip in controller-only workspace
+  -> SSH/SCP to rog
+  -> purges rog destination
+  -> expands payload
+  -> runs smoke scripts remotely
+  -> zips results remotely
+  -> pulls results back
+```
+
+This deliberate SSH-inception model validates the same transport, staging, purge, execution, result collection, and cleanup path on all nodes.
+
+The controller payload must not live inside the remote staging/share tree. In particular, do not use this as the controller payload directory:
+
+```text
+C:\Users\plays\Desktop\share\0.3.0-rc1
+```
+
+The harness uses a controller-only workspace instead:
+
+```text
+C:\Users\plays\Desktop\wtg_batch_controller_0.3.0-rc1
+```
+
+The local share path remains only a result mirror/convenience path:
+
+```text
+C:\Users\plays\Desktop\share\0.3.0-rc1\results
+```
+
+## Expected Run Layout
 
 ```text
 remote_runs/
@@ -40,12 +77,12 @@ remote_runs/
     logs/
       orchestrator.log
     stdout/
-      local.wtg_test.stdout.txt
-      local.wtg_providers_test.stdout.txt
-      bench.connectivity.stdout.txt
-      bench.prepare.stdout.txt
-      bench.expand.stdout.txt
-      bench.run.stdout.txt
+      rog.connectivity.stdout.txt
+      rog.prepare.stdout.txt
+      rog.expand.stdout.txt
+      rog.run.stdout.txt
+      rog.cleanup.stdout.txt
+      bench.*
       surface.*
       nuc.*
     results/
@@ -56,6 +93,8 @@ remote_runs/
 Run policy:
 
 ```text
+execution_model = all-targets-over-ssh
+controller_host_is_remote_target = true
 evidence_naming = script-owned
 result_collection = flat
 transport_zip = temporary
