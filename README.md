@@ -9,7 +9,7 @@ WTG is a Windows-native GPU telemetry and validation tool focused on NVIDIA/NVML
 
 ## Current Status
 
-Current branch: `dev/0.3.0-egui-provider-adapters`
+Current development line: v0.3.0 provider-backed eGUI and provider evidence workstream.
 
 WTG 0.3.0 is the eGUI provider-backed adapter view workstream. WTG remains NVIDIA/NVML-centric; NVIDIA/NVML is still the primary truth provider and the default eGUI device path.
 
@@ -25,10 +25,11 @@ Current development builds include:
 - explicit opt-in TOML configuration
 - expanded `--once --stats` NVIDIA/NVML provenance JSON
 - experimental AMD ADL `--provider amd --once` and `--provider amd --watch` output
+- experimental Intel Level Zero `--provider intel --once` output
 
 WTG does not auto-create `wtg.toml`, does not auto-load `wtg.toml`, does not configure an MQTT broker, and does not expose a listening network service.
 
-See `artifacts/test-matrix/matrix.md` for empirical GPU and driver results.
+See `artifacts/docs/matrix.md` for empirical GPU and driver results.
 
 ## Project Purpose
 
@@ -43,7 +44,7 @@ Existing alternatives are often:
 
 WTG provides a Windows-native validation surface for inspecting NVIDIA/NVML telemetry directly and preserving the provider source behind the observed values.
 
-See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
+See: `artifacts/docs/wtg_vs_task_manager_abstraction_model.md`
 
 ## Empirical Findings
 
@@ -57,7 +58,7 @@ Current regression research has shown:
 ## Project Scope
 
 - **Primary provider:** NVIDIA/NVML
-- **Experimental side provider:** AMD ADL, selected explicitly with `--provider amd`
+- **Experimental side providers:** AMD ADL and Intel Level Zero, selected explicitly with `--provider amd` or `--provider intel`
 - **Platform:** Windows-native CLI/runtime binary, with an experimental separate desktop UI binary
 - **Reference surface:** `wtg.exe`
 - **Experimental visual surface:** `wtg-ui.exe`
@@ -104,6 +105,12 @@ Run experimental AMD ADL watch output:
 .\target\release\wtg.exe --provider amd --watch --interval 1000
 ```
 
+Run experimental Intel Level Zero snapshot output:
+
+```powershell
+.\target\release\wtg.exe --provider intel --once
+```
+
 Write expanded NVIDIA/NVML provenance stats to JSONL:
 
 ```powershell
@@ -146,19 +153,22 @@ Run the experimental UI:
   Repeatable field ID argument for `--probe-fields`.
 
 - `--sink jsonl`  
-  Create a timestamped JSONL sink file for supported NVIDIA/NVML modes. AMD ADL sinks are intentionally rejected.
+  Create a timestamped JSONL sink file for supported NVIDIA/NVML modes. AMD ADL and Intel Level Zero sinks are intentionally rejected.
 
 - `--sink csv`  
-  Create a timestamped CSV sink file for supported NVIDIA/NVML modes. AMD ADL sinks are intentionally rejected.
+  Create a timestamped CSV sink file for supported NVIDIA/NVML modes. AMD ADL and Intel Level Zero sinks are intentionally rejected.
 
 - `--sink mqtt`  
-  Publish live NVIDIA/NVML `--watch` snapshots to an existing MQTT broker. AMD ADL MQTT publishing is intentionally not implemented.
+  Publish live NVIDIA/NVML `--watch` snapshots to an existing MQTT broker. AMD ADL and Intel Level Zero MQTT publishing are intentionally not implemented.
 
 - `--config <path>`  
   Load an explicit WTG TOML configuration file.
 
 - `--provider amd`  
-  Select the experimental AMD ADL provider for compact `--once` or `--watch` output. AMD and Intel output use provider-scoped schemas and telemetry class `provider_telemetry`.
+  Select the experimental AMD ADL provider for compact `--once` or `--watch` output. AMD output uses provider-scoped schemas and telemetry class `provider_telemetry`.
+
+- `--provider intel`  
+  Select the experimental Intel Level Zero provider for compact `--once` output. Intel output uses provider-scoped schemas and telemetry class `provider_telemetry`.
 
 ## AMD ADL Discovery
 
@@ -183,7 +193,21 @@ AMD telemetry class: provider_telemetry
 
 The AMD provider preserves ADL-native facts beside NVIDIA/NVML behavior. It does not translate ADL facts into NVML-equivalent names, does not synthesize missing values, and does not claim cross-vendor parity.
 
-Detailed notes: [AMD ADL discovery](docs/amd-adl-discovery.md)
+Detailed notes: [AMD ADL discovery](artifacts/docs/amd-adl-discovery.md)
+
+## Intel Level Zero Discovery
+
+`--provider intel` is the experimental Intel Level Zero/Sysman provider path for this branch.
+
+Supported command:
+
+```powershell
+.\target\release\wtg.exe --provider intel --once
+```
+
+The Intel provider preserves Level Zero and Sysman-native facts beside NVIDIA/NVML behavior. Available device identity and telemetry are reported provider-scoped; unavailable Sysman fields are reported explicitly rather than mapped into NVIDIA/NVML fields or synthesized values.
+
+Detailed notes: [Intel Level Zero discovery](artifacts/docs/intel-level-zero-discovery.md)
 
 ## NVML Provenance Stats
 
@@ -226,7 +250,7 @@ processes
 
 Unsupported or unavailable NVML facts are emitted explicitly with `raw: null`, a state such as `unsupported` or `not_available`, and an error message when available.
 
-Detailed notes: [NVML provenance stats](docs/nvml-provenance-stats.md)
+Detailed notes: [NVML provenance stats](artifacts/docs/nvml-provenance-stats.md)
 
 ## Sink Summary
 
@@ -238,10 +262,11 @@ Detailed notes: [NVML provenance stats](docs/nvml-provenance-stats.md)
 | `--watch --stats` | yes | yes | yes | legacy NVIDIA/NVML stats/watch behavior for this release |
 | `--provider amd --once` | no | no | no | compact AMD ADL provider telemetry |
 | `--provider amd --watch` | no | no | no | compact AMD ADL live provider telemetry |
+| `--provider intel --once` | no | no | no | compact Intel Level Zero provider telemetry |
 | `--probe` | yes | yes | no | NVIDIA/NVML validation output |
 | `--probe-fields` | yes | yes | no | NVIDIA/NVML field-ID diagnostics |
 
-Detailed notes: [Sinks](docs/sinks.md)
+Detailed notes: [Sinks](artifacts/docs/sinks.md)
 
 ## MQTT and Home Assistant
 
@@ -253,9 +278,9 @@ Example:
 .\wtg.exe --watch --sink mqtt --mqtt-host 127.0.0.1 --mqtt-port 1884 --mqtt-node-id testnode
 ```
 
-WTG is an MQTT publisher, not a broker. MQTT validates transport only; it is not the telemetry source of truth. AMD ADL provider output is not currently published to MQTT or Home Assistant.
+WTG is an MQTT publisher, not a broker. MQTT validates transport only; it is not the telemetry source of truth. AMD ADL and Intel Level Zero provider output are not currently published to MQTT or Home Assistant.
 
-Detailed notes: [MQTT and Home Assistant](docs/mqtt-home-assistant.md)
+Detailed notes: [MQTT and Home Assistant](artifacts/docs/mqtt-home-assistant.md)
 
 ## Configuration
 
@@ -269,7 +294,7 @@ Configuration is opt-in:
 - CLI flags override config values
 - normal non-MQTT commands remain unaffected
 
-Detailed notes: [Configuration](docs/configuration.md)
+Detailed notes: [Configuration](artifacts/docs/configuration.md)
 
 ## eGUI
 
@@ -281,8 +306,8 @@ The UI is not the reference surface for regression testing or metric capture.
 
 Detailed notes:
 
-- [eGUI](docs/egui.md)
-- [Windows application control notes](docs/windows-app-control.md)
+- [eGUI](artifacts/docs/egui.md)
+- [Windows application control notes](artifacts/docs/windows-app-control.md)
 
 ## Probe and Field Diagnostics
 
@@ -297,14 +322,23 @@ vram.used_mib / vram.total_mib = VRAM occupancy
 
 A pinned `util.mem_controller_pct` value does not mean VRAM is full.
 
-Detailed notes: [Probe and probe-fields](docs/probe-fields.md)
+Detailed notes: [Probe and probe-fields](artifacts/docs/probe-fields.md)
 
 ## Development Artifacts
 
-Development and research helpers are documented separately:
+Development and research helpers are documented under `artifacts/docs/`, with executable harnesses under `artifacts/dev/`.
 
-- [Packaging checkpoint helper](artifacts/dev/packaging-checkpoint.md)
-- [NVIDIA bug-report collector](artifacts/dev/nvidia-bug-report.md)
+Documentation:
+
+- [Packaging checkpoint helper](artifacts/docs/packaging-checkpoint.md)
+- [Provider harness notes](artifacts/docs/provider-harness-notes-0.3.0.md)
+- [NVIDIA bug-report collector](artifacts/docs/archive/nvidia-bug-report.md)
+
+Harness scripts:
+
+- `artifacts/dev/wtg_test.ps1`
+- `artifacts/dev/wtg_providers_test.ps1`
+- `artifacts/dev/wtg_rc_multi_host_smoke.ps1`
 
 ## Architecture Summary
 
@@ -324,7 +358,7 @@ wtg-view/
   shared view helpers where useful
 
 wtg-providers/
-  experimental provider-side work, including AMD ADL discovery
+  experimental provider-side work, including AMD ADL and Intel Level Zero discovery
 ```
 
 `wtg-app` does not own NVML provider querying. Expanded NVML provenance collection belongs in `wtg-core`. Experimental non-NVIDIA provider work remains provider-scoped under `wtg-providers` and is routed through `wtg.exe` only when explicitly selected.
@@ -342,6 +376,8 @@ Empirical testing shows:
 
 AMD ADL discovery relies on `atiadlxx.dll` being available on the test system. Unsupported, unavailable, or failing ADL calls are reported as provider-scoped facts and are not treated as NVIDIA/NVML failures.
 
+Intel Level Zero discovery relies on the Level Zero runtime and available Sysman surfaces. Missing runtime DLLs, unavailable Sysman telemetry, and zero-handle telemetry states are reported explicitly as provider-scoped conditions.
+
 ## Validation Boundary
 
 Formal validation should use:
@@ -357,13 +393,14 @@ cargo build -p wtg-app --release
 .\target\release\wtg.exe --once --stats --sink csv
 .\target\release\wtg.exe --provider amd --once
 .\target\release\wtg.exe --provider amd --watch --interval 1000
+.\target\release\wtg.exe --provider intel --once
 .\target\release\wtg.exe --probe
 .\target\release\wtg.exe --probe --sink jsonl
 .\target\release\wtg.exe --probe --sink csv
 .\target\release\wtg.exe --probe-fields --field-id 74
 ```
 
-Use MQTT broker/subscriber captures to validate transport only. Do not treat MQTT, Home Assistant, AMD ADL, or the eGUI as the NVIDIA/NVML telemetry source of truth.
+Use MQTT broker/subscriber captures to validate transport only. Do not treat MQTT, Home Assistant, AMD ADL, Intel Level Zero, or the eGUI as the NVIDIA/NVML telemetry source of truth.
 
 For automated watch checks, avoid `Select-Object -First ...` as final evidence because it intentionally closes stdout and can produce a broken-pipe panic after the selected lines are captured. Manual `Ctrl+C` watch termination is cleaner for final run notes.
 
@@ -405,4 +442,4 @@ For automated watch checks, avoid `Select-Object -First ...` as final evidence b
 
 WTG 0.3.x moves AMD ADL and Intel Level Zero/Sysman from discovery-grade provider evidence toward usable provider-native telemetry.
 
-See `docs/provider-discovery-0.3.md`.
+See `artifacts/docs/provider-discovery-0.3.md`.
