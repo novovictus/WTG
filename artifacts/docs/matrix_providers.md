@@ -6,7 +6,7 @@ This matrix records **empirical provider behavior** observed during v0.3.0 provi
 
 NVIDIA NVML remains the primary WTG truth path. AMD ADL and Intel Level Zero are supplemental provider-scoped witnesses. A provider-unavailable result is recorded as a valid observed state when hardware or runtime is absent and WTG returns an explicit unavailable report.
 
-Raw run logs are retained as smoke artifacts and may contain host-specific identifiers.
+Raw run logs are not published or recorded in the matrix; the matrix records distilled empirical outcomes only.
 
 ---
 
@@ -23,6 +23,9 @@ Raw run logs are retained as smoke artifacts and may contain host-specific ident
 | DAD-SURFACE | Microsoft Corporation Surface Pro 7 | NVIDIA NVML | N/A | NVML LoadLibrary failure | Unavailable | 2 | PASS | No NVIDIA GPU reported by CIM; WTG returns explicit provider-unavailable report with reason. |
 | DAD-SURFACE | Microsoft Corporation Surface Pro 7 | AMD ADL | N/A | ADL DLL not found | Unavailable | 2 | PASS | No AMD GPU reported by CIM; WTG returns explicit provider-unavailable report with reason. |
 | DAD-SURFACE | Microsoft Corporation Surface Pro 7 | Intel Level Zero | Intel(R) Iris(R) Plus Graphics | Windows 31.0.101.2130 | Available, Sysman unavailable | 0 | PASS | Level Zero reports Intel device 0 and UUID. Memory, power, engine activity, frequency, and temperature are unavailable because Sysman is unavailable. |
+| NUC | Intel Corporation NUC7i7DNB | NVIDIA NVML | N/A | NVML LoadLibrary failure | Unavailable | 2 | PASS | No NVIDIA GPU reported by CIM; WTG returns explicit provider-unavailable report with reason. |
+| NUC | Intel Corporation NUC7i7DNB | AMD ADL | N/A | ADL DLL not found | Unavailable | 2 | PASS | No AMD GPU reported by CIM; WTG returns explicit provider-unavailable report with reason. |
+| NUC | Intel Corporation NUC7i7DNB | Intel Level Zero | Intel(R) UHD Graphics 620 | Windows 31.0.101.2112 | Available, Sysman unavailable | 0 | PASS | Level Zero reports Intel device 0 and UUID. Memory, power, engine activity, frequency, and temperature are unavailable because Sysman is unavailable. |
 
 ---
 
@@ -40,7 +43,7 @@ Raw run logs are retained as smoke artifacts and may contain host-specific ident
 
 ## Notes
 
-* Host names are recorded exactly as reported by the smoke artifacts: INSPIRON3861, LAPTOP-8CC8RC3A, and DAD-SURFACE.
+* Host names are recorded exactly as reported by the smoke artifacts: INSPIRON3861, LAPTOP-8CC8RC3A, DAD-SURFACE, and NUC.
 * This matrix is provider-scoped. It does not replace the NVIDIA-focused WTG test matrix.
 * NVIDIA NVML is the primary WTG truth path; supplemental providers are not normalized into NVML-equivalent claims.
 * AMD ADL can expose non-AMD adapters as topology-only records. These records are useful as provider-scoped context, not as AMD telemetry for those devices.
@@ -55,4 +58,5 @@ Raw run logs are retained as smoke artifacts and may contain host-specific ident
 * INSPIRON3861 provides the strongest positive multi-provider validation point: NVIDIA NVML, AMD ADL, and Intel Level Zero all return valid provider reports on the same host.
 * LAPTOP-8CC8RC3A validates mixed NVIDIA/AMD hardware with no Intel GPU present. Intel Level Zero returns unavailable because the runtime DLL is absent, and the harness treats that explicit unavailable report as a valid absent-provider state.
 * DAD-SURFACE validates absent NVIDIA and AMD provider paths while also validating a partial Intel Level Zero path where device identity is available but Sysman-backed metrics are unavailable.
+* NUC validates absent NVIDIA and AMD provider paths while also validating a partial Intel Level Zero path where device identity is available but Sysman-backed metrics are unavailable.
 * v0.3.0 provider smoke validation confirms that unavailable provider states can be represented explicitly without hanging, silently disappearing, or being collapsed into fake zero telemetry.
