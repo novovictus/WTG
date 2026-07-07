@@ -29,6 +29,22 @@ function Get-GpuTokenFromName {
     return $token
 }
 
+function Get-AmdGpuTokenFromName {
+    param(
+        [Parameter(Mandatory=$true)][string]$GpuName
+    )
+
+    # Preserve model-focused AMD slugs such as r9-m360, but avoid weak generic
+    # filenames like "graphics" for integrated AMD Radeon(TM) Graphics.
+    $token = Get-GpuTokenFromName -GpuName $GpuName -StripWords @("amd","radeon","gpu","(tm)")
+
+    if ($token -eq "graphics" -or $token -eq "unknown") {
+        $token = Get-GpuTokenFromName -GpuName $GpuName -StripWords @("gpu","(tm)")
+    }
+
+    return $token
+}
+
 $root   = (Get-Location).Path
 $outDir = Join-Path $root "results"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -60,7 +76,7 @@ $intelName = if ($intelVc) { $intelVc.Name } else { "N/A" }
 $intelDrv  = if ($intelVc) { $intelVc.DriverVersion } else { "N/A" }
 
 # Filename tokens (dirty/best-effort - beta harness)
-$amdToken   = if ($amdVc)   { Get-GpuTokenFromName -GpuName $amdVc.Name -StripWords @("amd","radeon","gpu","(tm)") } else { "no-amd" }
+$amdToken   = if ($amdVc)   { Get-AmdGpuTokenFromName -GpuName $amdVc.Name } else { "no-amd" }
 $amdDrvTok  = if ($amdVc)   { $amdDrv -replace "[^\w\.]", "-" } else { "no-amd-drv" }
 $intelToken = if ($intelVc) { Get-GpuTokenFromName -GpuName $intelVc.Name -StripWords @("intel","graphics","gpu","(r)") } else { "no-intel" }
 $intelDrvTok = if ($intelVc) { $intelDrv -replace "[^\w\.]", "-" } else { "no-intel-drv" }
