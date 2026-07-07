@@ -2,8 +2,8 @@
 # Multi-host RC smoke harness for WTG provider validation.
 #
 # Purpose:
-# - stage a packaged WTG build on the orchestrator and remote targets
-# - run the existing script-owned smoke tests locally and remotely
+# - stage a packaged WTG build from a controller-only workspace
+# - run the existing script-owned smoke tests on every target over SSH, including ROG
 # - preserve evidence filenames exactly as emitted by the smoke scripts
 # - collect run metadata, stdout logs, and flat source-of-truth results
 #
@@ -12,16 +12,23 @@
 param(
     [string] $Repo = "C:\Users\plays\source\github_wtg\WTG",
     [string] $ReleaseDir = "C:\Users\plays\source\github_wtg\WTG\artifacts\packages\wtg_release_v0.3.0-rc1_v0.3.0_release_v0.3.0-rc1_73a22d6_20260706_231504",
-    [string] $Stage = "C:\Users\plays\Desktop\share\0.3.0-rc1",
+    [string] $ControllerRoot = "C:\Users\plays\Desktop\wtg_batch_controller_0.3.0-rc1",
+    [string] $LocalShareRoot = "C:\Users\plays\Desktop\share",
     [string] $RunRootBase = "C:\Users\plays\Desktop\share\remote_runs",
     [string] $Key = "$env:USERPROFILE\.ssh\wtg_bench_admin_ed25519",
+    [string] $RogHost = "rog",
     [switch] $NoPause
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$Results = Join-Path $Stage "results"
+$PayloadDir = Join-Path $ControllerRoot "payload"
+$TransferZip = Join-Path $ControllerRoot "wtg_0.3.0-rc1_smoke_stage.zip"
+
+$MirrorStage = Join-Path $LocalShareRoot "0.3.0-rc1"
+$MirrorResults = Join-Path $MirrorStage "results"
+
 $RunId = "wtg_v0.3.0-rc1_" + (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
 $RunRoot = Join-Path $RunRootBase $RunId
 $RunResults = Join-Path $RunRoot "results"
@@ -30,6 +37,12 @@ $RunLogs = Join-Path $RunRoot "logs"
 $OrchestratorLog = Join-Path $RunLogs "orchestrator.log"
 
 $Remotes = @(
+    @{
+        Name = "rog"
+        User = "plays"
+        Host = $RogHost
+        Desktop = "C:\Users\plays\Desktop"
+    },
     @{
         Name = "bench"
         User = "admin"
@@ -107,20 +120,6 @@ $Command
     ssh -T -F NUL -o IdentitiesOnly=yes -i $Key $target "cmd.exe /d /q /c powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded"
 }
 
-function Invoke-LoggedLocalScript {
-    param(
-        [Parameter(Mandatory=$true)] [string] $Name,
-        [Parameter(Mandatory=$true)] [string] $ScriptPath
-    )
-
-    $stdoutPath = Join-Path $RunStdout $Name
-
-    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $ScriptPath 2>&1 |
-        Tee-Object -FilePath $stdoutPath
-
-    return $LASTEXITCODE
-}
-
 New-Item -ItemType Directory -Force -Path $RunRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $RunResults | Out-Null
 New-Item -ItemType Directory -Force -Path $RunStdout | Out-Null
@@ -132,24 +131,32 @@ Pause-Step "Preflight: show planned run"
 Write-Log "run_id=$RunId"
 Write-Log "repo=$Repo"
 Write-Log "release_dir=$ReleaseDir"
-Write-Log "stage=$Stage"
+Write-Log "controller_root=$ControllerRoot"
+Write-Log "payload_dir=$PayloadDir"
+Write-Log "transfer_zip=$TransferZip"
+Write-Log "local_share_root=$LocalShareRoot"
+Write-Log "mirror_stage=$MirrorStage"
+Write-Log "mirror_results=$MirrorResults"
 Write-Log "run_root=$RunRoot"
 Write-Log "ssh_key=$Key"
+Write-Log "rog_host=$RogHost"
 
 foreach ($remote in $Remotes) {
     Write-Log ("remote={0} target={1}@{2} desktop={3}" -f $remote.Name, $remote.User, $remote.Host, $remote.Desktop)
 }
 
-Pause-Step "Purge local stage results and run root results"
+Pause-Step "Purge controller payload, transfer zip, and local result mirrors"
 
-New-Item -ItemType Directory -Force -Path $Stage | Out-Null
-Remove-Item -Recurse -Force $Results -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path $Results | Out-Null
+Remove-Item -Recurse -Force $ControllerRoot -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $PayloadDir | Out-Null
 
-$TransferZip = "C:\Users\plays\Desktop\share\wtg_0.3.0-rc1_smoke_stage.zip"
+New-Item -ItemType Directory -Force -Path $MirrorStage | Out-Null
+Remove-Item -Recurse -Force $MirrorResults -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $MirrorResults | Out-Null
+
 Remove-Item -Force $TransferZip -ErrorAction SilentlyContinue
 
-Pause-Step "Stage RC package locally"
+Pause-Step "Stage RC package into controller payload"
 
 $CliExe = Get-ChildItem $ReleaseDir -Filter "*.exe" |
     Where-Object { $_.Name -ne "wtg-ui.exe" } |
@@ -159,56 +166,24 @@ if (-not $CliExe) {
     throw "No CLI exe found in release directory: $ReleaseDir"
 }
 
-Copy-Item $CliExe.FullName (Join-Path $Stage "wtg.exe") -Force
+Copy-Item $CliExe.FullName (Join-Path $PayloadDir "wtg.exe") -Force
 
 $UiExe = Join-Path $ReleaseDir "wtg-ui.exe"
 if (Test-Path $UiExe) {
-    Copy-Item $UiExe (Join-Path $Stage "wtg-ui.exe") -Force
+    Copy-Item $UiExe (Join-Path $PayloadDir "wtg-ui.exe") -Force
 }
 
-Copy-Item (Join-Path $Repo "artifacts\dev\wtg_test.ps1") (Join-Path $Stage "wtg_test.ps1") -Force
-Copy-Item (Join-Path $Repo "artifacts\dev\wtg_providers_test.ps1") (Join-Path $Stage "wtg_providers_test.ps1") -Force
+Copy-Item (Join-Path $Repo "artifacts\dev\wtg_test.ps1") (Join-Path $PayloadDir "wtg_test.ps1") -Force
+Copy-Item (Join-Path $Repo "artifacts\dev\wtg_providers_test.ps1") (Join-Path $PayloadDir "wtg_providers_test.ps1") -Force
 
-Get-ChildItem $Stage |
+Get-ChildItem $PayloadDir |
     Where-Object { -not $_.PSIsContainer } |
     Select-Object LastWriteTime, Name, Length
 
-Pause-Step "Run local orchestrator host smoke"
-
-Push-Location $Stage
-
-Remove-Item -Recurse -Force ".\results" -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force ".\results" | Out-Null
-
-$LocalTestExit = Invoke-LoggedLocalScript -Name "local.wtg_test.stdout.txt" -ScriptPath ".\wtg_test.ps1"
-$LocalProvidersExit = Invoke-LoggedLocalScript -Name "local.wtg_providers_test.stdout.txt" -ScriptPath ".\wtg_providers_test.ps1"
-
-Pop-Location
-
-Get-ChildItem $Results -File -ErrorAction SilentlyContinue |
-    ForEach-Object {
-        Copy-Item $_.FullName -Destination (Join-Path $RunResults $_.Name) -Force
-    }
-
-$TargetStatus.Add([pscustomobject]@{
-    name = "local"
-    role = "local"
-    host = $env:COMPUTERNAME
-    user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    wtg_test_exit = $LocalTestExit
-    wtg_providers_test_exit = $LocalProvidersExit
-}) | Out-Null
-
-Write-Log "local wtg_test_exit=$LocalTestExit wtg_providers_test_exit=$LocalProvidersExit"
-
-Pause-Step "Build transfer zip without results"
+Pause-Step "Build transfer zip from controller payload"
 
 Remove-Item -Force $TransferZip -ErrorAction SilentlyContinue
-
-Get-ChildItem $Stage |
-    Where-Object { $_.Name -ne "results" } |
-    Compress-Archive -DestinationPath $TransferZip -Force
-
+Compress-Archive -Force -Path (Join-Path $PayloadDir "*") -DestinationPath $TransferZip
 Get-Item $TransferZip | Select-Object FullName, Length, LastWriteTime
 
 foreach ($remote in $Remotes) {
@@ -320,7 +295,9 @@ Get-ChildItem '.\results' -File -ErrorAction SilentlyContinue |
 
     Pause-Step "Pull source-of-truth results from $remoteName"
 
-    $localHostZip = Join-Path $Results "$remoteName-results.zip"
+    New-Item -ItemType Directory -Force -Path $MirrorResults | Out-Null
+
+    $localHostZip = Join-Path $MirrorResults "$remoteName-results.zip"
     Remove-Item -Force $localHostZip -ErrorAction SilentlyContinue
 
     $remoteResultsTarget = "${user}@${hostName}:$remoteResultsZipScp"
@@ -329,7 +306,7 @@ Get-ChildItem '.\results' -File -ErrorAction SilentlyContinue |
         throw "SCP pull failed for $remoteName"
     }
 
-    $TempExtract = Join-Path $Results "_extract_$remoteName"
+    $TempExtract = Join-Path $MirrorResults "_extract_$remoteName"
     Remove-Item -Recurse -Force $TempExtract -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $TempExtract | Out-Null
 
@@ -337,12 +314,25 @@ Get-ChildItem '.\results' -File -ErrorAction SilentlyContinue |
 
     Get-ChildItem $TempExtract -File -Recurse |
         ForEach-Object {
-            Copy-Item $_.FullName -Destination (Join-Path $Results $_.Name) -Force
+            Copy-Item $_.FullName -Destination (Join-Path $MirrorResults $_.Name) -Force
             Copy-Item $_.FullName -Destination (Join-Path $RunResults $_.Name) -Force
         }
 
     Remove-Item -Recurse -Force $TempExtract
     Remove-Item -Force $localHostZip
+
+    Pause-Step "Clean remote transport files on $remoteName"
+
+    $cleanupOut = Invoke-RemotePS -User $user -HostName $hostName -Command @"
+Remove-Item -Force -Path '$remoteZip' -ErrorAction SilentlyContinue
+Remove-Item -Force -Path '$remoteResultsZip' -ErrorAction SilentlyContinue
+[Console]::Out.WriteLine("cleaned_remote_transport=$remoteShare")
+"@ 2>&1
+
+    $cleanupOut | Tee-Object -FilePath (Join-Path $RunStdout "$remoteName.cleanup.stdout.txt")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Remote transport cleanup failed for $remoteName"
+    }
 
     $TargetStatus.Add([pscustomobject]@{
         name = $remoteName
@@ -357,7 +347,7 @@ Get-ChildItem '.\results' -File -ErrorAction SilentlyContinue |
     Write-Log "$remoteName wtg_test_exit=$TestExitParsed wtg_providers_test_exit=$ProvidersExitParsed"
 }
 
-Pause-Step "Remove local transfer zip"
+Pause-Step "Remove controller transfer zip"
 
 Remove-Item -Force $TransferZip -ErrorAction SilentlyContinue
 
@@ -366,17 +356,22 @@ $Manifest = [ordered]@{
     completed_utc = (Get-Date).ToUniversalTime().ToString("o")
     package = [ordered]@{
         release_dir = $ReleaseDir
-        staged_cli = Join-Path $Stage "wtg.exe"
-        staged_ui = Join-Path $Stage "wtg-ui.exe"
+        payload_dir = $PayloadDir
+        transfer_zip = $TransferZip
     }
     orchestrator = [ordered]@{
         host = $env:COMPUTERNAME
         user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         repo = $Repo
-        stage = $Stage
+        controller_root = $ControllerRoot
+        local_share_root = $LocalShareRoot
+        mirror_stage = $MirrorStage
+        mirror_results = $MirrorResults
         run_root = $RunRoot
     }
     policy = [ordered]@{
+        execution_model = "all-targets-over-ssh"
+        controller_host_is_remote_target = $true
         evidence_naming = "script-owned"
         result_collection = "flat"
         transport_zip = "temporary"
@@ -407,6 +402,6 @@ Get-ChildItem $RunResults -File |
 
 Write-Host ""
 Write-Host "Stage results mirror:"
-Get-ChildItem $Results -File |
+Get-ChildItem $MirrorResults -File |
     Sort-Object Name |
     Select-Object Name, Length, LastWriteTime
