@@ -106,6 +106,7 @@ $wtg = Join-Path $root "wtg.exe"
 
 $pass = $true
 $failReasons = New-Object System.Collections.Generic.List[string]
+$notes = New-Object System.Collections.Generic.List[string]
 
 if (-not (Test-Path $wtg)) {
     $pass = $false
@@ -120,23 +121,50 @@ if (-not (Test-Path $wtg)) {
 
     if ($amdOut) { $amdOut | Add-Content -Path $f -Encoding utf8 }
 
-    if ($amdExit -ne 0) {
-        $pass = $false
-        $failReasons.Add("wtg.exe --provider amd --once returned non-zero exit code: $amdExit")
-    }
-
     $joined = ($amdOut -join "`n")
-    $required = @(
+    $commonRequired = @(
         "WTG snapshot mode (provider: AMD ADL)",
         "Provider source: wtg.provider.amd.adl",
-        "Telemetry class: provider_telemetry",
-        "ADL adapter group"
+        "Telemetry class: provider_telemetry"
     )
 
-    foreach ($token in $required) {
+    foreach ($token in $commonRequired) {
         if ($joined -notmatch [regex]::Escape($token)) {
             $pass = $false
             $failReasons.Add("AMD provider output missing token: $token")
+        }
+    }
+
+    if ($amdVc) {
+        if ($joined -match [regex]::Escape("Provider status: error")) {
+            $pass = $false
+            $failReasons.Add("AMD provider reported error on present AMD hardware")
+        }
+
+        if ($amdExit -ne 0) {
+            $pass = $false
+            $failReasons.Add("wtg.exe --provider amd --once returned non-zero exit code with AMD hardware present: $amdExit")
+        }
+
+        if ($joined -notmatch [regex]::Escape("ADL adapter group")) {
+            $pass = $false
+            $failReasons.Add("AMD provider output missing token: ADL adapter group")
+        }
+    } else {
+        if ($amdExit -ne 2) {
+            $pass = $false
+            $failReasons.Add("wtg.exe --provider amd --once returned unexpected exit code without AMD hardware: $amdExit")
+        }
+
+        foreach ($token in @("Provider status: unavailable","Reason:")) {
+            if ($joined -notmatch [regex]::Escape($token)) {
+                $pass = $false
+                $failReasons.Add("AMD absent-hardware output missing token: $token")
+            }
+        }
+
+        if ($pass) {
+            $notes.Add("AMD absent hardware accepted")
         }
     }
 
@@ -150,24 +178,51 @@ if (-not (Test-Path $wtg)) {
 
     if ($intelOut) { $intelOut | Add-Content -Path $f -Encoding utf8 }
 
-    if ($intelExit -ne 0) {
-        $pass = $false
-        $failReasons.Add("wtg.exe --provider intel --once returned non-zero exit code: $intelExit")
-    }
-
     $joined = ($intelOut -join "`n")
-    $required = @(
+    $commonRequired = @(
         "WTG snapshot mode (provider: Intel Level Zero)",
         "Provider source: wtg.provider.intel.level_zero",
-        "Telemetry class: provider_telemetry",
-        "Intel device 0",
-        "UUID:"
+        "Telemetry class: provider_telemetry"
     )
 
-    foreach ($token in $required) {
+    foreach ($token in $commonRequired) {
         if ($joined -notmatch [regex]::Escape($token)) {
             $pass = $false
             $failReasons.Add("Intel provider output missing token: $token")
+        }
+    }
+
+    if ($intelVc) {
+        if ($intelExit -ne 0) {
+            $pass = $false
+            $failReasons.Add("wtg.exe --provider intel --once returned non-zero exit code with Intel hardware present: $intelExit")
+        }
+
+        foreach ($token in @("Intel device 0","UUID:")) {
+            if ($joined -notmatch [regex]::Escape($token)) {
+                $pass = $false
+                $failReasons.Add("Intel provider output missing token: $token")
+            }
+        }
+
+        if ($joined -match [regex]::Escape("Sysman unavailable")) {
+            $notes.Add("Intel Sysman unavailable accepted")
+        }
+    } else {
+        if ($intelExit -ne 2) {
+            $pass = $false
+            $failReasons.Add("wtg.exe --provider intel --once returned unexpected exit code without Intel hardware: $intelExit")
+        }
+
+        foreach ($token in @("Provider status: unavailable","Reason:")) {
+            if ($joined -notmatch [regex]::Escape($token)) {
+                $pass = $false
+                $failReasons.Add("Intel absent-hardware output missing token: $token")
+            }
+        }
+
+        if ($pass) {
+            $notes.Add("Intel absent hardware accepted")
         }
     }
 
@@ -175,6 +230,13 @@ if (-not (Test-Path $wtg)) {
 
 Add-Content -Path $f -Value "----" -Encoding utf8
 Add-Content -Path $f -Value ("RESULT: {0}" -f ($(if ($pass) { "PASS" } else { "FAIL" }))) -Encoding utf8
+
+if ($notes.Count -gt 0) {
+    Add-Content -Path $f -Value "NOTES:" -Encoding utf8
+    foreach ($n in $notes) {
+        Add-Content -Path $f -Value ("- {0}" -f $n) -Encoding utf8
+    }
+}
 
 if (-not $pass) {
     Add-Content -Path $f -Value "FAIL_REASONS:" -Encoding utf8

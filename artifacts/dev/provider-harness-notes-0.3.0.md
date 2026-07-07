@@ -36,4 +36,10 @@ Known source-level follow-up:
 
 \- Supplemental provider token checks should be hardware-aware so absent AMD/Intel hardware does not require positive provider device telemetry.
 
+\- Harness absent-hardware expectations are now explicit:
+
+&#x20; - exit `2` plus `Provider status: unavailable` is a valid PASS when matching hardware/runtime is absent
+
+&#x20; - exit `0` plus device telemetry remains required when matching hardware is present
+
 
