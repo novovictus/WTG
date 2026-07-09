@@ -35,6 +35,8 @@ type AdlxInt64 = i64;
 type AdlxDouble = f64;
 
 type AdlxInitializeFn = unsafe extern "C" fn(u64, *mut *mut IADLXSystem) -> AdlxResult;
+type AdlxInitialize2Fn =
+    unsafe extern "C" fn(u64, *mut *mut IADLXSystem, *mut *mut IADLXInterface) -> AdlxResult;
 type AdlxTerminateFn = unsafe extern "C" fn() -> AdlxResult;
 type AdlxQueryVersionFn = unsafe extern "C" fn(*mut *const c_char) -> AdlxResult;
 
@@ -48,10 +50,14 @@ pub struct ProviderSample {
     status: &'static str,
     sample_seq: u64,
     timestamp_unix_ms: u128,
+    probe_attempted: bool,
     dll_name: Option<String>,
     dll_path: Option<String>,
+    runtime_dll_state: &'static str,
     runtime_version: Option<String>,
+    init_state: &'static str,
     adlx_initialized: bool,
+    devices_returned: Option<usize>,
     gpus: Vec<AdlxGpuRecord>,
     errors: Vec<String>,
 }
@@ -85,6 +91,7 @@ struct AdlxLibrary {
     dll_name: &'static str,
     dll_path: String,
     initialize: AdlxInitializeFn,
+    initialize2: Option<AdlxInitialize2Fn>,
     terminate: AdlxTerminateFn,
     query_version: Option<AdlxQueryVersionFn>,
 }
@@ -100,10 +107,14 @@ impl Drop for AdlxLibrary {
 struct AdlxSession<'a> {
     _library: &'a AdlxLibrary,
     initialized: bool,
+    adl_mapping: *mut IADLXInterface,
 }
 
 impl<'a> Drop for AdlxSession<'a> {
     fn drop(&mut self) {
+        unsafe {
+            release_interface(self.adl_mapping);
+        }
         if self.initialized {
             unsafe {
                 (self._library.terminate)();
@@ -472,24 +483,39 @@ pub fn collect_once(sample_seq: u64) -> ProviderSample {
 
 pub fn format_snapshot(sample: &ProviderSample) -> String {
     let reason = primary_reason(sample);
-    match sample.status {
-        "ok" => {
-            let mut lines = Vec::new();
-            for (idx, gpu) in sample.gpus.iter().enumerate() {
-                if idx > 0 {
-                    lines.push(String::new());
-                }
-                push_gpu_snapshot_lines(&mut lines, sample, gpu);
-            }
-            if lines.is_empty() {
-                format!("Provider status: unavailable\nReason: {reason}")
-            } else {
-                lines.join("\n")
-            }
-        }
-        "unavailable" => format!("Provider status: unavailable\nReason: {reason}"),
-        "error" => format!("Provider status: error\nReason: {reason}"),
-        other => format!("Provider status: {other}\nReason: {reason}"),
+    let mut lines = vec![
+        "ADLX Provider:".to_string(),
+        format!(
+            "  Probe attempted: {}",
+            if sample.probe_attempted { "yes" } else { "no" }
+        ),
+        format!("  Status: {}", snapshot_status_label(sample)),
+        format!("  Runtime/DLL: {}", sample.runtime_dll_state),
+        format!("  Init: {}", sample.init_state),
+        format!(
+            "  Devices returned: {}",
+            sample
+                .devices_returned
+                .map(|count| count.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        ),
+    ];
+
+    if snapshot_status_label(sample) == "unavailable" {
+        lines.push(format!("  Reason: {reason}"));
+        return lines.join("\n");
+    }
+
+    for gpu in &sample.gpus {
+        lines.push(String::new());
+        push_gpu_snapshot_lines(&mut lines, sample, gpu);
+    }
+
+    if lines.len() == 6 {
+        lines.push(format!("  Reason: {reason}"));
+        lines.join("\n")
+    } else {
+        lines.join("\n")
     }
 }
 
@@ -527,17 +553,26 @@ pub fn format_probe_snapshot(sample: &ProviderSample) -> String {
     lines.push(format!("provider.source: {}", sample.source));
     lines.push(format!("telemetry.class: {}", sample.telemetry_class));
     lines.push(format!("provider.status: {}", sample.status));
+    lines.push(format!("adlx.probe_attempted: {}", sample.probe_attempted));
     if let Some(dll_name) = &sample.dll_name {
         lines.push(format!("adlx.dll_name: {}", dll_name));
     }
     if let Some(dll_path) = &sample.dll_path {
         lines.push(format!("adlx.dll_path: {}", dll_path));
     }
+    lines.push(format!("adlx.runtime_dll_state: {}", sample.runtime_dll_state));
     if let Some(version) = &sample.runtime_version {
         lines.push(format!("adlx.runtime_version: {}", version));
     }
+    lines.push(format!("adlx.init_state: {}", sample.init_state));
     lines.push(format!("adlx.initialized: {}", sample.adlx_initialized));
-    lines.push(format!("adlx.gpu_count: {}", sample.gpus.len()));
+    lines.push(format!(
+        "adlx.gpu_count: {}",
+        sample
+            .devices_returned
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    ));
     for gpu in &sample.gpus {
         lines.push(String::new());
         lines.push(format!("[probe] amd_adlx_gpu={}", gpu.gpu_index));
@@ -632,10 +667,14 @@ pub fn format_stats_snapshot_json(sample: &ProviderSample, tick_seq: u64, tick_t
         "timestamp_unix_ms": sample.timestamp_unix_ms,
         "wtg_version": sample.wtg_version,
         "status": sample.status,
+        "probe_attempted": sample.probe_attempted,
         "dll_name": sample.dll_name,
         "dll_path": sample.dll_path,
+        "runtime_dll_state": sample.runtime_dll_state,
         "runtime_version": sample.runtime_version,
+        "init_state": sample.init_state,
         "adlx_initialized": sample.adlx_initialized,
+        "devices_returned": sample.devices_returned,
         "gpus": gpus,
         "errors": sample.errors,
     });
@@ -653,8 +692,12 @@ fn collect_once_inner(
             return Err(unavailable_sample(
                 sample_seq,
                 timestamp_unix_ms,
+                true,
                 None,
                 None,
+                "not found",
+                None,
+                "not attempted",
                 None,
                 reason,
             ));
@@ -663,15 +706,29 @@ fn collect_once_inner(
 
     let runtime_version = query_runtime_version(&library);
     let mut system = ptr::null_mut::<IADLXSystem>();
-    let init_result = unsafe { (library.initialize)(ADLX_FULL_VERSION, &mut system) };
+    let mut adl_mapping = ptr::null_mut::<IADLXInterface>();
+    let (init_api, init_result) = unsafe {
+        if let Some(initialize2) = library.initialize2 {
+            (
+                "ADLXInitialize2",
+                initialize2(ADLX_FULL_VERSION, &mut system, &mut adl_mapping),
+            )
+        } else {
+            ("ADLXInitialize", (library.initialize)(ADLX_FULL_VERSION, &mut system))
+        }
+    };
     if init_result != ADLX_OK && init_result != ADLX_ALREADY_INITIALIZED {
-        let reason = format!("ADLXInitialize failed: {}", adlx_result_name(init_result));
+        let reason = format!("{init_api} failed: {}", adlx_result_name(init_result));
         return Err(unavailable_sample(
             sample_seq,
             timestamp_unix_ms,
+            true,
             Some(library.dll_name.to_string()),
             Some(library.dll_path.clone()),
+            "found",
             runtime_version,
+            "failed",
+            None,
             reason,
         ));
     }
@@ -679,15 +736,20 @@ fn collect_once_inner(
         return Err(error_sample(
             sample_seq,
             timestamp_unix_ms,
+            true,
             Some(library.dll_name.to_string()),
             Some(library.dll_path.clone()),
+            "found",
             runtime_version,
-            "ADLXInitialize returned a null system interface.".to_string(),
+            "failed",
+            None,
+            format!("{init_api} returned a null system interface."),
         ));
     }
     let _session = AdlxSession {
         _library: &library,
         initialized: true,
+        adl_mapping,
     };
 
     let mut gpu_list = ptr::null_mut::<IADLXGPUList>();
@@ -696,9 +758,13 @@ fn collect_once_inner(
         return Err(error_sample(
             sample_seq,
             timestamp_unix_ms,
+            true,
             Some(library.dll_name.to_string()),
             Some(library.dll_path.clone()),
+            "found",
             runtime_version,
+            "succeeded",
+            None,
             format!(
                 "IADLXSystem::GetGPUs failed: {}",
                 adlx_result_name(get_gpus_result)
@@ -709,9 +775,13 @@ fn collect_once_inner(
         return Err(unavailable_sample(
             sample_seq,
             timestamp_unix_ms,
+            true,
             Some(library.dll_name.to_string()),
             Some(library.dll_path.clone()),
+            "found",
             runtime_version,
+            "succeeded",
+            None,
             "ADLX returned a null GPU list.".to_string(),
         ));
     }
@@ -727,9 +797,13 @@ fn collect_once_inner(
         return Err(unavailable_sample(
             sample_seq,
             timestamp_unix_ms,
+            true,
             Some(library.dll_name.to_string()),
             Some(library.dll_path.clone()),
+            "found",
             runtime_version,
+            "succeeded",
+            None,
             format!(
                 "IADLXSystem::GetPerformanceMonitoringServices failed: {}",
                 adlx_result_name(perf_result)
@@ -747,9 +821,13 @@ fn collect_once_inner(
         return Err(unavailable_sample(
             sample_seq,
             timestamp_unix_ms,
+            true,
             Some(library.dll_name.to_string()),
             Some(library.dll_path.clone()),
+            "found",
             runtime_version,
+            "succeeded",
+            Some(0),
             "ADLX returned zero AMD GPUs.".to_string(),
         ));
     }
@@ -769,10 +847,14 @@ fn collect_once_inner(
         status,
         sample_seq,
         timestamp_unix_ms,
+        probe_attempted: true,
         dll_name: Some(library.dll_name.to_string()),
         dll_path: Some(library.dll_path.clone()),
+        runtime_dll_state: "found",
         runtime_version,
+        init_state: "succeeded",
         adlx_initialized: true,
+        devices_returned: Some(gpus.len()),
         gpus,
         errors,
     };
@@ -1256,6 +1338,14 @@ fn primary_reason(sample: &ProviderSample) -> &str {
         .unwrap_or("provider returned no additional details")
 }
 
+fn snapshot_status_label(sample: &ProviderSample) -> &'static str {
+    if sample.status == "ok" {
+        "available"
+    } else {
+        "unavailable"
+    }
+}
+
 fn load_adlx_library() -> Result<AdlxLibrary, String> {
     let wide_name = to_wide(ADLX_DLL_NAME);
     let module = unsafe { LoadLibraryW(wide_name.as_ptr()) };
@@ -1268,6 +1358,7 @@ fn load_adlx_library() -> Result<AdlxLibrary, String> {
 
     let dll_path = unsafe { module_path(module.as_ptr())? };
     let initialize = unsafe { required_symbol::<AdlxInitializeFn>(module, b"ADLXInitialize\0")? };
+    let initialize2 = unsafe { optional_symbol::<AdlxInitialize2Fn>(module, b"ADLXInitialize2\0") };
     let terminate = unsafe { required_symbol::<AdlxTerminateFn>(module, b"ADLXTerminate\0")? };
     let query_version =
         unsafe { optional_symbol::<AdlxQueryVersionFn>(module, b"ADLXQueryVersion\0") };
@@ -1277,6 +1368,7 @@ fn load_adlx_library() -> Result<AdlxLibrary, String> {
         dll_name: ADLX_DLL_NAME,
         dll_path,
         initialize,
+        initialize2,
         terminate,
         query_version,
     })
@@ -1421,9 +1513,13 @@ fn stats_u32_field(
 fn unavailable_sample(
     sample_seq: u64,
     timestamp_unix_ms: u128,
+    probe_attempted: bool,
     dll_name: Option<String>,
     dll_path: Option<String>,
+    runtime_dll_state: &'static str,
     runtime_version: Option<String>,
+    init_state: &'static str,
+    devices_returned: Option<usize>,
     reason: String,
 ) -> ProviderSample {
     ProviderSample {
@@ -1435,10 +1531,14 @@ fn unavailable_sample(
         status: "unavailable",
         sample_seq,
         timestamp_unix_ms,
+        probe_attempted,
         dll_name,
         dll_path,
+        runtime_dll_state,
         runtime_version,
+        init_state,
         adlx_initialized: false,
+        devices_returned,
         gpus: Vec::new(),
         errors: vec![reason],
     }
@@ -1447,9 +1547,13 @@ fn unavailable_sample(
 fn error_sample(
     sample_seq: u64,
     timestamp_unix_ms: u128,
+    probe_attempted: bool,
     dll_name: Option<String>,
     dll_path: Option<String>,
+    runtime_dll_state: &'static str,
     runtime_version: Option<String>,
+    init_state: &'static str,
+    devices_returned: Option<usize>,
     reason: String,
 ) -> ProviderSample {
     ProviderSample {
@@ -1461,10 +1565,14 @@ fn error_sample(
         status: "error",
         sample_seq,
         timestamp_unix_ms,
+        probe_attempted,
         dll_name,
         dll_path,
+        runtime_dll_state,
         runtime_version,
+        init_state,
         adlx_initialized: false,
+        devices_returned,
         gpus: Vec::new(),
         errors: vec![reason],
     }
@@ -1531,16 +1639,24 @@ mod tests {
             status: "unavailable",
             sample_seq: 0,
             timestamp_unix_ms: 0,
+            probe_attempted: true,
             dll_name: None,
             dll_path: None,
+            runtime_dll_state: "not found",
             runtime_version: None,
+            init_state: "not attempted",
             adlx_initialized: false,
+            devices_returned: None,
             gpus: Vec::new(),
             errors: vec!["ADLX runtime not present".to_string()],
         };
 
         let rendered = format_snapshot(&sample);
-        assert!(rendered.contains("Provider status: unavailable"));
+        assert!(rendered.contains("ADLX Provider:"));
+        assert!(rendered.contains("Probe attempted: yes"));
+        assert!(rendered.contains("Runtime/DLL: not found"));
+        assert!(rendered.contains("Init: not attempted"));
+        assert!(rendered.contains("Status: unavailable"));
         assert!(rendered.contains("ADLX runtime not present"));
         assert_eq!(sample_status(&sample), "unavailable");
     }
@@ -1556,10 +1672,14 @@ mod tests {
             status: "ok",
             sample_seq: 0,
             timestamp_unix_ms: 0,
+            probe_attempted: true,
             dll_name: Some("amdadlx64.dll".to_string()),
             dll_path: Some("C:\\Windows\\System32\\amdadlx64.dll".to_string()),
+            runtime_dll_state: "found",
             runtime_version: Some("1.5.0".to_string()),
+            init_state: "succeeded",
             adlx_initialized: true,
+            devices_returned: Some(1),
             gpus: vec![AdlxGpuRecord {
                 gpu_index: 0,
                 adapter_name: Some("AMD Radeon(TM) Graphics".to_string()),
@@ -1593,6 +1713,11 @@ mod tests {
         };
 
         let rendered = format_snapshot(&sample);
+        assert!(rendered.contains("ADLX Provider:"));
+        assert!(rendered.contains("Status: available"));
+        assert!(rendered.contains("Runtime/DLL: found"));
+        assert!(rendered.contains("Init: succeeded"));
+        assert!(rendered.contains("Devices returned: 1"));
         assert!(rendered.contains("AMD ADLX device 0: AMD Radeon(TM) Graphics"));
         assert!(rendered.contains("GPU activity: 42.50%"));
         assert!(rendered.contains("Memory: 128 MiB / 512 MiB"));
