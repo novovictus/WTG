@@ -26,7 +26,7 @@ Current development builds include:
 - optional Home Assistant MQTT discovery for NVIDIA/NVML MQTT watch publishing
 - explicit opt-in TOML configuration
 - expanded `--once --stats` NVIDIA/NVML provenance JSON
-- experimental AMD ADL `--provider amd --once` and `--provider amd --watch` output
+- experimental AMD ADL and Intel Level Zero provider output through `--provider amd` and `--provider intel`
 
 WTG does not auto-create `wtg.toml`, does not auto-load `wtg.toml`, does not configure an MQTT broker, and does not expose a listening network service.
 
@@ -34,7 +34,7 @@ See `artifacts/test-matrix/matrix.md` for empirical GPU and driver results.
 
 ## Project Purpose
 
-Windows exposes GPU information through multiple abstraction layers. Task Manager and Windows performance counters report WDDM scheduler-level views. WTG focuses on NVIDIA/NVML driver-reported device telemetry.
+Windows exposes GPU information through multiple abstraction layers. Task Manager and Windows performance counters report WDDM scheduler-level views. WTG focuses on provider-reported device telemetry, with NVIDIA/NVML as the primary validation path and AMD ADL and Intel Level Zero as experimental provider-native paths.
 
 Existing alternatives are often:
 
@@ -43,7 +43,7 @@ Existing alternatives are often:
 - generic Windows GPU monitors
 - dashboards that interpret or normalize telemetry before preserving raw provider context
 
-WTG provides a Windows-native validation surface for inspecting NVIDIA/NVML telemetry directly and preserving the provider source behind the observed values.
+WTG provides a Windows-native validation surface for inspecting provider telemetry directly and preserving the provider source behind the observed values.
 
 See: `artifacts/abstraction-model/wtg_vs_task_manager_abstraction_model.md`
 
@@ -59,7 +59,7 @@ Current regression research has shown:
 ## Project Scope
 
 - **Primary provider:** NVIDIA/NVML
-- **Experimental side provider:** AMD ADL, selected explicitly with `--provider amd`
+- **Experimental providers:** AMD ADL and Intel Level Zero, selected explicitly with `--provider amd` or `--provider intel`
 - **Platform:** Windows-native CLI/runtime binary, with an experimental separate desktop UI binary
 - **Reference surface:** `wtg.exe`
 - **Experimental visual surface:** `wtg-ui.exe`
@@ -94,16 +94,18 @@ Run expanded NVIDIA/NVML provenance stats:
 .\target\release\wtg.exe --once --stats
 ```
 
-Run experimental AMD ADL snapshot output:
+Run experimental AMD ADL output:
 
 ```powershell
 .\target\release\wtg.exe --provider amd --once
+.\target\release\wtg.exe --provider amd --watch --interval 1000
 ```
 
-Run experimental AMD ADL watch output:
+Run experimental Intel Level Zero output:
 
 ```powershell
-.\target\release\wtg.exe --provider amd --watch --interval 1000
+.\target\release\wtg.exe --provider intel --once
+.\target\release\wtg.exe --provider intel --watch --interval 1000
 ```
 
 Write expanded NVIDIA/NVML provenance stats to JSONL:
@@ -148,44 +150,56 @@ Run the experimental UI:
   Repeatable field ID argument for `--probe-fields`.
 
 - `--sink jsonl`  
-  Create a timestamped JSONL sink file for supported NVIDIA/NVML modes. AMD ADL sinks are intentionally rejected.
+  Create a timestamped JSONL sink file for supported NVIDIA/NVML modes. AMD ADL and Intel Level Zero sinks are intentionally rejected.
 
 - `--sink csv`  
-  Create a timestamped CSV sink file for supported NVIDIA/NVML modes. AMD ADL sinks are intentionally rejected.
+  Create a timestamped CSV sink file for supported NVIDIA/NVML modes. AMD ADL and Intel Level Zero sinks are intentionally rejected.
 
 - `--sink mqtt`  
-  Publish live NVIDIA/NVML `--watch` snapshots to an existing MQTT broker. AMD ADL MQTT publishing is intentionally not implemented.
+  Publish live NVIDIA/NVML `--watch` snapshots to an existing MQTT broker. AMD ADL and Intel Level Zero MQTT publishing are intentionally not implemented.
 
 - `--config <path>`  
   Load an explicit WTG TOML configuration file.
 
 - `--provider amd`  
-  Select the experimental AMD ADL provider for compact `--once` or `--watch` output. AMD and Intel output use provider-scoped schemas and telemetry class `provider_telemetry`.
+  Select the experimental AMD ADL provider for compact `--once`, `--watch`, or provider-scoped `--stats` output.
 
-## AMD ADL Discovery
+- `--provider intel`  
+  Select the experimental Intel Level Zero provider for compact `--once`, `--watch`, or provider-scoped `--stats` output.
 
-`--provider amd` is the experimental AMD ADL provider path for this branch.
+AMD and Intel output use provider-scoped schemas and telemetry class `provider_telemetry`.
+
+## Experimental AMD and Intel Providers
+
+`--provider amd` and `--provider intel` are the experimental non-NVIDIA provider paths for this release candidate.
 
 Supported commands:
 
 ```powershell
 .\target\release\wtg.exe --provider amd --once
 .\target\release\wtg.exe --provider amd --watch --interval 1000
+.\target\release\wtg.exe --provider intel --once
+.\target\release\wtg.exe --provider intel --watch --interval 1000
 ```
 
 Intentional boundaries:
 
 ```text
 AMD --stats: provider-scoped JSON stats/provenance
-AMD sinks: rejected
-AMD MQTT/Home Assistant publishing: not implemented
+Intel --stats: provider-scoped JSON stats/provenance
+AMD and Intel sinks: rejected
+AMD and Intel MQTT/Home Assistant publishing: not implemented
 AMD output schema: wtg.amd_adl.stats.v1
-AMD telemetry class: provider_telemetry
+Intel output schema: wtg.intel_level_zero.stats.v1
+AMD and Intel telemetry class: provider_telemetry
 ```
 
-The AMD provider preserves ADL-native facts beside NVIDIA/NVML behavior. It does not translate ADL facts into NVML-equivalent names, does not synthesize missing values, and does not claim cross-vendor parity.
+The AMD and Intel providers preserve provider-native facts beside NVIDIA/NVML behavior. They do not translate ADL or Level Zero facts into NVML-equivalent names, synthesize missing values, or claim cross-vendor parity.
 
-Detailed notes: [AMD ADL discovery](docs/amd-adl-discovery.md)
+Detailed notes:
+
+- [AMD ADL discovery](docs/amd-adl-discovery.md)
+- [Provider discovery 0.3](docs/provider-discovery-0.3.md)
 
 ## NVML Provenance Stats
 
@@ -240,6 +254,8 @@ Detailed notes: [NVML provenance stats](docs/nvml-provenance-stats.md)
 | `--watch --stats` | yes | yes | yes | legacy NVIDIA/NVML stats/watch behavior for this release |
 | `--provider amd --once` | no | no | no | compact AMD ADL provider telemetry |
 | `--provider amd --watch` | no | no | no | compact AMD ADL live provider telemetry |
+| `--provider intel --once` | no | no | no | compact Intel Level Zero provider telemetry |
+| `--provider intel --watch` | no | no | no | compact Intel Level Zero live provider telemetry |
 | `--probe` | yes | yes | no | NVIDIA/NVML validation output |
 | `--probe-fields` | yes | yes | no | NVIDIA/NVML field-ID diagnostics |
 
@@ -255,7 +271,7 @@ Example:
 .\wtg.exe --watch --sink mqtt --mqtt-host 127.0.0.1 --mqtt-port 1884 --mqtt-node-id testnode
 ```
 
-WTG is an MQTT publisher, not a broker. MQTT validates transport only; it is not the telemetry source of truth. AMD ADL provider output is not currently published to MQTT or Home Assistant.
+WTG is an MQTT publisher, not a broker. MQTT validates transport only; it is not the telemetry source of truth. AMD ADL and Intel Level Zero provider output are not currently published to MQTT or Home Assistant.
 
 Detailed notes: [MQTT and Home Assistant](docs/mqtt-home-assistant.md)
 
@@ -277,7 +293,7 @@ Detailed notes: [Configuration](docs/configuration.md)
 
 `wtg-ui.exe` is an experimental egui desktop frontend.
 
-It displays live NVIDIA/NVML telemetry and provides a convenience layer over the same explicit TOML configuration model used by the CLI.
+It displays provider-backed adapter telemetry and provides a convenience layer over the same explicit TOML configuration model used by the CLI.
 
 The UI is not the reference surface for regression testing or metric capture.
 
@@ -326,7 +342,7 @@ wtg-view/
   shared view helpers where useful
 
 wtg-providers/
-  experimental provider-side work, including AMD ADL discovery
+  experimental provider-side work, including AMD ADL and Intel Level Zero
 ```
 
 `wtg-app` does not own NVML provider querying. Expanded NVML provenance collection belongs in `wtg-core`. Experimental non-NVIDIA provider work remains provider-scoped under `wtg-providers` and is routed through `wtg.exe` only when explicitly selected.
@@ -342,7 +358,7 @@ Empirical testing shows:
 - individual counters may still show driver/platform-specific behavior
 - WTG fails fast when NVML is unavailable and prints an explicit error when possible
 
-AMD ADL discovery relies on `atiadlxx.dll` being available on the test system. Unsupported, unavailable, or failing ADL calls are reported as provider-scoped facts and are not treated as NVIDIA/NVML failures.
+AMD ADL relies on `atiadlxx.dll` being available on the test system. Intel provider output relies on a usable Intel Level Zero runtime. Unsupported, unavailable, or failing provider calls are reported as provider-scoped facts and are not treated as NVIDIA/NVML failures.
 
 ## Validation Boundary
 
@@ -359,11 +375,13 @@ cargo build -p wtg-app --release
 .\target\release\wtg.exe --once --stats --sink csv
 .\target\release\wtg.exe --provider amd --once
 .\target\release\wtg.exe --provider amd --watch --interval 1000
+.\target\release\wtg.exe --provider intel --once
+.\target\release\wtg.exe --provider intel --watch --interval 1000
 .\target\release\wtg.exe --probe
 .\target\release\wtg.exe --probe-fields --field-id 74
 ```
 
-Use MQTT broker/subscriber captures to validate transport only. Do not treat MQTT, Home Assistant, AMD ADL, or the eGUI as the NVIDIA/NVML telemetry source of truth.
+Use MQTT broker/subscriber captures to validate transport only. Do not treat MQTT, Home Assistant, AMD ADL, Intel Level Zero, or the eGUI as the NVIDIA/NVML telemetry source of truth.
 
 For automated watch checks, avoid `Select-Object -First ...` as final evidence because it intentionally closes stdout and can produce a broken-pipe panic after the selected lines are captured. Manual `Ctrl+C` watch termination is cleaner for final run notes.
 
