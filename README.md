@@ -3,13 +3,15 @@ Copyright (C) 2026 Adam Hooper
 
 # WTG - WhatTheGPU
 
-**Tagline:** Honest GPU compute stats for Windows
+**Tagline:** Provider-native GPU telemetry and validation for Windows
 
-WTG is a Windows-native GPU telemetry and validation tool focused on NVIDIA/NVML provider truth. It exposes driver-reported GPU telemetry from a standalone Windows executable without depending on Task Manager, PerfMon, Docker, Python, or `nvidia-smi` parsing.
+WTG is a Windows-native GPU telemetry and validation suite that preserves what each hardware provider actually reports. NVIDIA/NVML remains the primary reference and validation path, while WTG 0.3.0 adds experimental AMD ADL and Intel Level Zero adapter surfaces without normalizing unlike provider fields into false cross-vendor equivalents.
+
+WTG includes a standalone CLI reference tool and an experimental desktop adapter viewer. It can capture live telemetry, provenance, probe results, structured output, and optional MQTT delivery without relying on Task Manager, PerfMon, Python, Docker, or parsing `nvidia-smi` output.
 
 ## Current Status
 
-Current branch: `dev/0.3.0-egui-provider-adapters`
+Current release candidate: `release/v0.3.0-rc1`
 
 WTG 0.3.0 is the eGUI provider-backed adapter view workstream. WTG remains NVIDIA/NVML-centric; NVIDIA/NVML is still the primary truth provider and the default eGUI device path.
 
@@ -358,8 +360,6 @@ cargo build -p wtg-app --release
 .\target\release\wtg.exe --provider amd --once
 .\target\release\wtg.exe --provider amd --watch --interval 1000
 .\target\release\wtg.exe --probe
-.\target\release\wtg.exe --probe --sink jsonl
-.\target\release\wtg.exe --probe --sink csv
 .\target\release\wtg.exe --probe-fields --field-id 74
 ```
 
