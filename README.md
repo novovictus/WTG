@@ -263,7 +263,7 @@ Detailed notes: [Sinks](docs/sinks.md)
 
 ## MQTT and Home Assistant
 
-The MQTT sink publishes live NVIDIA/NVML telemetry from `--watch` to a user-specified broker.
+WTG can publish live NVIDIA/NVML `--watch` snapshots to an existing MQTT broker and can publish retained Home Assistant MQTT discovery configuration for those snapshots.
 
 Example:
 
@@ -271,13 +271,74 @@ Example:
 .\wtg.exe --watch --sink mqtt --mqtt-host 127.0.0.1 --mqtt-port 1884 --mqtt-node-id testnode
 ```
 
-WTG is an MQTT publisher, not a broker. MQTT validates transport only; it is not the telemetry source of truth. AMD ADL and Intel Level Zero provider output are not currently published to MQTT or Home Assistant.
+The deployment boundary is:
+
+```text
+NVIDIA NVML
+  -> WTG collection and MQTT publication
+  -> Home Assistant MQTT discovery and WTG entities
+  -> optional downstream templates and dashboards
+```
+
+WTG owns provider collection, MQTT state publication, availability, discovery configuration, and deterministic Home Assistant device/entity creation. Home Assistant owns the discovered entity registry and local presentation. WTG does not install dashboard cards, create Home Assistant template packages, or classify display states such as `IDLE`, `LOAD`, `MAX`, `LIMIT`, or `SUS`.
+
+WTG publishes one JSON state payload per NVIDIA GPU to a topic shaped like:
+
+```text
+wtg/<node_id>/gpu<index>/state
+```
+
+Home Assistant discovery creates WTG device and sensor entities from that state path. Entity IDs are deterministic and include the advertised hostname, GPU index, and metric, for example:
+
+```text
+sensor.wtg_<hostname>_gpu_0_gpu_0_power
+sensor.wtg_<hostname>_gpu_0_gpu_0_gpu_utilization
+sensor.wtg_<hostname>_gpu_0_gpu_0_temperature
+```
+
+MQTT is a transport and integration surface, not a replacement telemetry authority. The telemetry values remain NVIDIA/NVML observations collected by WTG. Broker captures validate publication and transport behavior; Home Assistant entities validate discovery and integration behavior.
+
+AMD ADL and Intel Level Zero provider output are not currently published through the MQTT or Home Assistant discovery paths.
 
 Detailed notes: [MQTT and Home Assistant](docs/mqtt-home-assistant.md)
 
+## Redline Visualization Layer
+
+[WTG HA Redline](https://github.com/novovictus/wtg-ha-redline) is a separate optional Home Assistant presentation project. It consumes WTG-discovered Home Assistant entities and can derive dashboard-oriented scores, warning states, gauges, and labels without changing the underlying WTG telemetry.
+
+The responsibility split is intentional:
+
+```text
+WTG
+  provider telemetry
+  MQTT state
+  availability
+  Home Assistant discovery
+
+Home Assistant
+  discovered WTG devices and entities
+
+WTG HA Redline
+  template sensors
+  derived display states
+  gauges and dashboard cards
+```
+
+Redline-derived states are presentation interpretations, not WTG provider truth. Redline does not replace WTG MQTT discovery and is not required to use WTG's CLI, sinks, MQTT publisher, or experimental desktop UI.
+
+Redline is maintained and reviewed separately. Its installation instructions, entity templates, thresholds, and dashboard behavior belong in the Redline repository rather than in WTG.
+
 ## Configuration
 
-WTG supports an explicit TOML configuration file for MQTT and Home Assistant settings.
+WTG supports an explicit TOML configuration file for its MQTT and Home Assistant discovery behavior.
+
+WTG configuration owns settings such as:
+
+- broker host and port
+- optional MQTT authentication
+- MQTT node identity and topic naming
+- Home Assistant discovery enablement
+- retained availability and discovery behavior
 
 Configuration is opt-in:
 
@@ -287,13 +348,17 @@ Configuration is opt-in:
 - CLI flags override config values
 - normal non-MQTT commands remain unaffected
 
+WTG configuration does not install or configure Home Assistant dashboards, packages, template sensors, Redline thresholds, or Redline state logic. Those are downstream Home Assistant concerns.
+
 Detailed notes: [Configuration](docs/configuration.md)
 
 ## eGUI
 
 `wtg-ui.exe` is an experimental egui desktop frontend.
 
-It displays provider-backed adapter telemetry and provides a convenience layer over the same explicit TOML configuration model used by the CLI.
+It displays provider-backed adapter telemetry from NVIDIA NVML, AMD ADL, and Intel Level Zero where the corresponding provider is available. It also provides a convenience layer over the same explicit WTG TOML configuration model used by the CLI.
+
+The UI may assist with WTG runtime and transport configuration, but it does not install Home Assistant dashboards or configure the Redline presentation layer.
 
 The UI is not the reference surface for regression testing or metric capture.
 
@@ -347,6 +412,26 @@ wtg-providers/
 
 `wtg-app` does not own NVML provider querying. Expanded NVML provenance collection belongs in `wtg-core`. Experimental non-NVIDIA provider work remains provider-scoped under `wtg-providers` and is routed through `wtg.exe` only when explicitly selected.
 
+The runtime and presentation boundary is:
+
+```text
+WTG
+  provider collection
+  CLI validation and local sinks
+  MQTT publication
+  Home Assistant discovery
+
+Home Assistant
+  discovered WTG devices and metric entities
+
+Optional downstream projects
+  templates
+  derived states
+  dashboards
+```
+
+WTG owns the collected provider facts and the transport metadata it emits. Downstream consumers may visualize or classify those values, but those interpretations do not become WTG telemetry.
+
 ## Driver Requirements
 
 WTG relies on NVIDIA NVML on Windows for the default provider path.
@@ -381,16 +466,26 @@ cargo build -p wtg-app --release
 .\target\release\wtg.exe --probe-fields --field-id 74
 ```
 
-Use MQTT broker/subscriber captures to validate transport only. Do not treat MQTT, Home Assistant, AMD ADL, Intel Level Zero, or the eGUI as the NVIDIA/NVML telemetry source of truth.
+Validation boundaries by surface:
+
+- CLI, probe, provider output, and local sink artifacts validate WTG collection and serialization.
+- MQTT broker/subscriber captures validate WTG publication and transport.
+- Home Assistant device and entity creation validates WTG discovery behavior.
+- Redline templates, states, and dashboards validate downstream presentation only.
+- The eGUI provides visual corroboration and configuration assistance but is not the formal validation reference.
+
+Do not treat MQTT, Home Assistant, Redline, or the eGUI as alternate provider authorities. Do not treat AMD ADL or Intel Level Zero output as NVIDIA/NVML-equivalent telemetry.
 
 For automated watch checks, avoid `Select-Object -First ...` as final evidence because it intentionally closes stdout and can produce a broken-pipe panic after the selected lines are captured. Manual `Ctrl+C` watch termination is cleaner for final run notes.
 
 ## Validation Strategy
 
-- Compare WTG CLI output against `nvidia-smi` and WSL NVML metrics where useful.
-- Compare NVML telemetry against Windows-reported metrics to characterize abstraction differences.
-- Use CLI, probe, field-values, provider output, and sink artifacts for validation evidence.
-- Use MQTT broker/subscriber captures to validate transport only.
+- Compare WTG CLI output against provider-native reference surfaces where useful.
+- Compare NVIDIA/NVML telemetry against `nvidia-smi`, WSL NVML metrics, and Windows-reported metrics to characterize abstraction differences.
+- Use CLI, probe, field-values, provider output, and sink artifacts for collection evidence.
+- Use MQTT broker/subscriber captures for publication and transport evidence.
+- Use Home Assistant device and entity creation for discovery evidence.
+- Use downstream Redline states and dashboards only to validate presentation behavior.
 - Use the experimental UI for visual corroboration and demos only.
 - Treat laptop power source as a controlled variable when interpreting hybrid GPU telemetry.
 
