@@ -27,7 +27,7 @@ Current release candidate: `release/v0.3.0-rc1`
 
 WTG preserves provider identity, source API, units, unavailable states, and errors. It does not synthesize missing values or claim that unlike vendor fields are equivalent.
 
-Detailed provider behavior: [Providers](docs/providers.md)
+Detailed provider behavior: [Providers](artifacts/docs/providers.md)
 
 ## Build
 
@@ -89,7 +89,7 @@ Experimental UI:
 .\target\release\wtg-ui.exe
 ```
 
-CLI, sink, schema, probe, and stats details: [CLI and Output](docs/cli-and-output.md)
+CLI, sink, schema, probe, and stats details: [CLI and Output](artifacts/docs/cli-and-output.md)
 
 ## Sink Support
 
@@ -127,7 +127,7 @@ WTG owns provider collection, MQTT state publication, availability, and discover
 
 AMD ADL and Intel Level Zero output are not currently published through MQTT or Home Assistant discovery.
 
-Detailed integration behavior: [MQTT and Home Assistant](docs/mqtt-home-assistant.md)
+Detailed integration behavior: [MQTT and Home Assistant](artifacts/docs/mqtt-home-assistant.md)
 
 ## Configuration
 
@@ -139,7 +139,7 @@ WTG configuration is explicit and opt-in:
 - configuration can define broker, authentication, node identity, topic naming, discovery, and retained behavior
 - WTG configuration does not install Home Assistant dashboards or Redline packages
 
-Detailed configuration behavior: [Configuration](docs/configuration.md)
+Detailed configuration behavior: [Configuration](artifacts/docs/configuration.md)
 
 ## Desktop UI
 
@@ -147,9 +147,9 @@ Detailed configuration behavior: [Configuration](docs/configuration.md)
 
 The UI is not the formal regression-testing or metric-capture reference surface.
 
-Detailed UI behavior: [UI](docs/ui.md)
+Detailed UI behavior: [UI](artifacts/docs/ui.md)
 
-Windows execution and application-control notes: [Windows Deployment](docs/windows-deployment.md)
+Windows execution and application-control notes: [Windows Deployment](artifacts/docs/windows-deployment.md)
 
 ## Validation Boundary
 
@@ -176,7 +176,7 @@ Validation responsibilities:
 - Redline validates downstream presentation only
 - the UI provides visual corroboration, not formal evidence
 
-Detailed methodology and current known behavior: [Validation](docs/validation.md)
+Detailed methodology and current known behavior: [Validation](artifacts/docs/validation.md)
 
 ## Architecture
 
@@ -198,20 +198,21 @@ WTG owns collected provider facts and emitted transport metadata. Downstream con
 
 ## Research and Test Artifacts
 
-Research, matrices, bench records, and validation evidence remain under `artifacts/`. They are maintained separately from the product documentation and are not normalized into the seven maintained documents under `docs/`.
+Research, matrices, bench records, validation evidence, and maintained product documentation live under `artifacts/`.
 
 Key starting points:
 
+- `artifacts/docs/`
 - `artifacts/test-matrix/matrix.md`
 - `artifacts/regression-research/`
 - `artifacts/abstraction-model/`
 
 ## Maintained Documentation
 
-- [Providers](docs/providers.md)
-- [CLI and Output](docs/cli-and-output.md)
-- [Configuration](docs/configuration.md)
-- [MQTT and Home Assistant](docs/mqtt-home-assistant.md)
-- [UI](docs/ui.md)
-- [Validation](docs/validation.md)
-- [Windows Deployment](docs/windows-deployment.md)
+- [Providers](artifacts/docs/providers.md)
+- [CLI and Output](artifacts/docs/cli-and-output.md)
+- [Configuration](artifacts/docs/configuration.md)
+- [MQTT and Home Assistant](artifacts/docs/mqtt-home-assistant.md)
+- [UI](artifacts/docs/ui.md)
+- [Validation](artifacts/docs/validation.md)
+- [Windows Deployment](artifacts/docs/windows-deployment.md)
