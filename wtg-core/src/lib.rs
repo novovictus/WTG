@@ -6,4 +6,7 @@
 //! - NVML access + snapshot types used by the app
 //! - `nvml::GpuSnapshot` is the authoritative snapshot model for `--stats`
 
+pub mod exit_code;
 pub mod nvml;
+
+pub use exit_code::exit_code_for_status;

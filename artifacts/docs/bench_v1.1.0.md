@@ -24,6 +24,10 @@ ATX PSU conversion
 
 Bench v1.1 preserves the v1.0 baseline as a historical artifact and adds the mixed adapter riser expansion as the current update surface. This file may receive additional updates as riser-path testing, mixed adapter enumeration, AMD provider exploration, and Intel provider exploration mature.
 
+### Build Album
+
+https://photos.app.goo.gl/QV5WbYFcLYBPVLTj8
+
 ### Motherboard
 
 Manufacturer: Dell Inc. Model: 0YF8P5 Revision: A00
@@ -112,20 +116,17 @@ Current intended provider roles:
 
 ### Riser Kit
 
-Rosewill RCRC-18001 powered PCIe riser adapter.
+Rosewill RCRC-17001 powered PCIe riser adapter.
 
-Vendor page:
 
-https://www.newegg.com/p/N82E16812119901
-
-Vendor-listed package contents:
+Package contents:
 
 - PCIe 16x riser board.
 - PCIe 1x adapter card.
 - 60 cm USB 3.0 cable.
 - 6-pin PCIe power to 15-pin SATA power cable.
 
-Vendor-listed features:
+Listed features:
 
 - PCIe 16x to 1x riser adapter.
 - 4 solid capacitors.
@@ -139,9 +140,6 @@ Vendor-listed features:
 
 Thsion 25 inch PCIe cable for EVGA modular power supplies.
 
-Vendor page:
-
-https://www.amazon.com/dp/B0DRP72QHD
 
 Observed product framing:
 

@@ -47,11 +47,12 @@ use probe_fields::{
     format_probe_fields_snapshot,
 };
 use sink::{Sink, SinkKind};
-use wtg_providers::amd_adl;
+use wtg_providers::{amd_adl, intel_level_zero};
 
 /// Default sampling interval when `--watch` is enabled.
 /// 1000ms is conservative and matches NVML’s practical update cadence for many metrics.
 const DEFAULT_INTERVAL_MS: u64 = 1000;
+const NVML_ONCE_TIMEOUT_MS: u64 = 5000;
 
 /// Stats output schema version.
 /// This lets us evolve the key set while remaining explicit in artifacts.
@@ -60,6 +61,7 @@ const STATS_SCHEMA: u32 = 0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProviderKind {
     Amd,
+    Intel,
 }
 
 struct CliArgs {
@@ -260,6 +262,21 @@ fn print_and_mirror_jsonl(text: &str, sink: &Option<Sink>) {
     }
 }
 
+fn print_provider_status_block(status: &str, reason: &str) {
+    println!("Provider status: {status}");
+    println!("Reason: {reason}");
+}
+
+fn print_nvml_failed_device_blocks(report: &wtg_core::nvml::NvmlSnapshotReport) {
+    for sample in report.device_results.iter() {
+        if let Err(reason) = &sample.result {
+            println!();
+            println!("NVML device {}: unavailable", sample.index);
+            println!("  Reason: {reason}");
+        }
+    }
+}
+
 fn print_help() {
     print!(concat!(
         "WTG - WhatTheGPU v",
@@ -267,9 +284,9 @@ fn print_help() {
         "\n",
         "\n",
         "Usage:\n",
-        "  wtg.exe --once [--stats] [--provider amd] [--sink jsonl|csv]\n",
-        "  wtg.exe --watch [--interval <ms>] [--stats] [--provider amd] [--sink jsonl|csv|mqtt]\n",
-        "  wtg.exe --probe [--provider amd] [--sink jsonl|csv]\n",
+        "  wtg.exe --once [--stats] [--provider amd|intel] [--sink jsonl|csv]\n",
+        "  wtg.exe --watch [--interval <ms>] [--stats] [--provider amd|intel] [--sink jsonl|csv|mqtt]\n",
+        "  wtg.exe --probe [--provider amd|intel] [--sink jsonl|csv]\n",
         "  wtg.exe --probe-fields --field-id <u32> [--field-id <u32> ...] [--sink jsonl|csv]\n",
         "  wtg.exe --sink mqtt --mqtt-ha-remove-discovery --mqtt-host <host> --mqtt-node-id <id>\n",
         "\n",
@@ -279,7 +296,7 @@ fn print_help() {
         "  --config <path>         Load explicit WTG TOML config.\n",
         "  --interval <ms>         Polling interval in milliseconds for --watch.\n",
         "  --stats                 Print stable key:value stats output for --once or --watch.\n",
-        "  --provider amd          Use the experimental AMD ADL provider for --once, --watch, or --probe.\n",
+        "  --provider amd|intel    Use an experimental provider for --once, --watch, or --probe.\n",
         "  --probe                 Capture one context-rich probe block.\n",
         "  --probe-fields          Query explicit NVML field-value IDs.\n",
         "  --field-id <u32>        Repeatable field ID for --probe-fields.\n",
@@ -316,6 +333,7 @@ fn print_product_header() {
 fn provider_display_name(provider: Option<ProviderKind>) -> &'static str {
     match provider {
         Some(ProviderKind::Amd) => "AMD ADL",
+        Some(ProviderKind::Intel) => "Intel Level Zero",
         None => "NVIDIA NVML",
     }
 }
@@ -337,7 +355,9 @@ fn run_amd_provider(args: &CliArgs) -> ! {
     if args.probe {
         let sample = amd_adl::collect_once(0);
         println!("{}", amd_adl::format_probe_snapshot(&sample));
-        process::exit(0);
+        process::exit(wtg_core::exit_code_for_status(amd_adl::sample_status(
+            &sample,
+        )));
     }
 
     if args.once && args.stats {
@@ -347,7 +367,9 @@ fn run_amd_provider(args: &CliArgs) -> ! {
             "{}",
             amd_adl::format_stats_snapshot_json(&sample, 0, &tick_ts)
         );
-        process::exit(0);
+        process::exit(wtg_core::exit_code_for_status(amd_adl::sample_status(
+            &sample,
+        )));
     }
 
     if args.watch && args.stats {
@@ -379,7 +401,9 @@ fn run_amd_provider(args: &CliArgs) -> ! {
         println!("Telemetry class: {}", amd_adl::telemetry_class());
         println!();
         println!("{}", amd_adl::format_snapshot(&sample));
-        process::exit(0);
+        process::exit(wtg_core::exit_code_for_status(amd_adl::sample_status(
+            &sample,
+        )));
     }
 
     let interval_ms = args.interval_ms.unwrap_or(DEFAULT_INTERVAL_MS);
@@ -404,9 +428,103 @@ fn run_amd_provider(args: &CliArgs) -> ! {
     }
 }
 
+fn run_intel_provider(args: &CliArgs) -> ! {
+    if args.probe {
+        let sample = intel_level_zero::collect_once(0);
+        println!("{}", intel_level_zero::format_probe_snapshot(&sample));
+        process::exit(wtg_core::exit_code_for_status(
+            intel_level_zero::sample_status(&sample),
+        ));
+    }
+
+    if args.once && args.stats {
+        let sample = intel_level_zero::collect_visible_sample(0);
+        let tick_ts = now_ts();
+        println!(
+            "{}",
+            intel_level_zero::format_stats_snapshot_json(&sample, 0, &tick_ts)
+        );
+        process::exit(wtg_core::exit_code_for_status(
+            intel_level_zero::sample_status(&sample),
+        ));
+    }
+
+    if args.watch && args.stats {
+        let interval_ms = args.interval_ms.unwrap_or(DEFAULT_INTERVAL_MS);
+        if interval_ms < 100 {
+            eprintln!("WTG note: very low interval ({interval_ms}ms). Intel Level Zero metrics may not update this quickly; expect duplicates.");
+        }
+
+        let sleep_dur = Duration::from_millis(interval_ms);
+        let mut sample_seq = 0u64;
+        let first_sample = intel_level_zero::collect_visible_sample(sample_seq);
+        let first_tick_ts = now_ts();
+        println!(
+            "{}",
+            intel_level_zero::format_stats_snapshot_json(&first_sample, sample_seq, &first_tick_ts)
+        );
+        println!();
+        sample_seq = sample_seq.saturating_add(1);
+        thread::sleep(sleep_dur);
+
+        loop {
+            let sample = intel_level_zero::collect_once(sample_seq);
+            let tick_ts = now_ts();
+            println!(
+                "{}",
+                intel_level_zero::format_stats_snapshot_json(&sample, sample_seq, &tick_ts)
+            );
+            println!();
+            sample_seq = sample_seq.saturating_add(1);
+            thread::sleep(sleep_dur);
+        }
+    }
+
+    print_product_header();
+    if args.once {
+        let sample = intel_level_zero::collect_visible_sample(0);
+        print_mode_header("snapshot", args.provider, None);
+        println!("Provider source: {}", intel_level_zero::provider_source());
+        println!("Telemetry class: {}", intel_level_zero::telemetry_class());
+        println!();
+        println!("{}", intel_level_zero::format_snapshot(&sample));
+        process::exit(wtg_core::exit_code_for_status(
+            intel_level_zero::sample_status(&sample),
+        ));
+    }
+
+    let interval_ms = args.interval_ms.unwrap_or(DEFAULT_INTERVAL_MS);
+    if interval_ms < 100 {
+        eprintln!("WTG note: very low interval ({interval_ms}ms). Intel Level Zero metrics may not update this quickly; expect duplicates.");
+    }
+
+    print_mode_header("watch", args.provider, Some(interval_ms));
+    println!("Provider source: {}", intel_level_zero::provider_source());
+    println!("Telemetry class: {}", intel_level_zero::telemetry_class());
+    println!();
+
+    let sleep_dur = Duration::from_millis(interval_ms);
+    let mut sample_seq = 0u64;
+    let first_sample = intel_level_zero::collect_visible_sample(sample_seq);
+    println!("--- tick {} ---", now_ts());
+    println!("{}", intel_level_zero::format_watch_sample(&first_sample));
+    println!();
+    sample_seq = sample_seq.saturating_add(1);
+    thread::sleep(sleep_dur);
+
+    loop {
+        let sample = intel_level_zero::collect_once(sample_seq);
+        println!("--- tick {} ---", now_ts());
+        println!("{}", intel_level_zero::format_watch_sample(&sample));
+        println!();
+        sample_seq = sample_seq.saturating_add(1);
+        thread::sleep(sleep_dur);
+    }
+}
+
 fn usage_error(message: &str) -> ! {
     eprintln!("WTG usage error: {message}");
-    process::exit(2);
+    process::exit(1);
 }
 
 fn parse_args() -> CliArgs {
@@ -447,12 +565,15 @@ fn parse_args() -> CliArgs {
             }
             "--provider" => {
                 if i + 1 >= args.len() {
-                    usage_error("--provider requires a value. Supported: amd.");
+                    usage_error("--provider requires a value. Supported: amd, intel.");
                 }
 
                 parsed.provider = Some(match args[i + 1].as_str() {
                     "amd" => ProviderKind::Amd,
-                    other => usage_error(&format!("--provider value must be amd. Got: {other}")),
+                    "intel" => ProviderKind::Intel,
+                    other => usage_error(&format!(
+                        "--provider value must be amd or intel. Got: {other}"
+                    )),
                 });
                 i += 2;
             }
@@ -754,6 +875,20 @@ fn validate_args_result(parsed: &CliArgs) -> Result<(), String> {
         }
     }
 
+    if parsed.provider == Some(ProviderKind::Intel) {
+        if probe_fields {
+            return Err("--provider intel does not support --probe-fields.".to_string());
+        }
+        if parsed.sink.is_some() {
+            return Err("--provider intel does not support --sink.".to_string());
+        }
+        if parsed.mqtt_ha_remove_discovery {
+            return Err(
+                "--provider intel does not support --mqtt-ha-remove-discovery.".to_string(),
+            );
+        }
+    }
+
     if parsed.provider.is_some() && !once && !watch && !probe {
         return Err("--provider is valid only with --once, --watch, or --probe.".to_string());
     }
@@ -988,7 +1123,7 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("WTG config error: {e}");
-                process::exit(2);
+                process::exit(1);
             }
         }
         return;
@@ -1006,7 +1141,7 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("WTG config error: {e}");
-                process::exit(2);
+                process::exit(1);
             }
         }
         return;
@@ -1018,6 +1153,9 @@ fn main() {
     if args.provider == Some(ProviderKind::Amd) {
         run_amd_provider(&args);
     }
+    if args.provider == Some(ProviderKind::Intel) {
+        run_intel_provider(&args);
+    }
 
     let sink = match args.sink {
         Some(kind @ (SinkKind::Csv | SinkKind::Jsonl)) => match Sink::new(kind) {
@@ -1027,7 +1165,7 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("WTG runtime error: failed to create sink output file: {e}");
-                process::exit(2);
+                process::exit(wtg_core::exit_code_for_status("error"));
             }
         },
         Some(SinkKind::Mqtt) | None => None,
@@ -1041,7 +1179,7 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("WTG MQTT error: {e}");
-                process::exit(2);
+                process::exit(wtg_core::exit_code_for_status("error"));
             }
         },
         None => None,
@@ -1052,23 +1190,28 @@ fn main() {
             Ok(ctx) => ctx,
             Err(e) => {
                 eprintln!("WTG MQTT cleanup init failed: {e}");
-                process::exit(2);
+                process::exit(wtg_core::exit_code_for_status("unavailable"));
             }
         };
         let snapshots = match wtg_core::nvml::snapshot_all_with_ctx(&ctx) {
             Ok(snapshots) => snapshots,
             Err(e) => {
                 eprintln!("WTG MQTT cleanup snapshot failed: {e}");
-                process::exit(2);
+                let status = if e == "all NVIDIA device samples failed" {
+                    "error"
+                } else {
+                    "unavailable"
+                };
+                process::exit(wtg_core::exit_code_for_status(status));
             }
         };
         let Some(mqtt_sink) = mqtt_sink.as_mut() else {
             eprintln!("WTG MQTT cleanup error: --mqtt-ha-remove-discovery requires --sink mqtt.");
-            process::exit(2);
+            process::exit(1);
         };
         if let Err(e) = mqtt_sink.publish_ha_discovery_cleanup_for_snapshots(&snapshots) {
             eprintln!("WTG MQTT cleanup error: {e}");
-            process::exit(2);
+            process::exit(wtg_core::exit_code_for_status("error"));
         }
 
         eprintln!("WTG note: MQTT Home Assistant discovery cleanup published.");
@@ -1080,14 +1223,19 @@ fn main() {
             Ok(ctx) => ctx,
             Err(e) => {
                 eprintln!("WTG --once --stats init failed: {e}");
-                process::exit(2);
+                process::exit(wtg_core::exit_code_for_status("unavailable"));
             }
         };
         let snaps = match wtg_core::nvml::snapshot_all_with_ctx(&probe_context_ctx) {
             Ok(snaps) => snaps,
             Err(e) => {
                 eprintln!("WTG --once --stats failed: {e}");
-                process::exit(2);
+                let status = if e == "all NVIDIA device samples failed" {
+                    "error"
+                } else {
+                    "unavailable"
+                };
+                process::exit(wtg_core::exit_code_for_status(status));
             }
         };
         let tick_seq = 0;
@@ -1143,7 +1291,7 @@ fn main() {
             Ok(ctx) => ctx,
             Err(e) => {
                 eprintln!("WTG --probe-fields init failed: {e}");
-                process::exit(2);
+                process::exit(wtg_core::exit_code_for_status("unavailable"));
             }
         };
 
@@ -1184,7 +1332,12 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("WTG --probe-fields failed: {e}");
-                process::exit(2);
+                let status = if e == "all NVIDIA device samples failed" {
+                    "error"
+                } else {
+                    "unavailable"
+                };
+                process::exit(wtg_core::exit_code_for_status(status));
             }
         }
         return;
@@ -1196,7 +1349,7 @@ fn main() {
             Ok(ctx) => ctx,
             Err(e) => {
                 eprintln!("WTG --probe init failed: {e}");
-                process::exit(2);
+                process::exit(wtg_core::exit_code_for_status("unavailable"));
             }
         };
         match wtg_core::nvml::snapshot_all_with_ctx(&probe_context_ctx) {
@@ -1228,7 +1381,12 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("WTG --probe failed: {e}");
-                process::exit(2);
+                let status = if e == "all NVIDIA device samples failed" {
+                    "error"
+                } else {
+                    "unavailable"
+                };
+                process::exit(wtg_core::exit_code_for_status(status));
             }
         }
         return;
@@ -1237,56 +1395,64 @@ fn main() {
     // Mode: `--once`
     if args.once {
         print_product_header();
-        match wtg_core::nvml::snapshot_all() {
-            Ok(snaps) => {
-                let tick_seq = 0;
-                let tick_ts = now_ts();
-                if args.stats {
-                    let header = format_stats_schema_header();
-                    print_and_mirror_jsonl(&header, &sink);
-                    if let Some(sink) = &sink {
-                        if sink.kind() == SinkKind::Csv {
-                            sink.emit_raw_line(format_stats_csv_header());
-                        }
-                    }
-                    for s in snaps.iter() {
-                        let block = format_stats_block(s);
-                        print_and_mirror_jsonl(&block, &sink);
-                        if let Some(sink) = &sink {
-                            if sink.kind() == SinkKind::Csv {
-                                sink.emit_raw_line(&format_stats_csv_row(s, tick_seq, &tick_ts));
-                            }
-                        }
-                    }
-                } else {
-                    print_mode_header("snapshot", args.provider, None);
-                    println!();
-                    if let Some(sink) = &sink {
-                        if sink.kind() == SinkKind::Csv {
-                            sink.emit_raw_line(format_snapshot_csv_header());
-                        }
-                    }
-                    for s in snaps.iter() {
-                        let line = format!("{s}");
-                        println!("{line}");
-                        if let Some(sink) = &sink {
-                            match sink.kind() {
-                                SinkKind::Jsonl => sink.emit_jsonl_lines(&line),
-                                SinkKind::Csv => {
-                                    sink.emit_raw_line(&format_snapshot_csv_row(
-                                        s, tick_seq, &tick_ts,
-                                    ));
-                                }
-                                SinkKind::Mqtt => {}
-                            }
-                        }
+        let report = wtg_core::nvml::snapshot_report_bounded_once(Duration::from_millis(
+            NVML_ONCE_TIMEOUT_MS,
+        ));
+        let snaps = report.successful_snapshots();
+        let tick_seq = 0;
+        let tick_ts = now_ts();
+
+        if args.stats {
+            let header = format_stats_schema_header();
+            print_and_mirror_jsonl(&header, &sink);
+            if let Some(sink) = &sink {
+                if sink.kind() == SinkKind::Csv {
+                    sink.emit_raw_line(format_stats_csv_header());
+                }
+            }
+            for s in snaps.iter() {
+                let block = format_stats_block(s);
+                print_and_mirror_jsonl(&block, &sink);
+                if let Some(sink) = &sink {
+                    if sink.kind() == SinkKind::Csv {
+                        sink.emit_raw_line(&format_stats_csv_row(s, tick_seq, &tick_ts));
                     }
                 }
             }
-            Err(e) => {
-                eprintln!("WTG --once failed: {e}");
-                process::exit(2);
+        } else {
+            print_mode_header("snapshot", args.provider, None);
+            println!();
+            if report.status != "ok" {
+                print_provider_status_block(
+                    report.status,
+                    report
+                        .reason
+                        .as_deref()
+                        .unwrap_or("provider returned no additional details"),
+                );
+                print_nvml_failed_device_blocks(&report);
+                process::exit(wtg_core::exit_code_for_status(report.status));
             }
+
+            if let Some(sink) = &sink {
+                if sink.kind() == SinkKind::Csv {
+                    sink.emit_raw_line(format_snapshot_csv_header());
+                }
+            }
+            for s in snaps.iter() {
+                let line = format!("{s}");
+                println!("{line}");
+                if let Some(sink) = &sink {
+                    match sink.kind() {
+                        SinkKind::Jsonl => sink.emit_jsonl_lines(&line),
+                        SinkKind::Csv => {
+                            sink.emit_raw_line(&format_snapshot_csv_row(s, tick_seq, &tick_ts));
+                        }
+                        SinkKind::Mqtt => {}
+                    }
+                }
+            }
+            print_nvml_failed_device_blocks(&report);
         }
         return;
     }
@@ -1358,7 +1524,7 @@ fn main() {
                                     mqtt_sink, &args, &snapshots,
                                 ) {
                                     eprintln!("WTG MQTT error: {e}");
-                                    process::exit(2);
+                                    process::exit(wtg_core::exit_code_for_status("error"));
                                 }
                                 mqtt_ha_discovery_published = true;
                             }
@@ -1366,7 +1532,7 @@ fn main() {
                                 mqtt_sink, &args, &ctx, &snapshots, tick_seq, &tick_ts,
                             ) {
                                 eprintln!("WTG MQTT error: {e}");
-                                process::exit(2);
+                                process::exit(wtg_core::exit_code_for_status("error"));
                             }
                         }
                         tick_seq += 1;
@@ -1392,7 +1558,7 @@ fn main() {
                     Ok(ctx) => ctx,
                     Err(e) => {
                         eprintln!("WTG --watch init failed: {e}");
-                        process::exit(2);
+                        process::exit(wtg_core::exit_code_for_status("unavailable"));
                     }
                 })
             } else {
@@ -1435,7 +1601,7 @@ fn main() {
                                     mqtt_sink, &args, &snapshots,
                                 ) {
                                     eprintln!("WTG MQTT error: {e}");
-                                    process::exit(2);
+                                    process::exit(wtg_core::exit_code_for_status("error"));
                                 }
                                 mqtt_ha_discovery_published = true;
                             }
@@ -1443,7 +1609,7 @@ fn main() {
                                 mqtt_sink, &args, ctx, &snapshots, tick_seq, &tick_ts,
                             ) {
                                 eprintln!("WTG MQTT error: {e}");
-                                process::exit(2);
+                                process::exit(wtg_core::exit_code_for_status("error"));
                             }
                         }
                         println!();
@@ -1451,7 +1617,12 @@ fn main() {
                     }
                     Err(e) => {
                         eprintln!("WTG --watch failed: {e}");
-                        process::exit(2);
+                        let status = if e == "all NVIDIA device samples failed" {
+                            "error"
+                        } else {
+                            "unavailable"
+                        };
+                        process::exit(wtg_core::exit_code_for_status(status));
                     }
                 }
 
@@ -1559,6 +1730,92 @@ mod tests {
         let err = validate_args_result(&args).unwrap_err();
 
         assert_eq!(err, "--provider amd does not support --sink.");
+    }
+
+    #[test]
+    fn provider_intel_accepts_once() {
+        let mut args = CliArgs::default();
+        args.once = true;
+        args.provider = Some(ProviderKind::Intel);
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_intel_accepts_watch() {
+        let mut args = CliArgs::default();
+        args.watch = true;
+        args.provider = Some(ProviderKind::Intel);
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_intel_accepts_once_stats() {
+        let mut args = CliArgs::default();
+        args.once = true;
+        args.stats = true;
+        args.provider = Some(ProviderKind::Intel);
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_intel_accepts_watch_stats() {
+        let mut args = CliArgs::default();
+        args.watch = true;
+        args.stats = true;
+        args.provider = Some(ProviderKind::Intel);
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_intel_accepts_probe() {
+        let mut args = CliArgs::default();
+        args.probe = true;
+        args.provider = Some(ProviderKind::Intel);
+
+        validate_args_result(&args).unwrap();
+    }
+
+    #[test]
+    fn provider_intel_rejects_once_and_probe() {
+        let mut args = CliArgs::default();
+        args.once = true;
+        args.probe = true;
+        args.provider = Some(ProviderKind::Intel);
+
+        let err = validate_args_result(&args).unwrap_err();
+
+        assert_eq!(
+            err,
+            "--probe is mutually exclusive with --once and --watch."
+        );
+    }
+
+    #[test]
+    fn provider_intel_rejects_probe_fields() {
+        let mut args = CliArgs::default();
+        args.probe_fields = true;
+        args.provider = Some(ProviderKind::Intel);
+        args.field_ids.push(1);
+
+        let err = validate_args_result(&args).unwrap_err();
+
+        assert_eq!(err, "--provider intel does not support --probe-fields.");
+    }
+
+    #[test]
+    fn provider_intel_rejects_sink() {
+        let mut args = CliArgs::default();
+        args.once = true;
+        args.provider = Some(ProviderKind::Intel);
+        args.sink = Some(SinkKind::Jsonl);
+
+        let err = validate_args_result(&args).unwrap_err();
+
+        assert_eq!(err, "--provider intel does not support --sink.");
     }
 
     #[test]

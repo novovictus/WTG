@@ -8,6 +8,6 @@ fn main() {
 
     if let Err(err) = wtg_app::ui::run() {
         eprintln!("WTG UI failed: {err}");
-        std::process::exit(2);
+        std::process::exit(wtg_core::exit_code_for_status("error"));
     }
 }

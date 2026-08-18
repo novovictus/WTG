@@ -15,7 +15,7 @@ fn force_config_is_rejected_without_save_config() {
             .output()
             .unwrap();
 
-        assert_eq!(output.status.code(), Some(2), "args: {args:?}");
+        assert_eq!(output.status.code(), Some(1), "args: {args:?}");
 
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert_eq!(

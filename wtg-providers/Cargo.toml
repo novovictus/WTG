@@ -10,9 +10,6 @@ publish = false
 name = "wtg_providers"
 path = "src/lib.rs"
 
-[[bin]]
-name = "wtg-provider-probe"
-path = "src/bin/wtg-provider-probe.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

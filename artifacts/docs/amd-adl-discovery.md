@@ -1,8 +1,8 @@
 # AMD ADL Discovery Sandbox
 
-This branch keeps AMD ADL facts provider-scoped. `wtg.exe --provider amd` reports ADL-native facts and does not translate them into NVML field names, infer missing values, or claim cross-vendor parity.
+This document records the completed 0.2.8 AMD ADL provider baseline. AMD ADL facts remain provider-scoped. `wtg.exe --provider amd` reports ADL-native facts and does not translate them into NVML field names, infer missing values, or claim cross-vendor parity.
 
-The purpose of this branch is discovery, not parity. NVIDIA/NVML remains WTG's primary truth provider. AMD ADL is a supporting provider witness selected explicitly through `--provider amd`.
+The purpose of the AMD ADL cycle was discovery, not parity. NVIDIA/NVML remains WTG's primary truth provider. AMD ADL is a supporting provider witness selected explicitly through `--provider amd`.
 
 ## Current CLI Contract
 
@@ -78,13 +78,13 @@ telemetry_class: provider_telemetry
 
 This schema is not an NVML compatibility schema. It preserves ADL-native adapter/group facts, source APIs, states, units, and unavailable/error results without inventing missing NVML-equivalent fields.
 
-## Current Branch Baseline
+## 0.2.8 Branch Baseline
 
-Current branch: `dev/0.2.8-amd-adl-discovery`
+Baseline branch: `dev/0.2.8-amd-adl-discovery`
 
-Current spike branch: `spike/0.2.8-amd-adl-provider-modes`
+Historical spike branch: `spike/0.2.8-amd-adl-provider-modes`
 
-Current version: `0.2.8`
+Baseline version: `0.2.8`
 
 Observed on the ASUS ROG G533QS hybrid laptop with AMD Radeon(TM) Graphics and NVIDIA GeForce RTX 3080 Laptop GPU:
 

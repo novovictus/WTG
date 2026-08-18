@@ -110,6 +110,7 @@ Add-Content -Path $f -Value "---- WTG --once ----" -Encoding utf8
 
 $pass = $true
 $failReasons = New-Object System.Collections.Generic.List[string]
+$notes = New-Object System.Collections.Generic.List[string]
 
 if (-not (Test-Path $wtg)) {
     $pass = $false
@@ -121,24 +122,58 @@ if (-not (Test-Path $wtg)) {
 
     if ($wtgOut) { $wtgOut | Add-Content -Path $f -Encoding utf8 }
 
-    if ($wtgExit -ne 0) {
-        $pass = $false
-        $failReasons.Add("wtg.exe returned non-zero exit code: $wtgExit")
-    }
-
     $joined = ($wtgOut -join "`n")
-    $required = @("GPU 0","UUID","Util","VRAM","Power")
 
-    foreach ($token in $required) {
+    $commonRequired = @("WTG snapshot mode (provider: NVIDIA NVML)")
+    foreach ($token in $commonRequired) {
         if ($joined -notmatch [regex]::Escape($token)) {
             $pass = $false
             $failReasons.Add("WTG output missing token: $token")
+        }
+    }
+
+    if ($vc) {
+        if ($wtgExit -ne 0) {
+            $pass = $false
+            $failReasons.Add("wtg.exe returned non-zero exit code: $wtgExit")
+        }
+
+        $required = @("NVML device 0","UUID","Util","VRAM","Power")
+        foreach ($token in $required) {
+            if ($joined -notmatch [regex]::Escape($token)) {
+                $pass = $false
+                $failReasons.Add("WTG output missing token: $token")
+            }
+        }
+    } else {
+        if ($wtgExit -ne 2) {
+            $pass = $false
+            $failReasons.Add("wtg.exe returned unexpected exit code without NVIDIA hardware: $wtgExit")
+        }
+
+        $required = @("Provider status: unavailable","Reason:")
+        foreach ($token in $required) {
+            if ($joined -notmatch [regex]::Escape($token)) {
+                $pass = $false
+                $failReasons.Add("WTG absent-hardware output missing token: $token")
+            }
+        }
+
+        if ($pass) {
+            $notes.Add("NVIDIA absent hardware accepted")
         }
     }
 }
 
 Add-Content -Path $f -Value "----" -Encoding utf8
 Add-Content -Path $f -Value ("RESULT: {0}" -f ($(if ($pass) { "PASS" } else { "FAIL" }))) -Encoding utf8
+
+if ($notes.Count -gt 0) {
+    Add-Content -Path $f -Value "NOTES:" -Encoding utf8
+    foreach ($n in $notes) {
+        Add-Content -Path $f -Value ("- {0}" -f $n) -Encoding utf8
+    }
+}
 
 if (-not $pass) {
     Add-Content -Path $f -Value "FAIL_REASONS:" -Encoding utf8
