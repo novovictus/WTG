@@ -47,7 +47,7 @@ use probe_fields::{
     format_probe_fields_snapshot,
 };
 use sink::{Sink, SinkKind};
-use wtg_providers::{amd_adl, intel_level_zero};
+use wtg_providers::{amd_adl, amd_adlx, intel_level_zero};
 
 /// Default sampling interval when `--watch` is enabled.
 /// 1000ms is conservative and matches NVML’s practical update cadence for many metrics.
@@ -338,6 +338,18 @@ fn provider_display_name(provider: Option<ProviderKind>) -> &'static str {
     }
 }
 
+fn aggregate_provider_status(left: &str, right: &str) -> &'static str {
+    if left == "ok" || right == "ok" {
+        "ok"
+    } else if left == "error" || right == "error" {
+        "error"
+    } else if left == "unavailable" && right == "unavailable" {
+        "unavailable"
+    } else {
+        "error"
+    }
+}
+
 fn print_mode_header(mode: &str, provider: Option<ProviderKind>, interval_ms: Option<u64>) {
     match interval_ms {
         Some(interval_ms) => println!(
@@ -396,13 +408,20 @@ fn run_amd_provider(args: &CliArgs) -> ! {
     print_product_header();
     if args.once {
         let sample = amd_adl::collect_once(0);
+        let adlx_sample = amd_adlx::collect_once(0);
         print_mode_header("snapshot", args.provider, None);
         println!("Provider source: {}", amd_adl::provider_source());
         println!("Telemetry class: {}", amd_adl::telemetry_class());
         println!();
         println!("{}", amd_adl::format_snapshot(&sample));
-        process::exit(wtg_core::exit_code_for_status(amd_adl::sample_status(
-            &sample,
+        println!();
+        println!("Provider source: {}", amd_adlx::provider_source());
+        println!("Telemetry class: {}", amd_adlx::telemetry_class());
+        println!();
+        println!("{}", amd_adlx::format_snapshot(&adlx_sample));
+        process::exit(wtg_core::exit_code_for_status(aggregate_provider_status(
+            amd_adl::sample_status(&sample),
+            amd_adlx::sample_status(&adlx_sample),
         )));
     }
 
