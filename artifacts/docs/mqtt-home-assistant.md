@@ -1,73 +1,52 @@
 # MQTT and Home Assistant
 
-WTG can publish live GPU telemetry to an existing MQTT broker.
+WTG can publish live NVIDIA/NVML watch telemetry to an existing MQTT broker and optionally publish retained Home Assistant discovery configuration.
 
-WTG remains the telemetry collector and publisher. It is not an MQTT broker, does not configure the broker, does not open firewall rules, and does not manage subscriber access.
+WTG is the collector and publisher. It does not run or configure the broker, open firewall rules, manage subscriber access, install dashboards, or create downstream template packages.
 
-## Basic MQTT watch publishing
+## Publish live telemetry
 
 ```powershell
 .\wtg.exe --watch --sink mqtt --mqtt-host 127.0.0.1 --mqtt-port 1884 --mqtt-node-id testnode
 ```
 
-Topic shape:
+State topic:
 
 ```text
 wtg/<node_id>/gpu<index>/state
 ```
 
-Example:
-
-```text
-wtg/testnode/gpu0/state
-```
-
-State messages are QoS 0 and not retained.
+One JSON state payload is published per NVIDIA GPU per watch tick. State messages use QoS 0 and are not retained.
 
 ## Authentication
-
-Environment-variable password:
 
 ```powershell
 $env:WTG_MQTT_PASSWORD = "your-password"
 
-.\target\release\wtg.exe --watch `
+.\wtg.exe --watch `
   --sink mqtt `
   --mqtt-host homeassistant.local `
-  --mqtt-node-id bench1 `
+  --mqtt-node-id bench `
   --mqtt-username wtg `
   --mqtt-password-env WTG_MQTT_PASSWORD
 ```
 
-Direct-password variant:
-
-```powershell
-.\target\release\wtg.exe --watch `
-  --sink mqtt `
-  --mqtt-host homeassistant.local `
-  --mqtt-node-id bench1 `
-  --mqtt-username wtg `
-  --mqtt-password "your-password"
-```
-
-`--mqtt-password-env` is preferred when practical because it keeps the password out of the WTG command line and saved config file.
+Anonymous MQTT remains supported when no authentication flags are supplied. See [Configuration](configuration.md) for config-file and password-handling details.
 
 ## Home Assistant discovery
 
-Home Assistant discovery is opt-in.
-
 ```powershell
-.\target\release\wtg.exe --watch `
+.\wtg.exe --watch `
   --sink mqtt `
   --mqtt-host homeassistant.local `
-  --mqtt-node-id bench1 `
+  --mqtt-node-id bench `
   --mqtt-username wtg `
   --mqtt-password-env WTG_MQTT_PASSWORD `
   --mqtt-ha-discovery `
   --mqtt-retain-discovery
 ```
 
-Discovery topic shape:
+Discovery topics follow:
 
 ```text
 homeassistant/sensor/wtg_<node_id>_gpu<index>_<metric>/config
@@ -79,41 +58,35 @@ Availability topic:
 wtg/<node_id>/status
 ```
 
-When Home Assistant discovery is enabled, WTG publishes discovery configs, publishes retained `online` availability, and then publishes state messages. WTG also configures an MQTT Last Will and Testament that publishes retained `offline` availability on unexpected disconnect.
+With discovery enabled, WTG publishes discovery configuration, retained `online` availability, and live state messages. The MQTT Last Will publishes retained `offline` availability after an unexpected disconnect. State messages remain non-retained.
 
-State messages remain non-retained.
+Home Assistant creates deterministic WTG devices and metric entities. Entity IDs include the advertised hostname, GPU index, and metric, for example:
 
-## Discovery cleanup
-
-```powershell
-.\target\release\wtg.exe `
-  --sink mqtt `
-  --mqtt-host homeassistant.local `
-  --mqtt-node-id bench1 `
-  --mqtt-username wtg `
-  --mqtt-password-env WTG_MQTT_PASSWORD `
-  --mqtt-ha-remove-discovery
+```text
+sensor.wtg_<hostname>_gpu_0_gpu_0_power
+sensor.wtg_<hostname>_gpu_0_gpu_0_gpu_utilization
+sensor.wtg_<hostname>_gpu_0_gpu_0_temperature
 ```
 
-If discovery was published from a saved config, cleanup can use the same config file:
+## Discovery cleanup
 
 ```powershell
 .\wtg.exe --sink mqtt --mqtt-ha-remove-discovery --config .\wtg.toml
 ```
 
-Cleanup clears retained WTG discovery config topics and retained availability from the broker. It does not delete normal state topics.
+Cleanup clears retained WTG discovery configuration and availability topics. It does not delete normal state topics. Home Assistant may still require stale registry entries to be removed manually.
 
-Home Assistant may still require stale device/entity registry entries to be deleted manually after retained discovery cleanup.
+## Architecture boundary
 
-## Behavior notes
+```text
+NVIDIA NVML
+  -> WTG collection and MQTT publication
+  -> Home Assistant discovery and WTG entities
+  -> optional downstream templates and dashboards
+```
 
-- `--sink mqtt` is supported only with `--watch`, except for the explicit discovery cleanup command.
-- WTG opens an outbound connection to the configured broker.
-- WTG does not expose a listening network service.
-- One JSON state payload is published per GPU per watch tick.
-- Payloads include watch tick metadata, `GpuSnapshot` values, and probe-context fields.
-- Topic prefix defaults to `wtg`.
-- Anonymous MQTT remains supported when no auth flags are provided.
-- Discovery is emitted only when `--mqtt-ha-discovery` is set.
-- Discovery configs are retained only when `--mqtt-retain-discovery` is set.
-- Graceful shutdown offline publishing remains deferred.
+MQTT captures validate publication and transport. Home Assistant device/entity creation validates discovery. Neither becomes an alternate telemetry authority.
+
+[WTG HA Redline](https://github.com/novovictus/wtg-ha-redline) is an optional downstream presentation project that consumes WTG-discovered entities. Its template sensors, scores, warning states, gauges, and dashboard cards are not WTG provider truth.
+
+AMD ADL and Intel Level Zero provider output are not currently published through MQTT or Home Assistant discovery.

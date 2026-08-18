@@ -20,8 +20,4 @@ Useful options:
 .\artifacts\dev\wtg_package_checkpoint.ps1 -Release -CleanPackages
 ```
 
-`-CleanPackages` refreshes `artifacts\packages` while preserving `.gitkeep`.
-
-The checkpoint package captures git/build metadata and CLI validation outputs from `wtg.exe`.
-
-On branches that produce `wtg-ui.exe`, the helper passively includes and hashes the UI binary, but it does not launch the UI.
+The helper captures git/build metadata and CLI validation outputs. On branches that produce `wtg-ui.exe`, it includes and hashes the UI binary but does not launch it.

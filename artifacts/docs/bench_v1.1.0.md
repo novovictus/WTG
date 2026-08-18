@@ -118,15 +118,18 @@ Current intended provider roles:
 
 Rosewill RCRC-17001 powered PCIe riser adapter.
 
+Vendor page:
 
-Package contents:
+https://www.newegg.com/p/N82E16812119901
+
+Vendor-listed package contents:
 
 - PCIe 16x riser board.
 - PCIe 1x adapter card.
 - 60 cm USB 3.0 cable.
 - 6-pin PCIe power to 15-pin SATA power cable.
 
-Listed features:
+Vendor-listed features:
 
 - PCIe 16x to 1x riser adapter.
 - 4 solid capacitors.
@@ -140,6 +143,9 @@ Listed features:
 
 Thsion 25 inch PCIe cable for EVGA modular power supplies.
 
+Vendor page:
+
+https://www.amazon.com/dp/B0DRP72QHD
 
 Observed product framing:
 
