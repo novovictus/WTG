@@ -48,6 +48,6 @@ AMD ADL requires a usable `atiadlxx.dll`. Intel requires a usable Level Zero/Sys
 
 ## Current boundaries
 
-AMD and Intel provider output supports provider-scoped once, watch, and stats behavior. File sinks, MQTT publishing, and Home Assistant discovery are not implemented for these providers in this release candidate.
+AMD and Intel provider output supports provider-scoped once, watch, and stats behavior. File sinks, MQTT publishing, and Home Assistant discovery are not implemented for these providers in this release.
 
 The experimental UI may display telemetry-capable NVIDIA, AMD, and Intel devices in one device list. It must not add topology-only duplicate rows, fake gauges, or synthetic cross-vendor parity fields.

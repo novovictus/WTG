@@ -15,7 +15,7 @@ WTG includes:
 - MQTT watch publishing and Home Assistant discovery for NVIDIA/NVML
 - provider-scoped AMD ADL and Intel Level Zero output
 
-Current release candidate: `release/v0.3.0-rc1`
+Current release: `v0.3.0`
 
 ## Provider Model
 
@@ -203,9 +203,9 @@ Research, matrices, bench records, validation evidence, and maintained product d
 Key starting points:
 
 - `artifacts/docs/`
-- `artifacts/test-matrix/matrix.md`
-- `artifacts/regression-research/`
-- `artifacts/abstraction-model/`
+- `artifacts/docs/matrix.md`
+- `artifacts/docs/wtg_regression_research.md`
+- `artifacts/docs/wtg_vs_task_manager_abstraction_model.md`
 
 ## Maintained Documentation
 
