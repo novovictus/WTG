@@ -39,4 +39,7 @@ artifacts/packages/wtg_refresh_checkpoint_package.ps1
 # repo housekeeping scratch files
 repo_layout_*.txt
 artifacts/dev/validation/runs/
-artifacts/dev/validation/runs/
+
+# package release scripts
+/artifacts/dev/Package-WtgPublicRelease.ps1
+/artifacts/dev/wtg_package_checkpoint.ps1

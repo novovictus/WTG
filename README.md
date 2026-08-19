@@ -178,6 +178,8 @@ Validation responsibilities:
 
 Detailed methodology and current known behavior: [Validation](artifacts/docs/validation.md)
 
+The shipped `Invoke-WtgValidation.ps1` evidence collector has its own standalone usage guide: [Validation Harness](artifacts/dev/validation/README.md).
+
 ## Architecture
 
 ```text
