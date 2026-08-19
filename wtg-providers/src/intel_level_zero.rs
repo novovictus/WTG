@@ -2410,7 +2410,7 @@ mod tests {
 
     fn provider_sample_for_test(status: &'static str, sample_seq: u64) -> ProviderSample {
         ProviderSample {
-            wtg_version: "0.3.0",
+            wtg_version: env!("CARGO_PKG_VERSION"),
             provider: PROVIDER,
             provider_authority: PROVIDER_AUTHORITY,
             provider_source: SOURCE,
@@ -2551,7 +2551,7 @@ mod tests {
         assert!(device.unavailable.contains(&"name"));
 
         let sample = ProviderSample {
-            wtg_version: "0.2.9",
+            wtg_version: env!("CARGO_PKG_VERSION"),
             provider: PROVIDER,
             provider_authority: PROVIDER_AUTHORITY,
             provider_source: SOURCE,
@@ -2591,7 +2591,7 @@ mod tests {
     #[test]
     fn sysman_probe_and_stats_output_remain_provider_scoped() {
         let sample = ProviderSample {
-            wtg_version: "0.2.9",
+            wtg_version: env!("CARGO_PKG_VERSION"),
             provider: PROVIDER,
             provider_authority: PROVIDER_AUTHORITY,
             provider_source: SOURCE,
@@ -2669,7 +2669,7 @@ mod tests {
     #[test]
     fn probe_output_includes_existing_device_sysman_facts() {
         let sample = ProviderSample {
-            wtg_version: "0.2.9",
+            wtg_version: env!("CARGO_PKG_VERSION"),
             provider: PROVIDER,
             provider_authority: PROVIDER_AUTHORITY,
             provider_source: SOURCE,
@@ -2816,7 +2816,7 @@ mod tests {
             unavailable: vec!["temperature"],
         };
         let sample = ProviderSample {
-            wtg_version: "0.3.0",
+            wtg_version: env!("CARGO_PKG_VERSION"),
             provider: PROVIDER,
             provider_authority: PROVIDER_AUTHORITY,
             provider_source: SOURCE,
@@ -3361,7 +3361,7 @@ mod tests {
     #[test]
     fn compact_watch_output_shows_delta_values() {
         let sample = ProviderSample {
-            wtg_version: "0.3.0",
+            wtg_version: env!("CARGO_PKG_VERSION"),
             provider: PROVIDER,
             provider_authority: PROVIDER_AUTHORITY,
             provider_source: SOURCE,

@@ -5,7 +5,7 @@ Copyright (C) 2026 Adam Hooper
 
 **Tagline:** Provider-native GPU telemetry and validation for Windows
 
-WTG is a Windows-native GPU telemetry and validation suite that preserves what each hardware provider actually reports. NVIDIA/NVML remains the primary reference and validation path. WTG 0.3.0 also includes experimental AMD ADL and Intel Level Zero provider surfaces without translating unlike provider facts into false cross-vendor equivalents.
+WTG is a Windows-native GPU telemetry and validation suite that preserves what each hardware provider actually reports. NVIDIA/NVML remains the primary reference and validation path. WTG 0.3.1 also includes experimental AMD ADL and Intel Level Zero provider surfaces without translating unlike provider facts into false cross-vendor equivalents.
 
 WTG includes:
 
@@ -15,7 +15,7 @@ WTG includes:
 - MQTT watch publishing and Home Assistant discovery for NVIDIA/NVML
 - provider-scoped AMD ADL and Intel Level Zero output
 
-Current release: `v0.3.0`
+Current release: `v0.3.1`
 
 ## Provider Model
 

@@ -1637,7 +1637,7 @@ mod tests {
     #[test]
     fn unavailable_snapshot_uses_provider_status_block() {
         let sample = ProviderSample {
-            wtg_version: "0.3.0",
+            wtg_version: env!("CARGO_PKG_VERSION"),
             source: SOURCE,
             telemetry_class: TELEMETRY_CLASS,
             provider: PROVIDER,
@@ -1670,7 +1670,7 @@ mod tests {
     #[test]
     fn ok_snapshot_renders_gpu_activity_without_fake_unavailable_lines() {
         let sample = ProviderSample {
-            wtg_version: "0.3.0",
+            wtg_version: env!("CARGO_PKG_VERSION"),
             source: SOURCE,
             telemetry_class: TELEMETRY_CLASS,
             provider: PROVIDER,

@@ -2478,7 +2478,7 @@ mod tests {
 
     fn amd_sample_with_unavailable_active() -> ProviderSample {
         ProviderSample {
-            wtg_version: "0.3.0",
+            wtg_version: env!("CARGO_PKG_VERSION"),
             source: SOURCE,
             telemetry_class: TELEMETRY_CLASS,
             provider: PROVIDER,
