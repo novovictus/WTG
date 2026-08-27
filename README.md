@@ -17,6 +17,14 @@ WTG includes:
 
 Current release: `v0.3.1`
 
+## Project Status
+
+WTG has reached its current engineering objective and is entering maintenance mode after the 0.3.1 documentation and validation pass. No additional feature development or broad hardware-validation campaign is currently planned.
+
+The repository, validation harness, research artifacts, preliminary mixed-adapter findings, and known limitations are being preserved so development can resume without reconstructing the investigation. Further work may resume if new evidence, user interest, vendor feedback, driver behavior, or a concrete telemetry requirement provides a reason to continue.
+
+Maintenance mode does not mean the project is abandoned. The existing tool remains usable for its documented purposes, and focused fixes or validation work can be taken up when justified by new information.
+
 ## Provider Model
 
 - **Primary provider:** NVIDIA/NVML
@@ -208,6 +216,7 @@ Key starting points:
 - `artifacts/docs/matrix.md`
 - `artifacts/docs/wtg_regression_research.md`
 - `artifacts/docs/wtg_vs_task_manager_abstraction_model.md`
+- `artifacts/dev/validation/PRELIMINARY_TESTING.md`
 
 ## Maintained Documentation
 
