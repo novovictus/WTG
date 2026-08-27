@@ -5,7 +5,7 @@ Copyright (C) 2026 Adam Hooper
 
 **Tagline:** Provider-native GPU telemetry and validation for Windows
 
-WTG is a Windows-native GPU telemetry and validation suite that preserves what each hardware provider actually reports. NVIDIA/NVML remains the primary reference and validation path. WTG 0.3.0 also includes experimental AMD ADL and Intel Level Zero provider surfaces without translating unlike provider facts into false cross-vendor equivalents.
+WTG is a Windows-native GPU telemetry and validation suite that preserves what each hardware provider actually reports. NVIDIA/NVML remains the primary reference and validation path. WTG 0.3.1 also includes experimental AMD ADL and Intel Level Zero provider surfaces without translating unlike provider facts into false cross-vendor equivalents.
 
 WTG includes:
 
@@ -15,7 +15,15 @@ WTG includes:
 - MQTT watch publishing and Home Assistant discovery for NVIDIA/NVML
 - provider-scoped AMD ADL and Intel Level Zero output
 
-Current release: `v0.3.0`
+Current release: `v0.3.1`
+
+## Project Status
+
+WTG has reached its current engineering objective and is entering maintenance mode after the 0.3.1 documentation and validation pass. No additional feature development or broad hardware-validation campaign is currently planned.
+
+The repository, validation harness, research artifacts, preliminary mixed-adapter findings, and known limitations are being preserved so development can resume without reconstructing the investigation. Further work may resume if new evidence, user interest, vendor feedback, driver behavior, or a concrete telemetry requirement provides a reason to continue.
+
+Maintenance mode does not mean the project is abandoned. The existing tool remains usable for its documented purposes, and focused fixes or validation work can be taken up when justified by new information.
 
 ## Provider Model
 
@@ -178,6 +186,8 @@ Validation responsibilities:
 
 Detailed methodology and current known behavior: [Validation](artifacts/docs/validation.md)
 
+The shipped `Invoke-WtgValidation.ps1` evidence collector has its own standalone usage guide: [Validation Harness](artifacts/dev/validation/README.md).
+
 ## Architecture
 
 ```text
@@ -206,6 +216,7 @@ Key starting points:
 - `artifacts/docs/matrix.md`
 - `artifacts/docs/wtg_regression_research.md`
 - `artifacts/docs/wtg_vs_task_manager_abstraction_model.md`
+- `artifacts/dev/validation/PRELIMINARY_TESTING.md`
 
 ## Maintained Documentation
 
